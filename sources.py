@@ -1,16 +1,82 @@
 """Data-source module for Şerit. Pure Python, no Qt dependencies."""
 
+import concurrent.futures
 import datetime as dt
 import json
+import math
 from pathlib import Path
+import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import httpx
 import psutil
 
 CRED_PATH = Path.home() / ".claude" / ".credentials.json"
 LOG_PATH = Path("D:/Apps/serit/serit.log")
+
+_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+_IN_FLIGHT: set[str] = set()
+_LOCK = threading.Lock()
+
+
+def submit(key: str, fn: Callable[[], Any], callback: Optional[Callable[..., None]] = None) -> bool:
+    """Submit a fetch task to the thread pool in a thread-safe way.
+
+    If a task with the same key is already running/in flight, skips submission
+    and returns False. Returns True if the task was successfully submitted.
+    Callback is invoked with (key, result) or (result,) when finished.
+    """
+    with _LOCK:
+        if key in _IN_FLIGHT:
+            return False
+        _IN_FLIGHT.add(key)
+
+    def _worker() -> None:
+        res: Any = None
+        try:
+            try:
+                res = fn()
+            except Exception as exc:
+                log_err(key, exc)
+                res = {"err": "Bağlantı yok"}
+
+            if callback is not None:
+                try:
+                    callback(key, res)
+                except TypeError:
+                    try:
+                        callback(res)
+                    except Exception as cb_exc:
+                        log_err(f"{key}_cb", cb_exc)
+                except Exception as cb_exc:
+                    log_err(f"{key}_cb", cb_exc)
+        finally:
+            with _LOCK:
+                _IN_FLIGHT.discard(key)
+
+    try:
+        _EXECUTOR.submit(_worker)
+        return True
+    except Exception as exc:
+        with _LOCK:
+            _IN_FLIGHT.discard(key)
+        log_err(f"submit_{key}", exc)
+        return False
+
+
+def _safe_float(v: Any, default: Optional[float] = None) -> Optional[float]:
+    """Safely coerce value to float; returns default on None/NaN/Inf/ValueError."""
+    if v is None:
+        return default
+    try:
+        f = float(v)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return f
+    except (ValueError, TypeError):
+        return default
+
 
 REFRESH = {
     "claude": 120,
@@ -118,8 +184,14 @@ def log_err(source: str, exc: Exception) -> None:
 
 def tr_num(s: Any) -> float:
     """Convert Turkish formatted number string (e.g. '6.423,18' or '%0,14') to float."""
-    clean = str(s).strip().replace(".", "").replace(",", ".").replace("%", "")
-    return float(clean)
+    try:
+        clean = str(s).strip().replace(".", "").replace(",", ".").replace("%", "")
+        val = float(clean)
+        if math.isnan(val) or math.isinf(val):
+            return 0.0
+        return val
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def fmt_tr(x: float, dec: int = 2) -> str:
@@ -196,26 +268,37 @@ def fetch_claude() -> Dict[str, Any]:
             return {"err": f"Hata {resp.status_code}"}
 
         data = resp.json()
-        fh = data.get("five_hour") or {}
-        sd = data.get("seven_day") or {}
+        if not isinstance(data, dict):
+            return {"err": "Geçersiz veri"}
+
+        fh = data.get("five_hour")
+        if not isinstance(fh, dict):
+            fh = {}
+        sd = data.get("seven_day")
+        if not isinstance(sd, dict):
+            sd = {}
         opus_data = data.get("seven_day_opus")
 
         opus_val = None
         if isinstance(opus_data, dict):
-            opus_val = opus_data.get("utilization")
-        elif isinstance(opus_data, (int, float)):
-            opus_val = float(opus_data)
+            opus_raw = opus_data.get("utilization")
+            opus_val = _safe_float(opus_raw, None)
+        elif opus_data is not None:
+            opus_val = _safe_float(opus_data, None)
 
-        session_val = fh.get("utilization")
-        week_val = sd.get("utilization")
+        session_raw = fh.get("utilization")
+        week_raw = sd.get("utilization")
+
+        session_val = _safe_float(session_raw, 0.0)
+        week_val = _safe_float(week_raw, 0.0)
 
         return {
-            "session": float(session_val) if session_val is not None else 0.0,
-            "session_reset": fh.get("resets_at", ""),
-            "week": float(week_val) if week_val is not None else 0.0,
-            "week_reset": sd.get("resets_at", ""),
+            "session": session_val if session_val is not None else 0.0,
+            "session_reset": str(fh.get("resets_at", "") or ""),
+            "week": week_val if week_val is not None else 0.0,
+            "week_reset": str(sd.get("resets_at", "") or ""),
             "opus": opus_val,
-            "plan": plan,
+            "plan": str(plan or ""),
             "source": "Anthropic · Claude Code girişi",
         }
     except (httpx.RequestError, httpx.HTTPStatusError) as exc:
@@ -233,17 +316,31 @@ def fetch_fx() -> Dict[str, Any]:
         if resp.status_code != 200:
             return {"err": f"Hata {resp.status_code}"}
         j = resp.json()
-        usd = j.get("USD") or {}
-        eur = j.get("EUR") or {}
-        gold = j.get("gram-altin") or {}
+        if not isinstance(j, dict):
+            return {"err": "Geçersiz veri"}
+        usd = j.get("USD")
+        eur = j.get("EUR")
+        gold = j.get("gram-altin")
+        if not isinstance(usd, dict) or not isinstance(eur, dict) or not isinstance(gold, dict):
+            return {"err": "Geçersiz veri"}
+
+        usd_val = tr_num(usd.get("Satış", "0"))
+        usd_chg = tr_num(usd.get("Değişim", "0"))
+        eur_val = tr_num(eur.get("Satış", "0"))
+        eur_chg = tr_num(eur.get("Değişim", "0"))
+        gold_val = tr_num(gold.get("Satış", "0"))
+        gold_chg = tr_num(gold.get("Değişim", "0"))
+
+        if usd_val <= 0:
+            return {"err": "Geçersiz veri"}
 
         return {
-            "usd": tr_num(usd.get("Satış", "0")),
-            "usd_chg": tr_num(usd.get("Değişim", "0")),
-            "eur": tr_num(eur.get("Satış", "0")),
-            "eur_chg": tr_num(eur.get("Değişim", "0")),
-            "gold": tr_num(gold.get("Satış", "0")),
-            "gold_chg": tr_num(gold.get("Değişim", "0")),
+            "usd": usd_val,
+            "usd_chg": usd_chg,
+            "eur": eur_val,
+            "eur_chg": eur_chg,
+            "gold": gold_val,
+            "gold_chg": gold_chg,
             "updated": str(j.get("Update_Date", "")),
             "source": "finans.truncgil.com",
         }
@@ -267,25 +364,45 @@ def fetch_weather(lat: float = 38.37, lon: float = 34.03) -> Dict[str, Any]:
         if resp.status_code != 200:
             return {"err": f"Hata {resp.status_code}"}
         j = resp.json()
-        cur = j.get("current") or {}
-        daily = j.get("daily") or {}
+        if not isinstance(j, dict):
+            return {"err": "Geçersiz veri"}
+        cur = j.get("current")
+        daily = j.get("daily")
+        if not isinstance(cur, dict) or not isinstance(daily, dict):
+            return {"err": "Geçersiz veri"}
 
-        code = cur.get("weather_code")
-        desc = WMO_DESC.get(code, "Bilinmiyor") if code is not None else "Bilinmiyor"
-        icon = WMO_ICON.get(code, "cloud") if code is not None else "cloud"
+        temp_val = _safe_float(cur.get("temperature_2m"), None)
+        feel_val = _safe_float(cur.get("apparent_temperature"), None)
+        if temp_val is None or feel_val is None:
+            return {"err": "Geçersiz veri"}
 
-        max_list = daily.get("temperature_2m_max") or [None]
-        min_list = daily.get("temperature_2m_min") or [None]
+        wind_val = _safe_float(cur.get("wind_speed_10m"), 0.0)
+
+        code_raw = cur.get("weather_code")
+        try:
+            code = int(code_raw) if code_raw is not None else 0
+        except (ValueError, TypeError):
+            code = 0
+
+        desc = WMO_DESC.get(code, "Bilinmiyor")
+        icon = WMO_ICON.get(code, "cloud")
+
+        max_list = daily.get("temperature_2m_max")
+        min_list = daily.get("temperature_2m_min")
+        max_raw = max_list[0] if isinstance(max_list, list) and max_list else None
+        min_raw = min_list[0] if isinstance(min_list, list) and min_list else None
+        max_val = _safe_float(max_raw, temp_val)
+        min_val = _safe_float(min_raw, temp_val)
 
         return {
-            "temp": cur.get("temperature_2m"),
-            "feel": cur.get("apparent_temperature"),
+            "temp": temp_val,
+            "feel": feel_val,
             "code": code,
             "desc": desc,
             "icon": icon,
-            "max": max_list[0],
-            "min": min_list[0],
-            "wind": cur.get("wind_speed_10m"),
+            "max": max_val if max_val is not None else temp_val,
+            "min": min_val if min_val is not None else temp_val,
+            "wind": wind_val if wind_val is not None else 0.0,
             "source": "open-meteo.com",
         }
     except (httpx.RequestError, httpx.HTTPStatusError) as exc:
@@ -301,12 +418,19 @@ def fetch_system() -> Dict[str, Any]:
     try:
         vm = psutil.virtual_memory()
         disk = psutil.disk_usage("C:/")
+
+        cpu = _safe_float(psutil.cpu_percent(None), 0.0)
+        ram = _safe_float(vm.percent, 0.0)
+        ram_used = _safe_float(vm.used / (1024**3), 0.0)
+        ram_total = _safe_float(vm.total / (1024**3), 0.0)
+        disk_c = _safe_float(disk.percent, 0.0)
+
         return {
-            "cpu": psutil.cpu_percent(None),
-            "ram": vm.percent,
-            "ram_used_gb": vm.used / (1024**3),
-            "ram_total_gb": vm.total / (1024**3),
-            "disk_c": disk.percent,
+            "cpu": cpu if cpu is not None else 0.0,
+            "ram": ram if ram is not None else 0.0,
+            "ram_used_gb": ram_used if ram_used is not None else 0.0,
+            "ram_total_gb": ram_total if ram_total is not None else 0.0,
+            "disk_c": disk_c if disk_c is not None else 0.0,
             "source": "Bu bilgisayar",
         }
     except Exception as exc:
@@ -332,7 +456,9 @@ class Store:
 
         entry = dict(result)
         entry["fetched_at"] = now
-        entry["stale"] = False
+        entry["stale"] = bool(has_err)
+        if has_err and "last_error" not in entry:
+            entry["last_error"] = result["err"]
         self._data[key] = entry
 
     def get(self, key: str) -> Optional[Dict[str, Any]]:

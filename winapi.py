@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QFileIconProvider
 __all__ = [
     "list_windows",
     "group_by_app",
+    "get_app_name",
     "app_icon",
     "activate_or_minimize",
     "enable_acrylic",
@@ -35,10 +36,12 @@ kernel32 = ctypes.windll.kernel32
 shell32 = ctypes.windll.shell32
 dwmapi = ctypes.windll.dwmapi
 gdi32 = ctypes.windll.gdi32
+version = ctypes.windll.version
 
 # --- Win32 Constants ---
 DWMWA_CLOAKED = 14
 GWL_EXSTYLE = -20
+GWL_STYLE = -16
 GW_OWNER = 4
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_APPWINDOW = 0x00040000
@@ -90,7 +93,46 @@ class WINDOWCOMPOSITIONATTRIBDATA(ctypes.Structure):
 
 WNDENUMPROC = ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
 
-# Function signatures
+# --- Kernel32 Signatures ---
+kernel32.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+kernel32.OpenProcess.restype = w.HANDLE
+kernel32.QueryFullProcessImageNameW.argtypes = [w.HANDLE, w.DWORD, w.LPWSTR, w.LPDWORD]
+kernel32.QueryFullProcessImageNameW.restype = w.BOOL
+kernel32.CloseHandle.argtypes = [w.HANDLE]
+kernel32.CloseHandle.restype = w.BOOL
+kernel32.GetCurrentThreadId.argtypes = []
+kernel32.GetCurrentThreadId.restype = w.DWORD
+
+# --- User32 Signatures ---
+user32.EnumWindows.argtypes = [WNDENUMPROC, w.LPARAM]
+user32.EnumWindows.restype = w.BOOL
+user32.IsWindow.argtypes = [w.HWND]
+user32.IsWindow.restype = w.BOOL
+user32.IsWindowVisible.argtypes = [w.HWND]
+user32.IsWindowVisible.restype = w.BOOL
+user32.GetWindowTextLengthW.argtypes = [w.HWND]
+user32.GetWindowTextLengthW.restype = ctypes.c_int
+user32.GetWindowTextW.argtypes = [w.HWND, w.LPWSTR, ctypes.c_int]
+user32.GetWindowTextW.restype = ctypes.c_int
+user32.GetWindowThreadProcessId.argtypes = [w.HWND, w.LPDWORD]
+user32.GetWindowThreadProcessId.restype = w.DWORD
+user32.GetWindow.argtypes = [w.HWND, w.UINT]
+user32.GetWindow.restype = w.HWND
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = w.HWND
+user32.IsIconic.argtypes = [w.HWND]
+user32.IsIconic.restype = w.BOOL
+user32.ShowWindow.argtypes = [w.HWND, ctypes.c_int]
+user32.ShowWindow.restype = w.BOOL
+user32.SetForegroundWindow.argtypes = [w.HWND]
+user32.SetForegroundWindow.restype = w.BOOL
+user32.AttachThreadInput.argtypes = [w.DWORD, w.DWORD, w.BOOL]
+user32.AttachThreadInput.restype = w.BOOL
+user32.keybd_event.argtypes = [w.BYTE, w.BYTE, w.DWORD, ctypes.c_size_t]
+user32.keybd_event.restype = None
+user32.SetWindowRgn.argtypes = [w.HWND, w.HRGN, w.BOOL]
+user32.SetWindowRgn.restype = ctypes.c_int
+
 if hasattr(user32, "SetWindowCompositionAttribute"):
     user32.SetWindowCompositionAttribute.argtypes = [
         w.HWND,
@@ -98,6 +140,15 @@ if hasattr(user32, "SetWindowCompositionAttribute"):
     ]
     user32.SetWindowCompositionAttribute.restype = w.BOOL
 
+user32.GetWindowLongW.argtypes = [w.HWND, ctypes.c_int]
+user32.GetWindowLongW.restype = w.LONG
+
+GetWindowLongPtrW = getattr(user32, "GetWindowLongPtrW", getattr(user32, "GetWindowLongW", None))
+if GetWindowLongPtrW is not None:
+    GetWindowLongPtrW.argtypes = [w.HWND, ctypes.c_int]
+    GetWindowLongPtrW.restype = ctypes.c_ssize_t
+
+# --- Gdi32 Signatures ---
 gdi32.CreateRoundRectRgn.argtypes = [
     ctypes.c_int,
     ctypes.c_int,
@@ -107,12 +158,29 @@ gdi32.CreateRoundRectRgn.argtypes = [
     ctypes.c_int,
 ]
 gdi32.CreateRoundRectRgn.restype = w.HRGN
-
-user32.SetWindowRgn.argtypes = [w.HWND, w.HRGN, w.BOOL]
-user32.SetWindowRgn.restype = ctypes.c_int
-
 gdi32.DeleteObject.argtypes = [w.HGDIOBJ]
 gdi32.DeleteObject.restype = w.BOOL
+
+# --- Dwmapi Signatures ---
+dwmapi.DwmGetWindowAttribute.argtypes = [w.HWND, w.DWORD, w.LPCVOID, w.DWORD]
+dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
+
+# --- Shell32 Signatures ---
+shell32.SHAppBarMessage.argtypes = [w.DWORD, ctypes.POINTER(APPBARDATA)]
+shell32.SHAppBarMessage.restype = ctypes.c_uint64
+
+# --- Version Signatures ---
+version.GetFileVersionInfoSizeW.argtypes = [w.LPCWSTR, w.LPDWORD]
+version.GetFileVersionInfoSizeW.restype = w.DWORD
+version.GetFileVersionInfoW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, w.LPVOID]
+version.GetFileVersionInfoW.restype = w.BOOL
+version.VerQueryValueW.argtypes = [
+    w.LPCVOID,
+    w.LPCWSTR,
+    ctypes.POINTER(w.LPVOID),
+    ctypes.POINTER(w.UINT),
+]
+version.VerQueryValueW.restype = w.BOOL
 
 
 def _log(msg: str) -> None:
@@ -152,11 +220,12 @@ def list_windows() -> list[dict]:
     """
     windows: list[dict] = []
     try:
-        fg_hwnd = user32.GetForegroundWindow()
+        fg_hwnd = int(user32.GetForegroundWindow() or 0)
 
-        def enum_cb(hwnd: int, _: int) -> bool:
+        def enum_cb(hwnd_raw: int, _: int) -> bool:
+            hwnd = int(hwnd_raw or 0)
             try:
-                if not user32.IsWindowVisible(hwnd):
+                if not hwnd or not user32.IsWindowVisible(hwnd):
                     return True
 
                 length = user32.GetWindowTextLengthW(hwnd)
@@ -180,13 +249,16 @@ def list_windows() -> list[dict]:
                 if cloaked.value != 0:
                     return True
 
-                # Check window extended styles
-                ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                # Check window extended styles using GetWindowLongPtrW
+                if GetWindowLongPtrW is not None:
+                    ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+                else:
+                    ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
                 if (ex_style & WS_EX_TOOLWINDOW) and not (ex_style & WS_EX_APPWINDOW):
                     return True
 
                 # Owner window check: no owner unless WS_EX_APPWINDOW
-                owner = user32.GetWindow(hwnd, GW_OWNER)
+                owner = int(user32.GetWindow(hwnd, GW_OWNER) or 0)
                 if owner != 0 and not (ex_style & WS_EX_APPWINDOW):
                     return True
 
@@ -205,7 +277,7 @@ def list_windows() -> list[dict]:
                 minimized = bool(user32.IsIconic(hwnd))
 
                 windows.append({
-                    "hwnd": int(hwnd),
+                    "hwnd": hwnd,
                     "title": title,
                     "exe": exe,
                     "pid": pid_val,
@@ -223,11 +295,106 @@ def list_windows() -> list[dict]:
     return windows
 
 
+_APP_NAME_CACHE: dict[str, str] = {}
+
+
+def get_app_name(exe: str) -> str:
+    """Retrieve friendly application name from FileDescription via version.dll.
+
+    Falls back to capitalized executable stem; never returns empty string.
+    Results are cached in memory.
+    """
+    if not exe:
+        return "App"
+
+    norm_key = (
+        os.path.normcase(os.path.abspath(exe))
+        if os.path.isabs(exe)
+        else exe.lower()
+    )
+    if norm_key in _APP_NAME_CACHE:
+        return _APP_NAME_CACHE[norm_key]
+
+    desc = ""
+    try:
+        if os.path.exists(exe):
+            size = version.GetFileVersionInfoSizeW(exe, None)
+            if size > 0:
+                buf = ctypes.create_string_buffer(size)
+                if version.GetFileVersionInfoW(exe, 0, size, buf):
+                    trans_ptr = w.LPVOID()
+                    trans_len = w.UINT()
+                    if (
+                        version.VerQueryValueW(
+                            buf,
+                            r"\VarFileInfo\Translation",
+                            ctypes.byref(trans_ptr),
+                            ctypes.byref(trans_len),
+                        )
+                        and trans_len.value >= 4
+                        and trans_ptr.value
+                    ):
+                        trans = ctypes.cast(trans_ptr, ctypes.POINTER(w.WORD))
+                        lang = trans[0]
+                        codepage = trans[1]
+                        sub_block = (
+                            fr"\StringFileInfo\{lang:04x}{codepage:04x}\FileDescription"
+                        )
+                        val_ptr = w.LPVOID()
+                        val_len = w.UINT()
+                        if (
+                            version.VerQueryValueW(
+                                buf,
+                                sub_block,
+                                ctypes.byref(val_ptr),
+                                ctypes.byref(val_len),
+                            )
+                            and val_len.value
+                            and val_ptr.value
+                        ):
+                            desc = ctypes.wstring_at(val_ptr.value).strip()
+
+                    if not desc:
+                        for lang_cp in ("040904b0", "040904e4", "041f04b0", "000004b0"):
+                            sub_block = fr"\StringFileInfo\{lang_cp}\FileDescription"
+                            val_ptr = w.LPVOID()
+                            val_len = w.UINT()
+                            if (
+                                version.VerQueryValueW(
+                                    buf,
+                                    sub_block,
+                                    ctypes.byref(val_ptr),
+                                    ctypes.byref(val_len),
+                                )
+                                and val_len.value
+                                and val_ptr.value
+                            ):
+                                desc = ctypes.wstring_at(val_ptr.value).strip()
+                                if desc:
+                                    break
+    except Exception as exc:
+        _log(f"get_app_name error for '{exe}': {exc}")
+
+    if not desc:
+        try:
+            stem = Path(exe).stem
+            desc = stem.capitalize() if stem else "App"
+        except Exception:
+            desc = "App"
+
+    if not desc:
+        desc = "App"
+
+    _APP_NAME_CACHE[norm_key] = desc
+    return desc
+
+
 def group_by_app(windows: list[dict]) -> list[dict]:
     """Group windows by executable path (case-insensitive), preserving appearance order.
 
     Each group dictionary contains:
         {
+            'name': str (friendly app name from version.dll or capitalized stem, never empty),
             'exe': str,
             'title': str (of the active window if any, else the topmost/most recent window),
             'hwnds': list[int],
@@ -254,7 +421,7 @@ def group_by_app(windows: list[dict]) -> list[dict]:
         grp = groups[key]
         hwnd = w_info.get("hwnd")
         if hwnd is not None:
-            grp["hwnds"].append(hwnd)
+            grp["hwnds"].append(int(hwnd or 0))
 
         if w_info.get("active"):
             grp["active"] = True
@@ -268,7 +435,9 @@ def group_by_app(windows: list[dict]) -> list[dict]:
             if grp["active"] and grp["active_title"]
             else grp["first_title"]
         )
+        name = get_app_name(grp["exe"])
         result.append({
+            "name": name,
             "exe": grp["exe"],
             "title": title,
             "hwnds": grp["hwnds"],
@@ -325,18 +494,19 @@ def activate_or_minimize(hwnd: int) -> None:
     succeeds even when called from a background process.
     """
     try:
-        if not user32.IsWindow(hwnd):
+        target_hwnd = int(hwnd or 0)
+        if not target_hwnd or not user32.IsWindow(target_hwnd):
             return
 
-        fg_hwnd = user32.GetForegroundWindow()
-        minimized = bool(user32.IsIconic(hwnd))
+        fg_hwnd = int(user32.GetForegroundWindow() or 0)
+        minimized = bool(user32.IsIconic(target_hwnd))
 
-        if fg_hwnd == hwnd and not minimized:
-            user32.ShowWindow(hwnd, SW_MINIMIZE)
+        if fg_hwnd == target_hwnd and not minimized:
+            user32.ShowWindow(target_hwnd, SW_MINIMIZE)
             return
 
         if minimized:
-            user32.ShowWindow(hwnd, SW_RESTORE)
+            user32.ShowWindow(target_hwnd, SW_RESTORE)
 
         # Bring to foreground using ALT trick + thread input attachment
         fg_tid = user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
@@ -347,7 +517,7 @@ def activate_or_minimize(hwnd: int) -> None:
 
         try:
             user32.keybd_event(VK_MENU, 0, 0, 0)
-            user32.SetForegroundWindow(hwnd)
+            user32.SetForegroundWindow(target_hwnd)
             user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
         finally:
             if attached:
@@ -366,7 +536,11 @@ def enable_acrylic(hwnd: int, tint_argb: int = 0x50201812) -> bool:
     Returns True if successfully applied, False otherwise.
     """
     try:
-        if not user32.IsWindow(hwnd):
+        target_hwnd = int(hwnd or 0)
+        if not target_hwnd or not user32.IsWindow(target_hwnd):
+            return False
+
+        if not hasattr(user32, "SetWindowCompositionAttribute"):
             return False
 
         # Convert ARGB (0xAARRGGBB) to AABBGGRR (ABGR DWORD)
@@ -387,7 +561,7 @@ def enable_acrylic(hwnd: int, tint_argb: int = 0x50201812) -> bool:
         data.Data = ctypes.cast(ctypes.pointer(policy), ctypes.c_void_p)
         data.SizeOfData = ctypes.sizeof(policy)
 
-        ret = user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(data))
+        ret = user32.SetWindowCompositionAttribute(target_hwnd, ctypes.byref(data))
         return bool(ret)
     except Exception as e:
         _log(f"enable_acrylic error for hwnd {hwnd}: {e}")
@@ -398,31 +572,43 @@ def set_round_region(
     hwnd: int,
     w_logical: int,
     h_logical: int,
-    radius_logical: int,
-    dpr: float,
-) -> None:
+    radius_logical: int = 18,
+    dpr: float = 1.0,
+) -> bool:
     """Clip a window to a rounded rectangle region in physical pixels.
 
-    Calculates physical dimensions as int(dimension * dpr) + 1 and sets the region
-    using CreateRoundRectRgn and SetWindowRgn so acrylic blur conforms to rounded corners.
+    Calculates physical dimensions and sets the region using CreateRoundRectRgn
+    and SetWindowRgn. SetWindowRgn takes ownership of hrgn on success; hrgn
+    is deleted with DeleteObject only on failure.
     """
     try:
-        if not user32.IsWindow(hwnd):
-            return
+        target_hwnd = int(hwnd or 0)
+        if not target_hwnd or not user32.IsWindow(target_hwnd):
+            return False
 
-        w_phys = int(w_logical * dpr) + 1
-        h_phys = int(h_logical * dpr) + 1
-        r_phys = int(radius_logical * dpr)
+        w_phys = int(round(w_logical * dpr))
+        h_phys = int(round(h_logical * dpr))
+        r_phys = int(round(radius_logical * dpr))
         ellipse_w = r_phys * 2
         ellipse_h = r_phys * 2
 
         hrgn = gdi32.CreateRoundRectRgn(0, 0, w_phys, h_phys, ellipse_w, ellipse_h)
-        if hrgn:
-            success = user32.SetWindowRgn(hwnd, hrgn, True)
-            if not success:
+        if not hrgn:
+            return False
+
+        owned = False
+        try:
+            res = user32.SetWindowRgn(target_hwnd, hrgn, True)
+            if res != 0:
+                owned = True
+                return True
+            return False
+        finally:
+            if not owned:
                 gdi32.DeleteObject(hrgn)
     except Exception as e:
         _log(f"set_round_region error for hwnd {hwnd}: {e}")
+        return False
 
 
 def taskbar_autohide_get() -> bool:

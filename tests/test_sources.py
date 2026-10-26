@@ -18,6 +18,7 @@ from sources import (
     fmt_tr,
     left_text,
     reset_clock,
+    submit,
     tr_num,
 )
 
@@ -83,12 +84,12 @@ def test_store():
     assert val_stale["stale"] is True
     assert val_stale["last_error"] == "Bağlantı yok"
 
-    # Direct error when no previous good value
+    # Direct error when no previous good value (Y1 fix: must carry err + stale=True)
     store.update("fx", {"err": "Bağlantı yok"})
     fx_val = store.get("fx")
     assert fx_val is not None
     assert fx_val.get("err") == "Bağlantı yok"
-    assert fx_val.get("stale") is False
+    assert fx_val.get("stale") is True
 
     print("ALL STORE ASSERTIONS PASSED")
 
@@ -120,7 +121,59 @@ def test_live_fetches():
     print("\nREFRESH config:", REFRESH)
 
 
+def test_type_validation():
+    # Test tr_num invalid/safe
+    assert tr_num(None) == 0.0
+    assert tr_num("nan") == 0.0
+    assert tr_num("inf") == 0.0
+    assert tr_num("invalid_string") == 0.0
+
+    # Test Store with initial error (Y1)
+    s = Store()
+    s.update("k1", {"err": "first_fail"})
+    res = s.get("k1")
+    assert res is not None
+    assert res.get("err") == "first_fail"
+    assert res.get("stale") is True
+    assert res.get("last_error") == "first_fail"
+
+    print("ALL TYPE VALIDATION AND Y1 ASSERTIONS PASSED")
+
+
+def test_submit_pool():
+    import time
+
+    def slow_task():
+        time.sleep(0.15)
+        return {"done": 1}
+
+    results = []
+    # Submit first task
+    s1 = submit("test_key", slow_task, lambda k, r: results.append((k, r)))
+    assert s1 is True
+
+    # In flight -> second submission for same key must be skipped
+    s2 = submit("test_key", slow_task, lambda k, r: results.append((k, r)))
+    assert s2 is False
+
+    # Wait for completion
+    time.sleep(0.25)
+    assert len(results) == 1
+    assert results[0] == ("test_key", {"done": 1})
+
+    # Key is now free again
+    s3 = submit("test_key", lambda: {"done": 2}, lambda k, r: results.append((k, r)))
+    assert s3 is True
+    time.sleep(0.05)
+    assert len(results) == 2
+    assert results[1] == ("test_key", {"done": 2})
+
+    print("ALL SUBMIT POOL ASSERTIONS PASSED")
+
+
 if __name__ == "__main__":
     test_helpers()
     test_store()
+    test_type_validation()
+    test_submit_pool()
     test_live_fetches()

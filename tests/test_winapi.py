@@ -30,9 +30,16 @@ def main() -> None:
     print(f"group_by_app() count: {len(groups)}")
     for idx, g in enumerate(groups[:5], 1):
         print(
-            f"  [{idx}] exe: {g['exe']!r} | count: {g['count']} "
+            f"  [{idx}] name: {g.get('name')!r} | exe: {g['exe']!r} | count: {g['count']} "
             f"| active: {g['active']} | title: {g['title']!r}"
         )
+        assert "name" in g
+        assert bool(g["name"])  # never empty
+
+    # Fallback and caching tests for get_app_name
+    assert winapi.get_app_name("") == "App"
+    assert winapi.get_app_name("unknown") == "Unknown"
+    assert winapi.get_app_name(r"C:\Windows\explorer.exe") == "Windows Explorer"
 
     # 3. app_icon() for first 3 exes
     print("app_icon() results:")
