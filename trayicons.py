@@ -678,7 +678,7 @@ def draw_tray_panel(
             else:
                 display_text = title_text
         else:
-            display_text = f"Notification Area ({len(items)} active)"
+            display_text = f"Gizli simgeler ({len(items)})"
 
         # Render Header text
         header_font = QFont("Segoe UI Variable Display, Segoe UI, sans-serif")
