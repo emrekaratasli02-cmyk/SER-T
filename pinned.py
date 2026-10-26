@@ -32,15 +32,17 @@ import theme
 import winapi
 
 # ==============================================================================
-# 1. GEOMETRY & DIMENSION TOKENS
+# 1. GEOMETRY & DIMENSION TOKENS (dock v3: cell 44x46, icon 32x32, gap 4)
 # ==============================================================================
 
-TILE: float = 46.0
-ICON: float = 30.0
-TILE_SIZE: float = 46.0
-ICON_SIZE: float = 30.0
-TILE_RADIUS: float = 12.0
-GAP: float = 6.0
+TILE_WIDTH: float = 44.0
+TILE_HEIGHT: float = 46.0
+TILE: float = 44.0
+ICON: float = 32.0
+TILE_SIZE: float = 44.0
+ICON_SIZE: float = 32.0
+TILE_RADIUS: float = 11.0
+GAP: float = 4.0
 BORDER_WIDTH: float = 1.0
 
 # Bubble tooltip tokens
@@ -50,13 +52,13 @@ BUBBLE_PAD_H: float = 10.0
 BUBBLE_FONT_SIZE: float = 11.0
 BUBBLE_GAP: float = 6.0
 
-# Indicator tokens (matching theme.py metrics)
+# Indicator tokens (matching theme.py metrics: running dot 4x4 white 85% centred 2px from cell bottom)
 INDICATOR_ACTIVE_W: float = 12.0
 INDICATOR_ACTIVE_H: float = 3.0
 INDICATOR_ACTIVE_R: float = 1.5
 INDICATOR_DOT_SIZE: float = 4.0
 INDICATOR_DOT_SPACING: float = 3.5
-INDICATOR_GAP: float = 3.5
+INDICATOR_GAP: float = 2.0
 
 # ==============================================================================
 # 2. COLOR & MATERIAL TOKENS
@@ -314,15 +316,13 @@ def draw_tile(
     dot_count: Optional[int] = None,
     indicator_y: Optional[float] = None,
 ) -> None:
-    """Draw a 46x46 dark rounded square application tile with crisp icon and indicator.
+    """Draw a 44x46 cell application tile with crisp 32x32 icon and running dot.
 
-    Specifications:
-      - 46x46 dark rounded square (radius 12, fill rgba(255,255,255,0.07) + 1px rgba(255,255,255,0.10) border, hover brightens to 0.13)
-      - Icon 30 logical px crisp via theme.draw_icon_crisp
-      - Indicators under the tile:
-          active = pill
-          running = up to 3 dots (count)
-          pinned-not-running = nothing
+    Specifications (dock v3):
+      - Cell 44x46, icon 32x32, 4px gap
+      - Hover fill rgba(255,255,255,0.09) radius 11
+      - Icon lift -2px scale 1.10
+      - Running dot 4x4 white 85% centred 2px from cell bottom
     """
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
@@ -332,29 +332,29 @@ def draw_tile(
     cx = rect.center().x()
     cy = rect.center().y()
 
-    # Draw rounded tile square and icon, applying press_scale if active
-    p.save()
-    if press_scale != 1.0:
-        p.translate(cx, cy)
-        p.scale(press_scale, press_scale)
-        p.translate(-cx, -cy)
-
-    # 1. Hover/press highlight only - idle icons float cleanly on the glass without rigid dark square boxes
+    # Draw rounded tile hover fill
     if eff_hover > 0.0:
         hover_bg = QColor(255, 255, 255, int(255 * 0.09 * eff_hover))
-        hover_border = QColor(255, 255, 255, int(255 * 0.16 * eff_hover))
-        tile_path = theme.rounded_path(rect, 16.0)
+        tile_path = theme.rounded_path(rect, TILE_RADIUS)
         p.fillPath(tile_path, hover_bg)
-        border_rect = rect.adjusted(0.5, 0.5, -0.5, -0.5)
-        p.setPen(QPen(hover_border, BORDER_WIDTH))
-        p.setBrush(Qt.NoBrush)
-        p.drawPath(theme.rounded_path(border_rect, 15.5))
 
-    # 4. Icon (32 logical px centered, floating directly on glass)
+    # Draw icon with lift and scale
+    p.save()
+    # Smooth lift: -2px * eff_hover, scale: 1.0 + 0.10 * eff_hover
+    lift_y = -2.0 * eff_hover
+    scale_hover = 1.0 + 0.10 * eff_hover
+    tot_scale = press_scale * scale_hover
+
+    p.translate(cx, cy + lift_y)
+    if tot_scale != 1.0:
+        p.scale(tot_scale, tot_scale)
+    p.translate(-cx, -(cy + lift_y))
+
+    # Icon (32 logical px centered)
     ICON_SIZE_RENDER = 32.0
     icon_rect = QRectF(
-        rect.x() + (rect.width() - ICON_SIZE_RENDER) / 2.0,
-        rect.y() + (rect.height() - ICON_SIZE_RENDER) / 2.0,
+        cx - ICON_SIZE_RENDER / 2.0,
+        cy + lift_y - ICON_SIZE_RENDER / 2.0,
         ICON_SIZE_RENDER,
         ICON_SIZE_RENDER,
     )
@@ -371,15 +371,15 @@ def draw_tile(
 
     p.restore()
 
-    # 5. Indicators under the tile
-    ind_y = indicator_y if indicator_y is not None else (rect.bottom() + INDICATOR_GAP)
+    # 5. Indicators under the tile (centred 2px from cell bottom: y = rect.bottom() - 2.0 - 2.0 = rect.bottom() - 4.0)
+    ind_y = indicator_y if indicator_y is not None else (rect.bottom() - 4.0)
 
     is_running = bool(tile.get("running", False)) or (dot_count is not None and dot_count > 0)
     is_active = bool(tile.get("active", False))
-    cnt = dot_count if dot_count is not None else int(tile.get("count", 1) or 1)
 
     if is_running:
         if is_active:
+            # Active indicator pill or white 85% dot
             theme.draw_app_indicator(
                 p,
                 center_x=cx,
@@ -390,16 +390,10 @@ def draw_tile(
                 is_active=True,
             )
         else:
-            dots = min(3, max(1, cnt))
-            if dots == 1:
-                theme.draw_app_indicator(p, center_x=cx, center_y=ind_y, is_active=False)
-            elif dots == 2:
-                theme.draw_app_indicator(p, center_x=cx - INDICATOR_DOT_SPACING, center_y=ind_y, is_active=False)
-                theme.draw_app_indicator(p, center_x=cx + INDICATOR_DOT_SPACING, center_y=ind_y, is_active=False)
-            elif dots >= 3:
-                theme.draw_app_indicator(p, center_x=cx - 6.0, center_y=ind_y, is_active=False)
-                theme.draw_app_indicator(p, center_x=cx, center_y=ind_y, is_active=False)
-                theme.draw_app_indicator(p, center_x=cx + 6.0, center_y=ind_y, is_active=False)
+            # 4x4 white 85% running dot
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, int(255 * 0.85)))
+            p.drawEllipse(QPointF(cx, ind_y), 2.0, 2.0)
 
     p.restore()
 

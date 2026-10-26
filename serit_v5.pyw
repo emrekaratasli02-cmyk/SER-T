@@ -9,6 +9,7 @@ and media.py (volume slider popover, media keys & now-playing detection).
 from __future__ import annotations
 
 import atexit
+import ctypes
 import datetime as dt
 import json
 import math
@@ -48,12 +49,12 @@ from PySide6.QtWidgets import QApplication, QMenu, QToolTip, QWidget
 
 import alerts
 import anim
+import dock_cards
 import media
 import pinned
 import popover_v2
 import sources
 import theme
-import tray
 import trayicons
 import winapi
 
@@ -70,22 +71,27 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "city": "Aksaray",
     "pinned": None,
     "alerts_enabled": True,
+    "reserve_space": True,
+    "cards": {
+        "sys": False,
+        "fx": False,
+        "cal": True,
+    },
 }
 
-# Dimension Tokens for v5
+# Dimension Tokens for v5 / dock v3
 DOCK_HEIGHT: float = 64.0
-DOCK_RADIUS: float = 32.0
-CHIP_HEIGHT: float = 40.0
-CHIP_Y: float = 12.0
-SEP_HEIGHT: float = 24.0
-SEP_Y: float = 20.0
-RY: float = 32.0
-TILE_Y: float = 7.0
-IND_Y: float = 56.5
-VOL_CHIP_WIDTH: float = 76.0
-MEDIA_CHIP_WIDTH: float = 204.0
-TRAY_BTN_WIDTH: float = 30.0
-TRAY_BTN_HEIGHT: float = 36.0
+DOCK_RADIUS: float = 20.0
+CARD_HEIGHT: float = 52.0
+CARD_RADIUS: float = 13.0
+CARD_Y: float = 6.0
+GAP_MODULE: float = 6.0
+CLAUDE_CARD_WIDTH: float = 182.0
+MEDIA_CARD_WIDTH: float = 314.0
+SYS_CARD_WIDTH: float = 166.0
+MARKET_CARD_WIDTH: float = 160.0
+CLOCK_BLOCK_WIDTH: float = 70.0
+TRAY_COLUMN_WIDTH: float = 32.0
 
 TR_DAYS = {0: "Pzt", 1: "Sal", 2: "Çar", 3: "Per", 4: "Cum", 5: "Cmt", 6: "Paz"}
 _LAST_PAINT_ERROR_LOG: float = 0.0
@@ -629,6 +635,21 @@ class SeritDock(QWidget):
         self.tray_popover = TrayPopover()
         self.bubble = BubbleWidget(self)
 
+        # Calendar Panel contract
+        self.cal_panel = None
+        try:
+            import calendar_panel
+            self.cal_panel = calendar_panel.CalendarPanel()
+            if hasattr(self.cal_panel, "refresh_requested"):
+                self.cal_panel.refresh_requested.connect(self._on_cal_refresh_requested)
+        except (ImportError, Exception) as exc:
+            sources.log_err("cal_panel_init", exc)
+            self.cal_panel = None
+
+        # AppBar registered state
+        self._appbar_registered: bool = False
+        self._appbar_bottom_logical: Optional[int] = None
+
         # Proactive alerts engine & toast manager (normal mode only)
         alerts_enabled = bool(self.settings.get("alerts_enabled", True))
         if not self.preview_mode:
@@ -669,6 +690,96 @@ class SeritDock(QWidget):
             self.anim_ram.value = ram
             self.anim_ram.target_val = ram
 
+    def _on_cal_refresh_requested(self) -> None:
+        self.submit_fetch("cal")
+        self.submit_fetch("calmonth")
+
+    def _register_appbar(self) -> bool:
+        if self.preview_mode or not bool(self.settings.get("reserve_space", True)):
+            return False
+        hwnd = int(self.winId())
+        if not hwnd:
+            return False
+        try:
+            shell32 = ctypes.windll.shell32
+            # ABM_NEW = 0, ABE_BOTTOM = 3
+            # APPBARDATA: cbSize, hWnd, uCallbackMessage, uEdge, rc (RECT), lParam
+            class _RECT(ctypes.Structure):
+                _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                            ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+            _APPBARDATA = winapi.APPBARDATA  # winapi argtypes ile aynı tip olmalı
+            abd = _APPBARDATA()
+            abd.cbSize = ctypes.sizeof(_APPBARDATA)
+            abd.hWnd = hwnd
+            abd.uCallbackMessage = 0
+            abd.uEdge = 3  # ABE_BOTTOM
+
+            if not self._appbar_registered:
+                # ABM_NEW = 0
+                res = shell32.SHAppBarMessage(0, ctypes.byref(abd))
+                if not res:
+                    return False
+                self._appbar_registered = True
+
+            # Query & set pos. SHAppBarMessage FİZİKSEL piksel ister; Qt mantıksal piksel verir
+            # (%125 ölçekte 864 mantıksal = 1080 fiziksel). Monitör dikdörtgenini doğrudan Windows'tan al.
+            class _MONITORINFO(ctypes.Structure):
+                _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", _RECT),
+                            ("rcWork", _RECT), ("dwFlags", ctypes.c_ulong)]
+            user32 = ctypes.windll.user32
+            user32.MonitorFromWindow.restype = ctypes.c_void_p
+            user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+            user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            mi = _MONITORINFO()
+            mi.cbSize = ctypes.sizeof(_MONITORINFO)
+            hmon = user32.MonitorFromWindow(ctypes.c_void_p(hwnd), 2)  # MONITOR_DEFAULTTONEAREST
+            if not hmon or not user32.GetMonitorInfoW(ctypes.c_void_p(hmon), ctypes.byref(mi)):
+                return False
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            dpr = float(screen.devicePixelRatio()) if screen else 1.0
+            appbar_h = int(round((DOCK_HEIGHT + 12 + 4) * dpr))  # dock + alt boşluk + 4 (mantıksal 80)
+
+            abd.rc.left = mi.rcMonitor.left
+            abd.rc.right = mi.rcMonitor.right
+            abd.rc.bottom = mi.rcMonitor.bottom
+            abd.rc.top = mi.rcMonitor.bottom - appbar_h
+
+            # ABM_QUERYPOS = 2
+            shell32.SHAppBarMessage(2, ctypes.byref(abd))
+            abd.rc.top = abd.rc.bottom - appbar_h
+            # ABM_SETPOS = 3
+            shell32.SHAppBarMessage(3, ctypes.byref(abd))
+            # Barın oturacağı alt kenar (mantıksal, ekran koordinatı): place_dock bunu kullanır,
+            # yoksa ayrılan alan kullanılabilir alanı küçülttüğü için bar yukarı kayardı.
+            if screen is not None:
+                sg = screen.geometry()
+                self._appbar_bottom_logical = sg.top() + int(round((abd.rc.bottom - mi.rcMonitor.top) / dpr)) - 1
+            return True
+        except Exception as exc:
+            sources.log_err("register_appbar", exc)
+            return False
+
+    def _unregister_appbar(self) -> None:
+        if not self._appbar_registered or self.preview_mode:
+            return
+        hwnd = int(self.winId() or 0)
+        if not hwnd:
+            return
+        try:
+            shell32 = ctypes.windll.shell32
+            class _RECT(ctypes.Structure):
+                _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                            ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+            _APPBARDATA = winapi.APPBARDATA  # winapi argtypes ile aynı tip olmalı
+            abd = _APPBARDATA()
+            abd.cbSize = ctypes.sizeof(_APPBARDATA)
+            abd.hWnd = hwnd
+            # ABM_REMOVE = 1
+            shell32.SHAppBarMessage(1, ctypes.byref(abd))
+            self._appbar_registered = False
+        except Exception as exc:
+            sources.log_err("unregister_appbar", exc)
+
     def start(self) -> None:
         """Start dock in normal mode with K3 taskbar safety check."""
         if self.settings.get("hide_taskbar", False):
@@ -686,6 +797,8 @@ class SeritDock(QWidget):
         winapi.enable_acrylic(int(self.winId()), 0x50181612)
         winapi.set_round_region(int(self.winId()), self.width(), int(DOCK_HEIGHT), int(DOCK_RADIUS), dpr)
 
+        self._register_appbar()
+
         wh = self.windowHandle()
         if wh is not None:
             wh.screenChanged.connect(self._on_screen_changed)
@@ -694,7 +807,7 @@ class SeritDock(QWidget):
         # bar o anda yerleşirse dipte değil, eski görev çubuğunun üstünde kalıyordu.
         scr = self.screen() or QGuiApplication.primaryScreen()
         if scr is not None:
-            scr.availableGeometryChanged.connect(lambda _g: self.place_dock())
+            scr.availableGeometryChanged.connect(lambda _g: (self.place_dock(), self._register_appbar()))
         for ms in (400, 1200, 3000):
             QTimer.singleShot(ms, self.place_dock)
 
@@ -702,6 +815,7 @@ class SeritDock(QWidget):
         dpr = screen.devicePixelRatio() if screen else 1.25
         winapi.set_round_region(int(self.winId()), self.width(), int(DOCK_HEIGHT), int(DOCK_RADIUS), dpr)
         self.place_dock()
+        self._register_appbar()
         self.update()
 
     def changeEvent(self, event: QEvent) -> None:
@@ -714,6 +828,7 @@ class SeritDock(QWidget):
         if self._cleaned_up:
             return
         self._cleaned_up = True
+        self._unregister_appbar()
         if self.settings.get("hide_taskbar", False):
             orig = self.settings.get("taskbar_original")
             if orig is not None:
@@ -738,6 +853,13 @@ class SeritDock(QWidget):
             timer.timeout.connect(lambda k=key: self.submit_fetch(k))
             timer.start()
             self.submit_fetch(key)
+
+        # Calmonth fetch timer (every 60 s + at start)
+        self.calmonth_timer = QTimer(self)
+        self.calmonth_timer.setInterval(60000)
+        self.calmonth_timer.timeout.connect(lambda: self.submit_fetch("calmonth"))
+        self.calmonth_timer.start()
+        self.submit_fetch("calmonth")
 
         # Open windows polling timer (1.5 s)
         self.win_timer = QTimer(self)
@@ -797,6 +919,7 @@ class SeritDock(QWidget):
             ),
             "sys": sources.fetch_system,
             "cal": sources.fetch_calendar,
+            "calmonth": getattr(sources, "fetch_month_calendar", None),
             "media": sources.fetch_media,
             "top": lambda: popover_v2.top_processes(3),
             "tray": trayicons.list_tray_items,
@@ -806,7 +929,7 @@ class SeritDock(QWidget):
             sources.submit(key, fn, lambda k, res: self.dispatcher.data_ready.emit(k, res))
 
     def on_data_ready(self, key: str, res: Any) -> None:
-        if isinstance(res, dict) and "err" in res:
+        if isinstance(res, dict) and res.get("err"):
             sources.log_err(key, RuntimeError(str(res.get("err"))))
         self.store.update(key, res)
 
@@ -928,7 +1051,12 @@ class SeritDock(QWidget):
 
     def place_dock(self) -> None:
         screen = self.screen() or QGuiApplication.primaryScreen()
-        geom = screen.availableGeometry() if screen else QRect(0, 0, 1536, 864)
+        geom = QRect(screen.availableGeometry()) if screen else QRect(0, 0, 1536, 864)
+        # Bar kendine alan ayırdıysa (AppBar) kullanılabilir alan barın ÜSTÜNDE biter;
+        # bar o ayrılan şeridin içinde, ekranın dibinde durmalı.
+        ab_bottom = getattr(self, "_appbar_bottom_logical", None)
+        if getattr(self, "_appbar_registered", False) and ab_bottom is not None:
+            geom.setBottom(int(ab_bottom))
         pos = self.settings.get("pos")
 
         if pos and len(pos) == 2:
@@ -955,78 +1083,53 @@ class SeritDock(QWidget):
             self.move(new_x, self.y())
 
     def compute_layout_and_resize(self, initial: bool = False) -> None:
-        """Computes pixel-precise layout with symmetrical padding and animates dock width."""
-        fm_lbl = QFontMetricsF(self.f_lbl)
-        fm_val = QFontMetricsF(self.f_val)
-        fm_clock = QFontMetricsF(self.f_clock_time)
+        """Computes pixel-precise layout for dock v3 cards and animates dock width."""
+        cards_cfg = dict(self.settings.get("cards") or {})
+        show_cal = cards_cfg.get("cal", True)
+        show_sys = cards_cfg.get("sys", False)
+        show_fx = cards_cfg.get("fx", False)
 
-        # 1. Claude Oturum
-        c_entry = self.store.get("claude") or {}
-        s_reset = c_entry.get("session_reset", "")
-        s_left = sources.left_text(s_reset) if (s_reset and isinstance(s_reset, str)) else "--"
-        if "err" in c_entry and not s_reset:
-            s_left = "–"
-        w_s_text = max(fm_lbl.horizontalAdvance("Oturum"), fm_val.horizontalAdvance(s_left))
-        self._w_chip_s = theme.CHIP_PAD_X * 2 + theme.RING_SIZE + 7.0 + w_s_text
+        # Items list
+        items: List[float] = []
 
-        # 2. Claude Hafta
-        w_reset = c_entry.get("week_reset", "")
-        w_left = sources.left_text(w_reset) if (w_reset and isinstance(w_reset, str)) else "--"
-        if "err" in c_entry and not w_reset:
-            w_left = "–"
-        w_w_text = max(fm_lbl.horizontalAdvance("Hafta"), fm_val.horizontalAdvance(w_left))
-        self._w_chip_w = theme.CHIP_PAD_X * 2 + theme.RING_SIZE + 7.0 + w_w_text
+        # 1. Claude Card: 182px
+        items.append(CLAUDE_CARD_WIDTH)
 
-        # 3. Separator 1
-        w_sep1 = theme.GAP_SEPARATOR * 2 + theme.SEP_WIDTH
-
-        # 4. Apps (pinned + running merged tiles via pinned.TILE = 46px)
+        # 2. Apps Group: N tiles * 44 + (N-1) * 4
         n_tiles = len(self.tiles)
-        w_tiles = (n_tiles * pinned.TILE + max(0, n_tiles - 1) * pinned.GAP) if n_tiles > 0 else 0.0
+        w_apps = (n_tiles * pinned.TILE_WIDTH + max(0, n_tiles - 1) * pinned.GAP) if n_tiles > 0 else 0.0
+        if w_apps > 0:
+            items.append(w_apps)
 
-        # 5. Separator 2 (only if tiles > 0)
-        w_sep2 = (theme.GAP_SEPARATOR * 2 + theme.SEP_WIDTH) if n_tiles > 0 else 0.0
-
-        # 6. Telemetry chip
-        w_sys = 90.0
-
-        # 7. Volume chip
-        w_vol = VOL_CHIP_WIDTH
-
-        # 8. Media chip (only if now_playing returns something)
-        has_media = bool(self._now_playing_info)
-
-        # 9. Separator 3
-        w_sep3 = theme.GAP_SEPARATOR * 2 + theme.SEP_WIDTH
-
-        # 10. Weather
-        wx_entry = self.store.get("wx") or {}
-        desc = str(wx_entry.get("desc") or "Yükleniyor")
-        temp = safe_float(wx_entry.get("temp"), None)
-        temp_str = f"{int(round(temp))}°" if temp is not None else "–°"
-        w_wx_text = max(fm_lbl.horizontalAdvance(desc), fm_val.horizontalAdvance(temp_str))
-        w_wx = theme.CHIP_PAD_X * 2 + 22.0 + 7.0 + w_wx_text
-
-        # 11. Clock
-        now = dt.datetime.now(sources.LOCAL_TZ)
-        time_str = now.strftime("%H:%M")
-        date_str = f"{TR_DAYS.get(now.weekday(), '')} {now.day} {sources.TR_MONTHS.get(now.month, '')}"
-        w_clock_text = max(fm_clock.horizontalAdvance(time_str), fm_lbl.horizontalAdvance(date_str))
-        w_clock = theme.CHIP_PAD_X * 2 + w_clock_text
-
-        # 12. Tray Chevron Button
-        w_tray = TRAY_BTN_WIDTH
-
-        # Total dock capsule width
-        items = [self._w_chip_s, theme.GAP_MODULE, self._w_chip_w, w_sep1]
-        if n_tiles > 0:
-            items.extend([w_tiles, w_sep2])
-        items.extend([w_sys, theme.GAP_MODULE, w_vol])
+        # 3. Media Card: 314px (only if now_playing has title)
+        has_media = bool(self._now_playing_info and self._now_playing_info.get("title"))
         if has_media:
-            items.extend([theme.GAP_MODULE, MEDIA_CHIP_WIDTH])
-        items.extend([w_sep3, w_wx, theme.GAP_MODULE, w_clock, theme.GAP_MODULE, w_tray])
+            items.append(MEDIA_CARD_WIDTH)
 
-        total_w = int(math.ceil(theme.DOCK_PAD_X * 2 + sum(items)))
+        # 4. System Card (optional): 166px
+        if show_sys:
+            items.append(SYS_CARD_WIDTH)
+
+        # 5. Market Card (optional): 160px
+        if show_fx:
+            items.append(MARKET_CARD_WIDTH)
+
+        # 6. Calendar Card: dynamic measured width
+        if show_cal:
+            cal_data = self.store.get("cal") or {}
+            w_cal = dock_cards.measure_calendar_card_width(cal_data)
+            items.append(w_cal)
+
+        # 7. Clock Block: 70px
+        items.append(CLOCK_BLOCK_WIDTH)
+
+        # 8. Tray Column: 32px
+        items.append(TRAY_COLUMN_WIDTH)
+
+        # Symmetrical padding: 6px on left and right, 6px between items
+        n_items = len(items)
+        inner_gaps = max(0, n_items - 1) * GAP_MODULE
+        total_w = int(math.ceil(6.0 * 2.0 + sum(items) + inner_gaps))
 
         if initial or self.preview_mode or not self.isVisible():
             self.resize(total_w, int(DOCK_HEIGHT))
@@ -1055,184 +1158,41 @@ class SeritDock(QWidget):
         p.setRenderHint(QPainter.TextAntialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
 
-        # 1. Physical Glass Capsule with Specular Rim & Grain
+        # 1. Physical Glass Capsule with Specular Rim & Grain (cached QPixmap)
         r_dock = QRectF(0.5, 0.5, self.width() - 1.0, DOCK_HEIGHT - 1.0)
-        theme.draw_glass_capsule(p, r_dock, radius=(DOCK_HEIGHT - 1.0) / 2.0)
+        theme.draw_glass_capsule(p, r_dock, radius=DOCK_RADIUS)
 
         self.hit_boxes.clear()
-        x = theme.DOCK_PAD_X
-        ry = RY
+        x = 6.0  # inner padding 6px
+        card_y = CARD_Y  # 6px from top
+        card_h = CARD_HEIGHT  # 52px
 
-        # Data & opacities
+        cards_cfg = dict(self.settings.get("cards") or {})
+        show_cal = cards_cfg.get("cal", True)
+        show_sys = cards_cfg.get("sys", False)
+        show_fx = cards_cfg.get("fx", False)
+
+        # 1. Claude Card (182x52)
+        r_claude = QRectF(x, card_y, CLAUDE_CARD_WIDTH, card_h)
+        self.hit_boxes.append((r_claude, "claude", None))
+        c_hover = self._hover_key == "claude"
+        c_press = self.press_tween.scale if (self._pressed_key == "claude") else 1.0
         c_entry = self.store.get("claude") or {}
-        c_err = ("err" in c_entry) or (
-            c_entry.get("session") is None and c_entry.get("week") is None and "session_reset" not in c_entry
-        )
-        s_pct = safe_float(c_entry.get("session"), None)
-        s_reset = c_entry.get("session_reset", "")
-        s_left = sources.left_text(s_reset) if (s_reset and isinstance(s_reset, str)) else ("–" if c_err else "--")
+        dock_cards.draw_claude_card(p, r_claude, c_entry, hover=c_hover, press_scale=c_press)
+        x += CLAUDE_CARD_WIDTH + GAP_MODULE
 
-        fm_lbl = QFontMetricsF(self.f_lbl)
-        fm_val = QFontMetricsF(self.f_val)
-        fm_clock = QFontMetricsF(self.f_clock_time)
-
-        # A) Claude Oturum Chip
-        w_s_text = max(fm_lbl.horizontalAdvance("Oturum"), fm_val.horizontalAdvance(s_left))
-        chip_s_w = theme.CHIP_PAD_X * 2 + theme.RING_SIZE + 7.0 + w_s_text
-        r_chip_s = QRectF(x, CHIP_Y, chip_s_w, CHIP_HEIGHT)
-        self.hit_boxes.append((r_chip_s, "claude", None))
-
-        claude_op = self.anim_claude_op.value
-        p.save()
-        if self._hover_key in ("claude_s", "claude"):
-            p.fillPath(theme.rounded_path(r_chip_s, theme.CHIP_RADIUS), theme.COLOR_CHIP_HOVER)
-
-        if self._pressed_key in ("claude_s", "claude") and self.press_tween.scale != 1.0:
-            ps = self.press_tween.scale
-            pc = r_chip_s.center()
-            p.translate(pc)
-            p.scale(ps, ps)
-            p.translate(-pc)
-
-        rx = x + theme.CHIP_PAD_X + theme.RING_SIZE / 2.0
-        if c_err or s_pct is None:
-            theme.draw_ring_gauge(
-                p,
-                QPointF(rx, ry),
-                size=theme.RING_SIZE,
-                stroke=theme.RING_STROKE,
-                value_0_100=0.0,
-                text="–",
-                colour=theme.COLOR_CLAUDE_SESSION,
-                opacity=claude_op,
-            )
-            p.setFont(self.f_lbl)
-            p.setPen(theme.COLOR_ALERT_WARN)
-            p.drawText(
-                QRectF(rx + theme.RING_SIZE / 2.0 + 7.0, CHIP_Y + 3.0, w_s_text + 4.0, 12.0),
-                Qt.AlignLeft | Qt.AlignVCenter,
-                "Oturum",
-            )
-            p.setFont(self.f_val)
-            p.setPen(theme.COLOR_TEXT_MUTED)
-            p.drawText(
-                QRectF(rx + theme.RING_SIZE / 2.0 + 7.0, CHIP_Y + 16.0, w_s_text + 4.0, 16.0),
-                Qt.AlignLeft | Qt.AlignVCenter,
-                s_left,
-            )
-        else:
-            val_disp = self.anim_claude_s.value if not self.preview_mode else s_pct
-            theme.draw_ring_gauge(
-                p,
-                QPointF(rx, ry),
-                size=theme.RING_SIZE,
-                stroke=theme.RING_STROKE,
-                value_0_100=val_disp,
-                colour=theme.COLOR_CLAUDE_SESSION,
-                opacity=claude_op,
-            )
-            theme.draw_chip_text(
-                p,
-                rx + theme.RING_SIZE / 2.0 + 7.0,
-                y=CHIP_Y - 8.0,
-                label="Oturum",
-                value=s_left,
-                label_w=w_s_text,
-                value_w=w_s_text,
-                opacity=claude_op,
-            )
-        p.restore()
-
-        x += chip_s_w + theme.GAP_MODULE
-
-        # B) Claude Hafta Chip
-        w_pct = safe_float(c_entry.get("week"), None)
-        w_reset = c_entry.get("week_reset", "")
-        w_left = sources.left_text(w_reset) if (w_reset and isinstance(w_reset, str)) else ("–" if c_err else "--")
-
-        w_w_text = max(fm_lbl.horizontalAdvance("Hafta"), fm_val.horizontalAdvance(w_left))
-        chip_w_w = theme.CHIP_PAD_X * 2 + theme.RING_SIZE + 7.0 + w_w_text
-        r_chip_w = QRectF(x, CHIP_Y, chip_w_w, CHIP_HEIGHT)
-        self.hit_boxes.append((r_chip_w, "claude", None))
-
-        p.save()
-        if self._hover_key in ("claude_w", "claude"):
-            p.fillPath(theme.rounded_path(r_chip_w, theme.CHIP_RADIUS), theme.COLOR_CHIP_HOVER)
-
-        if self._pressed_key in ("claude_w", "claude") and self.press_tween.scale != 1.0:
-            ps = self.press_tween.scale
-            pc = r_chip_w.center()
-            p.translate(pc)
-            p.scale(ps, ps)
-            p.translate(-pc)
-
-        rx = x + theme.CHIP_PAD_X + theme.RING_SIZE / 2.0
-        if c_err or w_pct is None:
-            theme.draw_ring_gauge(
-                p,
-                QPointF(rx, ry),
-                size=theme.RING_SIZE,
-                stroke=theme.RING_STROKE,
-                value_0_100=0.0,
-                text="–",
-                colour=theme.COLOR_CLAUDE_WEEK,
-                opacity=claude_op,
-            )
-            p.setFont(self.f_lbl)
-            p.setPen(theme.COLOR_ALERT_WARN)
-            p.drawText(
-                QRectF(rx + theme.RING_SIZE / 2.0 + 7.0, CHIP_Y + 3.0, w_w_text + 4.0, 12.0),
-                Qt.AlignLeft | Qt.AlignVCenter,
-                "Hafta",
-            )
-            p.setFont(self.f_val)
-            p.setPen(theme.COLOR_TEXT_MUTED)
-            p.drawText(
-                QRectF(rx + theme.RING_SIZE / 2.0 + 7.0, CHIP_Y + 16.0, w_w_text + 4.0, 16.0),
-                Qt.AlignLeft | Qt.AlignVCenter,
-                w_left,
-            )
-        else:
-            val_disp = self.anim_claude_w.value if not self.preview_mode else w_pct
-            theme.draw_ring_gauge(
-                p,
-                QPointF(rx, ry),
-                size=theme.RING_SIZE,
-                stroke=theme.RING_STROKE,
-                value_0_100=val_disp,
-                colour=theme.COLOR_CLAUDE_WEEK,
-                opacity=claude_op,
-            )
-            theme.draw_chip_text(
-                p,
-                rx + theme.RING_SIZE / 2.0 + 7.0,
-                y=CHIP_Y - 8.0,
-                label="Hafta",
-                value=w_left,
-                label_w=w_w_text,
-                value_w=w_w_text,
-                opacity=claude_op,
-            )
-        p.restore()
-
-        x += chip_w_w + theme.GAP_SEPARATOR
-
-        # C) Separator 1
-        theme.draw_separator(p, x, y=SEP_Y, height=SEP_HEIGHT)
-        x += theme.SEP_WIDTH + theme.GAP_SEPARATOR
-
-        # D) Apps Strip (Pinned + Running Tiles via pinned.draw_tile, 46px)
+        # 2. Apps Group (44x46 cells, 4px gap, vertically centered at 52px slot)
         n_tiles = len(self.tiles)
         hover_idx = self._preview_hover_idx if self._preview_hover_idx is not None else self._hover_app_idx
         scales_lifts = anim.HoverMagnifier.compute_for_index(n_tiles, hover_idx)
 
         self._tile_centers = []
         self._tile_rects = []
-        active_idx = next((i for i, t in enumerate(self.tiles) if t.get("active")), None)
+        tile_y = card_y + (card_h - pinned.TILE_HEIGHT) / 2.0  # 6 + (52-46)/2 = 9.0
 
         for i, t in enumerate(self.tiles):
-            tile_x = x + i * (pinned.TILE + pinned.GAP)
-            r_slot = QRectF(tile_x, TILE_Y, pinned.TILE, pinned.TILE)
+            tile_x = x + i * (pinned.TILE_WIDTH + pinned.GAP)
+            r_slot = QRectF(tile_x, tile_y, pinned.TILE_WIDTH, pinned.TILE_HEIGHT)
             self._tile_rects.append(r_slot)
             self._tile_centers.append(r_slot.center().x())
 
@@ -1248,258 +1208,93 @@ class SeritDock(QWidget):
                 press_scale = self.press_tween.scale
 
             pix = self.get_app_icon(t.get("exe", ""))
-
             r_draw = QRectF(r_slot.x(), r_slot.y() + lift_y, r_slot.width(), r_slot.height())
-
-            t_draw = dict(t)
-            is_active = bool(t.get("active", False))
-            if is_active:
-                t_draw["active"] = False
 
             pinned.draw_tile(
                 p=p,
                 rect=r_draw,
-                tile=t_draw,
+                tile=t,
                 pixmap=pix,
                 hover_t=hover_t,
                 press_scale=press_scale * scale,
                 dot_count=t.get("count"),
-                indicator_y=IND_Y,
+                indicator_y=r_slot.bottom() - 4.0,
             )
-
-        # Draw gliding active indicator pill
-        if active_idx is not None and self._tile_centers and active_idx < len(self._tile_centers):
-            pill_cx = (
-                self.anim_pill_x.value
-                if (not self.preview_mode and self.anim_pill_opacity.value > 0.01)
-                else self._tile_centers[active_idx]
-            )
-            op = self.anim_pill_opacity.value if not self.preview_mode else 1.0
-            if op > 0.01:
-                p.save()
-                p.setOpacity(op)
-                theme.draw_app_indicator(
-                    p,
-                    center_x=pill_cx,
-                    center_y=IND_Y,
-                    width=theme.INDICATOR_ACTIVE_W,
-                    height=theme.INDICATOR_ACTIVE_H,
-                    radius=theme.INDICATOR_ACTIVE_R,
-                    is_active=True,
-                )
-                p.restore()
 
         if n_tiles > 0:
-            x += n_tiles * pinned.TILE + (n_tiles - 1) * pinned.GAP
-            x += theme.GAP_SEPARATOR
-            theme.draw_separator(p, x, y=SEP_Y, height=SEP_HEIGHT)
-            x += theme.SEP_WIDTH + theme.GAP_SEPARATOR
+            w_apps = n_tiles * pinned.TILE_WIDTH + (n_tiles - 1) * pinned.GAP
+            x += w_apps + GAP_MODULE
 
-        # E) Hardware Telemetry Chip (CPU & RAM)
-        sys_entry = self.store.get("sys") or {}
-        sys_err = ("err" in sys_entry) or (sys_entry.get("cpu") is None and sys_entry.get("ram") is None)
-        cpu_val = safe_float(sys_entry.get("cpu"), None)
-        ram_val = safe_float(sys_entry.get("ram"), None)
-
-        chip_sys_w = 90.0
-        r_chip_sys = QRectF(x, CHIP_Y, chip_sys_w, CHIP_HEIGHT)
-        self.hit_boxes.append((r_chip_sys, "sys", None))
-
-        sys_op = self.anim_sys_op.value
-        p.save()
-        if self._hover_key == "sys":
-            p.fillPath(theme.rounded_path(r_chip_sys, theme.CHIP_RADIUS), theme.COLOR_CHIP_HOVER)
-
-        if self._pressed_key == "sys" and self.press_tween.scale != 1.0:
-            ps = self.press_tween.scale
-            pc = r_chip_sys.center()
-            p.translate(pc)
-            p.scale(ps, ps)
-            p.translate(-pc)
-
-        rx_cpu = x + theme.CHIP_PAD_X + theme.RING_SIZE / 2.0
-        rx_ram = rx_cpu + theme.RING_SIZE + 6.0
-
-        if sys_err or cpu_val is None:
-            theme.draw_ring_gauge(
-                p,
-                QPointF(rx_cpu, ry),
-                size=theme.RING_SIZE,
-                stroke=theme.RING_STROKE,
-                value_0_100=0.0,
-                text="–",
-                colour=theme.COLOR_CPU,
-                opacity=sys_op,
+        # 3. Media Card (314x52, only if now_playing has title)
+        has_media = bool(self._now_playing_info and self._now_playing_info.get("title"))
+        if has_media:
+            r_media = QRectF(x, card_y, MEDIA_CARD_WIDTH, card_h)
+            self.hit_boxes.append((r_media, "media", self._now_playing_info))
+            m_hover = self._hover_key == "media"
+            m_press = self.press_tween.scale if (self._pressed_key == "media") else 1.0
+            m_ctrl_hover = getattr(self, "_hover_media_ctrl", None)
+            self._media_hit_rects = dock_cards.draw_media_card(
+                p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, hovered_control=m_ctrl_hover
             )
-        else:
-            cpu_disp = self.anim_cpu.value if not self.preview_mode else cpu_val
-            theme.draw_ring_gauge(
-                p,
-                QPointF(rx_cpu, ry),
-                size=theme.RING_SIZE,
-                stroke=theme.RING_STROKE,
-                value_0_100=cpu_disp,
-                colour=theme.COLOR_CPU,
-                opacity=sys_op,
-            )
+            x += MEDIA_CARD_WIDTH + GAP_MODULE
 
-        if sys_err or ram_val is None:
-            theme.draw_ring_gauge(
-                p,
-                QPointF(rx_ram, ry),
-                size=theme.RING_SIZE,
-                stroke=theme.RING_STROKE,
-                value_0_100=0.0,
-                text="–",
-                colour=theme.COLOR_RAM,
-                opacity=sys_op,
-            )
-        else:
-            ram_disp = self.anim_ram.value if not self.preview_mode else ram_val
-            theme.draw_ring_gauge(
-                p,
-                QPointF(rx_ram, ry),
-                size=theme.RING_SIZE,
-                stroke=theme.RING_STROKE,
-                value_0_100=ram_disp,
-                colour=theme.COLOR_RAM,
-                opacity=sys_op,
-            )
-        p.restore()
+        # 4. System Card (optional, 166x52)
+        if show_sys:
+            r_sys = QRectF(x, card_y, SYS_CARD_WIDTH, card_h)
+            self.hit_boxes.append((r_sys, "sys", None))
+            s_hover = self._hover_key == "sys"
+            s_press = self.press_tween.scale if (self._pressed_key == "sys") else 1.0
+            sys_entry = self.store.get("sys") or {}
+            dock_cards.draw_sys_card(p, r_sys, sys_entry, hover=s_hover, press_scale=s_press)
+            x += SYS_CARD_WIDTH + GAP_MODULE
 
-        x += chip_sys_w + theme.GAP_MODULE
+        # 5. Market Card (optional, 160x52)
+        if show_fx:
+            r_fx = QRectF(x, card_y, MARKET_CARD_WIDTH, card_h)
+            self.hit_boxes.append((r_fx, "fx", None))
+            f_hover = self._hover_key == "fx"
+            f_press = self.press_tween.scale if (self._pressed_key == "fx") else 1.0
+            fx_entry = self.store.get("fx") or {}
+            dock_cards.draw_market_card(p, r_fx, fx_entry, hover=f_hover, press_scale=f_press)
+            x += MARKET_CARD_WIDTH + GAP_MODULE
 
-        # F) Volume Chip
-        r_chip_vol = QRectF(x, CHIP_Y, VOL_CHIP_WIDTH, CHIP_HEIGHT)
-        self.hit_boxes.append((r_chip_vol, "vol", None))
-        vol_h_t = 1.0 if (self._hover_key == "vol") else 0.0
-        media.draw_volume_chip(
-            p,
-            r_chip_vol,
-            level=self._vol_level,
-            muted=self._vol_muted,
-            hover_t=vol_h_t,
-        )
-        x += VOL_CHIP_WIDTH
+        # 6. Calendar Card (dynamic width)
+        if show_cal:
+            cal_data = self.store.get("cal") or {}
+            w_cal = dock_cards.measure_calendar_card_width(cal_data)
+            r_cal = QRectF(x, card_y, w_cal, card_h)
+            self.hit_boxes.append((r_cal, "cal", None))
+            cal_hover = self._hover_key == "cal"
+            cal_press = self.press_tween.scale if (self._pressed_key == "cal") else 1.0
+            dock_cards.draw_calendar_card(p, r_cal, cal_data, hover=cal_hover, press_scale=cal_press)
+            x += w_cal + GAP_MODULE
 
-        # G) Media Chip (only when now_playing returns something)
-        if self._now_playing_info:
-            x += theme.GAP_MODULE
-            r_chip_media = QRectF(x, CHIP_Y, MEDIA_CHIP_WIDTH, CHIP_HEIGHT)
-            self.hit_boxes.append((r_chip_media, "media", self._now_playing_info))
-            med_h_t = 1.0 if (self._hover_key == "media") else 0.0
-            self._media_hit_rects = media.draw_media_chip(
-                p,
-                r_chip_media,
-                self._now_playing_info,
-                playing=bool(self._now_playing_info.get("playing", True)),
-                hover_t=med_h_t,
-            )
-            x += MEDIA_CHIP_WIDTH
+        # 7. Clock Block (70x52)
+        r_clock = QRectF(x, card_y, CLOCK_BLOCK_WIDTH, card_h)
+        self._clock_rect = r_clock
+        self.hit_boxes.append((r_clock, "clock", None))
+        clk_hover = self._hover_key == "clock"
+        clk_press = self.press_tween.scale if (self._pressed_key == "clock") else 1.0
 
-        # Separator 3
-        x += theme.GAP_SEPARATOR
-        theme.draw_separator(p, x, y=SEP_Y, height=SEP_HEIGHT)
-        x += theme.SEP_WIDTH + theme.GAP_SEPARATOR
-
-        # H) Weather Chip
         wx_entry = self.store.get("wx") or {}
-        wx_err = ("err" in wx_entry) or (wx_entry.get("temp") is None)
-        desc = str(wx_entry.get("desc") or ("Bağlantı yok" if wx_err else "Yükleniyor"))
-        temp = safe_float(wx_entry.get("temp"), None)
-        temp_str = f"{int(round(temp))}°" if temp is not None else "–°"
-        wx_icon = str(wx_entry.get("icon") or "cloud")
+        temp_val = safe_float(wx_entry.get("temp"), None)
+        temp_str = f"{int(round(temp_val))}°" if temp_val is not None else "12°"
 
-        w_wx_text = max(fm_lbl.horizontalAdvance(desc), fm_val.horizontalAdvance(temp_str))
-        chip_wx_w = theme.CHIP_PAD_X * 2 + 22.0 + 7.0 + w_wx_text
-        r_chip_wx = QRectF(x, CHIP_Y, chip_wx_w, CHIP_HEIGHT)
-        self.hit_boxes.append((r_chip_wx, "wx", None))
+        r_temp = dock_cards.draw_clock_block(p, r_clock, temp_str=temp_str, hover=clk_hover, press_scale=clk_press)
+        # Add temperature circle hit box with higher priority
+        self.hit_boxes.append((r_temp, "wx", None))
+        x += CLOCK_BLOCK_WIDTH + GAP_MODULE
 
-        wx_op = self.anim_wx_op.value
-        p.save()
-        if self._hover_key == "wx":
-            p.fillPath(theme.rounded_path(r_chip_wx, theme.CHIP_RADIUS), theme.COLOR_CHIP_HOVER)
-
-        if self._pressed_key == "wx" and self.press_tween.scale != 1.0:
-            ps = self.press_tween.scale
-            pc = r_chip_wx.center()
-            p.translate(pc)
-            p.scale(ps, ps)
-            p.translate(-pc)
-
-        wx_rect = QRectF(x + theme.CHIP_PAD_X, (DOCK_HEIGHT - 22.0) / 2.0, 22.0, 22.0)
-        theme.draw_weather_icon(p, wx_rect, icon=wx_icon)
-
-        wx_tx = x + theme.CHIP_PAD_X + 22.0 + 7.0
-        if wx_err:
-            p.setFont(self.f_lbl)
-            p.setPen(theme.COLOR_ALERT_WARN)
-            p.drawText(QRectF(wx_tx, CHIP_Y + 3.0, w_wx_text + 4.0, 12.0), Qt.AlignLeft | Qt.AlignVCenter, desc)
-            p.setFont(self.f_val)
-            p.setPen(theme.COLOR_TEXT_MUTED)
-            p.drawText(QRectF(wx_tx, CHIP_Y + 16.0, w_wx_text + 4.0, 16.0), Qt.AlignLeft | Qt.AlignVCenter, temp_str)
-        else:
-            theme.draw_chip_text(
-                p, wx_tx, y=CHIP_Y - 8.0, label=desc, value=temp_str, label_w=w_wx_text, value_w=w_wx_text, opacity=wx_op
-            )
-        p.restore()
-
-        x += chip_wx_w + theme.GAP_MODULE
-
-        # I) Clock & Date Chip
-        now = dt.datetime.now(sources.LOCAL_TZ)
-        time_str = now.strftime("%H:%M")
-        date_str = f"{TR_DAYS.get(now.weekday(), '')} {now.day} {sources.TR_MONTHS.get(now.month, '')}"
-        w_clock_text = max(fm_clock.horizontalAdvance(time_str), fm_lbl.horizontalAdvance(date_str))
-        chip_clock_w = theme.CHIP_PAD_X * 2 + w_clock_text
-        r_chip_clock = QRectF(x, CHIP_Y, chip_clock_w, CHIP_HEIGHT)
-        self._clock_rect = r_chip_clock
-        self.hit_boxes.append((r_chip_clock, "clock", None))
-
-        p.save()
-        if self._hover_key == "clock":
-            p.fillPath(theme.rounded_path(r_chip_clock, theme.CHIP_RADIUS), theme.COLOR_CHIP_HOVER)
-
-        if self._pressed_key == "clock" and self.press_tween.scale != 1.0:
-            ps = self.press_tween.scale
-            pc = r_chip_clock.center()
-            p.translate(pc)
-            p.scale(ps, ps)
-            p.translate(-pc)
-
-        cx_text = x + theme.CHIP_PAD_X
-        p.setFont(self.f_clock_time)
-        p.setPen(theme.COLOR_TEXT_PRIMARY)
-        p.drawText(QRectF(cx_text, CHIP_Y + 3.0, w_clock_text + 4.0, 16.0), Qt.AlignLeft | Qt.AlignVCenter, time_str)
-
-        p.setFont(self.f_lbl)
-        p.setPen(theme.COLOR_TEXT_SECONDARY)
-        p.drawText(QRectF(cx_text, CHIP_Y + 19.0, w_clock_text + 4.0, 14.0), Qt.AlignLeft | Qt.AlignVCenter, date_str)
-
-        # Bugün (ya da 3 saat içinde) takvimde bir şey varsa sağ üstte küçük kırmızı nokta.
-        try:
-            cal = self.store.get("cal") or {}
-            soon = False
-            for ev in cal.get("events") or []:
-                st = ev.get("start")
-                if st is not None and (st.date() <= now.date() or (st - now).total_seconds() < 3 * 3600):
-                    soon = True
-                    break
-            if soon:
-                p.setPen(Qt.NoPen)
-                p.setBrush(theme.COLOR_ALERT_CRIT)
-                p.drawEllipse(QPointF(r_chip_clock.right() - 5.0, CHIP_Y + 6.0), 3.0, 3.0)
-        except Exception as exc:
-            sources.log_err("cal_dot", exc)
-        p.restore()
-
-        x += chip_clock_w + theme.GAP_MODULE
-
-        # J) Hidden Icons Chevron Button (tray.draw_chevron_button)
-        r_btn_tray = QRectF(x, (DOCK_HEIGHT - TRAY_BTN_HEIGHT) / 2.0, TRAY_BTN_WIDTH, TRAY_BTN_HEIGHT)
-        self.hit_boxes.append((r_btn_tray, "tray", None))
-        tray_h_t = 1.0 if (self._hover_key == "tray") else 0.0
-        tray.draw_chevron_button(p, r_btn_tray, hover_t=tray_h_t, open_state=False)
+        # 8. Tray Column (32px width)
+        r_tray_col = QRectF(x, card_y, TRAY_COLUMN_WIDTH, card_h)
+        h_btn = None
+        if self._hover_key == "vol":
+            h_btn = "spk"
+        elif self._hover_key == "tray":
+            h_btn = "chv"
+        r_spk, r_chv = dock_cards.draw_tray_column(p, r_tray_col, vol_muted=self._vol_muted, hovered_btn=h_btn)
+        self.hit_boxes.append((r_spk, "vol", None))
+        self.hit_boxes.append((r_chv, "tray", None))
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
@@ -1508,7 +1303,7 @@ class SeritDock(QWidget):
             self._is_dragging = False
 
             pos = event.position()
-            for r, key, extra in self.hit_boxes:
+            for r, key, extra in reversed(self.hit_boxes):
                 if r.contains(pos):
                     self._pressed_key = key
                     self.press_tween.press()
@@ -1546,8 +1341,9 @@ class SeritDock(QWidget):
 
         new_hover = None
         new_app_idx = None
+        new_media_ctrl = None
         tooltip_text = ""
-        for r, key, extra in self.hit_boxes:
+        for r, key, extra in reversed(self.hit_boxes):
             if r.contains(pos):
                 new_hover = key
                 if key.startswith("app_"):
@@ -1555,8 +1351,16 @@ class SeritDock(QWidget):
                         new_app_idx = int(key.split("_")[1])
                     except (IndexError, ValueError):
                         new_app_idx = None
+                elif key == "media":
+                    if self._media_hit_rects:
+                        for m_ctrl, m_rect in self._media_hit_rects.items():
+                            if m_rect.contains(pos):
+                                new_media_ctrl = m_ctrl
+                                break
                 tooltip_text = self.get_tooltip_text(key, extra)
                 break
+
+        self._hover_media_ctrl = new_media_ctrl
 
         if new_hover != self._hover_key or new_app_idx != self._hover_app_idx:
             self._hover_key = new_hover
@@ -1689,14 +1493,37 @@ class SeritDock(QWidget):
                     rect.size(),
                 )
                 self.tray_popover.show_for(anchor_global)
-        elif key == "clock":
-            # Saat = takvim (kişisel 02). Aynı açılır panel altyapısı, tür "cal".
-            if self.popover.is_open("cal"):
-                self.popover.hide_animated()
-            elif not self.popover.recently_closed("cal"):
-                anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
-                self.popover.show_for("cal", anchor_global, dict(self.store.get("cal") or {}))
-        elif key in ("claude", "sys", "wx"):
+        elif key == "clock" or key == "cal":
+            # Takvim paneli contract: self.cal_panel.show_for(anchor_global, month_data, claude_data)
+            cal_data = dict(self.store.get("cal") or {})
+            month_data = dict(self.store.get("calmonth") or cal_data)
+            c_data = dict(self.store.get("claude") or {})
+            anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+
+            if self.cal_panel is not None and hasattr(self.cal_panel, "show_for"):
+                is_open = getattr(self.cal_panel, "is_open", None)
+                recently_closed = getattr(self.cal_panel, "recently_closed", None)
+                hide_animated = getattr(self.cal_panel, "hide_animated", None)
+
+                if is_open and is_open():
+                    if hide_animated:
+                        hide_animated()
+                    else:
+                        self.cal_panel.hide()
+                elif recently_closed and recently_closed():
+                    pass
+                else:
+                    try:
+                        self.cal_panel.show_for(anchor_global, month_data, c_data)
+                    except Exception as exc:
+                        sources.log_err("cal_panel_show", exc)
+                        self.popover.show_for("cal", anchor_global, cal_data)
+            else:
+                if self.popover.is_open("cal"):
+                    self.popover.hide_animated()
+                elif not self.popover.recently_closed("cal"):
+                    self.popover.show_for("cal", anchor_global, cal_data)
+        elif key in ("claude", "sys", "wx", "fx"):
             if self.popover.is_open(key):
                 self.popover.hide_animated()
             elif self.popover.recently_closed(key):
@@ -1869,8 +1696,52 @@ class SeritDock(QWidget):
         act_refresh = menu.addAction("Yenile")
         act_refresh.triggered.connect(self.action_refresh)
 
-        act_fx = menu.addAction("Piyasa")
-        act_fx.triggered.connect(self.action_show_fx)
+        # Optional cards toggles (dock v3: sys, fx, cal)
+        cards_cfg = dict(self.settings.get("cards") or {})
+        
+        act_cal = QAction("Takvim kartı", menu)
+        act_cal.setCheckable(True)
+        act_cal.setChecked(cards_cfg.get("cal", True))
+        def on_toggle_cal(checked: bool):
+            cfg = dict(self.settings.get("cards") or {})
+            cfg["cal"] = checked
+            self.settings["cards"] = cfg
+            save_settings(self.settings)
+            self.compute_layout_and_resize()
+            self.place_dock()
+            self.update()
+        act_cal.triggered.connect(on_toggle_cal)
+        menu.addAction(act_cal)
+
+        act_sys = QAction("Sistem kartı", menu)
+        act_sys.setCheckable(True)
+        act_sys.setChecked(cards_cfg.get("sys", False))
+        def on_toggle_sys(checked: bool):
+            cfg = dict(self.settings.get("cards") or {})
+            cfg["sys"] = checked
+            self.settings["cards"] = cfg
+            save_settings(self.settings)
+            self.compute_layout_and_resize()
+            self.place_dock()
+            self.update()
+        act_sys.triggered.connect(on_toggle_sys)
+        menu.addAction(act_sys)
+
+        act_market = QAction("Piyasa kartı", menu)
+        act_market.setCheckable(True)
+        act_market.setChecked(cards_cfg.get("fx", False))
+        def on_toggle_market(checked: bool):
+            cfg = dict(self.settings.get("cards") or {})
+            cfg["fx"] = checked
+            self.settings["cards"] = cfg
+            save_settings(self.settings)
+            self.compute_layout_and_resize()
+            self.place_dock()
+            self.update()
+        act_market.triggered.connect(on_toggle_market)
+        menu.addAction(act_market)
+
+        menu.addSeparator()
 
         # Alerts toggle (Requirement 5)
         act_alerts = QAction("Uyarılar", menu)
@@ -1963,6 +1834,9 @@ def render_preview(output_path_str: str) -> None:
     sys_data = sources.fetch_system()
     store.update("sys", sys_data)
 
+    cal_data = sources.fetch_calendar()
+    store.update("cal", cal_data)
+
     raw_wins = winapi.list_windows()
     groups = winapi.group_by_app(raw_wins)
     pins = list(settings.get("pinned") or pinned.load_default_pins())
@@ -2047,98 +1921,9 @@ def render_preview(output_path_str: str) -> None:
     dock._preview_hover_idx = None
     dock._hover_key = None
 
-    # --- 3) Popover Dock Render (<png>_pop.png) ---
-    pop_p = out_p.parent / f"{out_p.stem}_pop{suffix}"
-    dock.popover._kind = "claude"
-    dock.popover._content = popover_v2.build_content("claude", claude_data)
-    pop_h = dock.popover.compute_height(dock.popover._content)
-    dock.popover.resize(dock.popover.WIDTH, pop_h)
-    pop_img = dock.popover.render_to_image(dpr=2.0)
-
-    cw3 = max(dock_w + 80, 560)
-    ch3 = pop_h + 16 + dock_h + 50
-    img3 = QImage(int(cw3 * 2), int(ch3 * 2), QImage.Format.Format_ARGB32_Premultiplied)
-    img3.setDevicePixelRatio(2.0)
-    img3.fill(0)
-
-    p3 = QPainter(img3)
-    p3.setRenderHint(QPainter.Antialiasing)
-    p3.setRenderHint(QPainter.SmoothPixmapTransform)
-    draw_wallpaper_gradient(p3, cw3, ch3)
-
-    dock_x3 = int((cw3 - dock_w) / 2.0)
-    dock_y3 = int(ch3 - dock_h - 20)
-    dock.render(p3, QPoint(dock_x3, dock_y3))
-
-    pop_x3 = dock_x3 + int(theme.DOCK_PAD_X)
-    pop_y3 = dock_y3 - pop_h - 10
-    p3.drawImage(QPoint(pop_x3, pop_y3), pop_img)
-    p3.end()
-    img3.save(str(pop_p))
-
-    # --- 4) Volume Panel Render (<png>_vol.png) ---
-    vol_p = out_p.parent / f"{out_p.stem}_vol{suffix}"
-    vol_card_w = 280.0
-    vol_card_h = 126.0
-
-    cw4 = max(dock_w + 80, 560)
-    ch4 = int(vol_card_h) + 16 + dock_h + 50
-    img4 = QImage(int(cw4 * 2), int(ch4 * 2), QImage.Format.Format_ARGB32_Premultiplied)
-    img4.setDevicePixelRatio(2.0)
-    img4.fill(0)
-
-    p4 = QPainter(img4)
-    p4.setRenderHint(QPainter.Antialiasing)
-    p4.setRenderHint(QPainter.SmoothPixmapTransform)
-    draw_wallpaper_gradient(p4, cw4, ch4)
-
-    dock_x4 = int((cw4 - dock_w) / 2.0)
-    dock_y4 = int(ch4 - dock_h - 20)
-    dock.render(p4, QPoint(dock_x4, dock_y4))
-
-    vol_box = next((r for r, k, _ in dock.hit_boxes if k == "vol"), None)
-    if vol_box:
-        vol_cx = dock_x4 + vol_box.center().x()
-    else:
-        vol_cx = dock_x4 + dock_w / 2.0
-    vol_x4 = int(round(vol_cx - vol_card_w / 2.0))
-    vol_y4 = int(round(dock_y4 - vol_card_h - 10.0))
-
-    media.draw_volume_slider_panel(
-        p4,
-        QRectF(vol_x4, vol_y4, vol_card_w, vol_card_h),
-        level=dock._vol_level,
-        muted=dock._vol_muted,
-        device=dock._vol_device,
-    )
-    p4.end()
-    img4.save(str(vol_p))
-
-    s_val_str = f"%{int(round(claude_data.get('session')))}" if claude_data.get('session') is not None else "--"
-    w_val_str = f"%{int(round(claude_data.get('week')))}" if claude_data.get('week') is not None else "--"
-    cpu_val_str = f"%{int(round(sys_data.get('cpu')))}" if sys_data.get('cpu') is not None else "--"
-    ram_val_str = f"%{int(round(sys_data.get('ram')))}" if sys_data.get('ram') is not None else "--"
-    disk_val_str = f"%{int(round(sys_data.get('disk_c')))}" if sys_data.get('disk_c') is not None else "--"
-    vol_val_str = f"%{int(round(dock._vol_level))}"
-
-    print(f"PREVIEW_SAVED: {out_p} ({cw1}x{ch1} @2x)")
+    print(f"PREVIEW_SAVED: {out_p} ({cw1}x{ch1} @2x, dock_w={dock_w}px)")
     print(f"PREVIEW_HOVER_SAVED: {hover_p} ({cw2}x{ch2} @2x)")
-    print(f"PREVIEW_POP_SAVED: {pop_p} ({cw3}x{ch3} @2x)")
-    print(f"PREVIEW_VOL_SAVED: {vol_p} ({cw4}x{ch4} @2x)")
-    print(
-        f"LIVE_CLAUDE: session={s_val_str}, week={w_val_str}, plan={claude_data.get('plan')}"
-    )
-    print(
-        f"LIVE_SYS: cpu={cpu_val_str}, ram={ram_val_str}, disk_c={disk_val_str}"
-    )
-    print(f"LIVE_WX: temp={wx_data.get('temp')}°, desc={wx_data.get('desc')}")
-    print(f"LIVE_VOLUME: level={vol_val_str}, muted={dock._vol_muted}, device={dock._vol_device}")
-    np_title = dock._now_playing_info.get('title', '') if dock._now_playing_info else 'Yok'
-    np_app = dock._now_playing_info.get('app', '') if dock._now_playing_info else ''
-    print(f"LIVE_MEDIA: active={bool(dock._now_playing_info)}, app={np_app}, title={np_title}")
-    n_pins = sum(1 for t in dock.tiles if t.get('pinned'))
-    n_run = sum(1 for t in dock.tiles if t.get('running'))
-    print(f"LIVE_TILES_COUNT: {len(dock.tiles)} (pinned={n_pins}, running={n_run})")
+    return
 
 
 def _handle_exception(exc_type, exc_value, exc_traceback) -> None:

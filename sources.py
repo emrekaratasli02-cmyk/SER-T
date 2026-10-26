@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import threading
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import httpx
 import psutil
@@ -569,16 +569,19 @@ class Store:
             self._data[key] = {"data": result, "fetched_at": now, "stale": False}
             return
         prev = self._data.get(key)
-        has_err = "err" in result
+        # 'err': None hata değildir (fetch_month_calendar her zaman 'err' anahtarı döndürür);
+        # eskiden anahtarın varlığı hata sayılıyor, takvim boşuna "eski veri" gösteriyordu.
+        has_err = bool(result.get("err"))
 
-        if has_err and prev and "err" not in prev:
+        if has_err and prev and not prev.get("err"):
             prev["stale"] = True
             prev["last_error"] = result["err"]
             return
 
         entry = dict(result)
         entry["fetched_at"] = now
-        entry["stale"] = bool(has_err)
+        # Kaynağın kendi 'stale' bilgisini (ör. ay.json 3 saatten eski) ezme.
+        entry["stale"] = has_err or bool(result.get("stale", False))
         if has_err and "last_error" not in entry:
             entry["last_error"] = result["err"]
         self._data[key] = entry
@@ -591,6 +594,174 @@ class Store:
 # Şerit Google'a hiç bağlanmaz: Hermes'in "Takvim yakın etkinlikler (panel)" zamanlanmış işi
 # (her 15 dk, 07-23) 02 takvimini salt-okunur çekip bu dosyaya yazıyor. Biz sadece dosyayı okuruz.
 CALENDAR_JSON = Path("C:/Users/Emre Karatasli/AppData/Local/hermes/takvim-02/yakin.json")
+CALENDAR_MONTH_JSON = Path("C:/Users/Emre Karatasli/AppData/Local/hermes/takvim-02/ay.json")
+
+
+def classify_calendar_category(title: Any) -> str:
+    """Classify calendar event category based on title keywords and emoji."""
+    if not title:
+        return "Google Takvim"
+    s = str(title).strip()
+    if s.startswith("💸"):
+        return "Vergi/ödeme"
+    lower = s.casefold()
+    for kw in ("vergi", "kdv", "öde", "sgk", "fatura"):
+        if kw in lower:
+            return "Vergi/ödeme"
+    return "Google Takvim"
+
+
+def _parse_month_date_or_dt(val: Any) -> Tuple[Optional[Union[dt.date, dt.datetime]], bool]:
+    """Parse date string/object. Returns (date_or_datetime, is_all_day)."""
+    if isinstance(val, dt.datetime):
+        t = val if val.tzinfo else val.replace(tzinfo=LOCAL_TZ)
+        return t, False
+    if isinstance(val, dt.date):
+        return val, True
+    if not isinstance(val, str) or not val.strip():
+        return None, False
+    s = val.strip()
+    if len(s) == 10:
+        try:
+            return dt.date.fromisoformat(s), True
+        except (ValueError, TypeError):
+            return None, False
+    try:
+        t = dt.datetime.fromisoformat(s)
+        return (t if t.tzinfo else t.replace(tzinfo=LOCAL_TZ)), False
+    except (ValueError, TypeError):
+        return None, False
+
+
+def fetch_month_calendar(
+    path: Optional[Path] = None,
+    now: Optional[dt.datetime] = None,
+) -> Dict[str, Any]:
+    """Read and parse month calendar data from ay.json.
+
+    Returns:
+        {'events': [{title, start, end, all_day, link, category}],
+         'updated': 'HH:MM',
+         'stale': bool,
+         'range': (date_from, date_to),
+         'err': str|None}
+    """
+    target_path = path or CALENDAR_MONTH_JSON
+    try:
+        raw = json.loads(target_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {
+            "events": [],
+            "updated": "",
+            "stale": True,
+            "range": (None, None),
+            "err": "Takvim dosyası yok",
+        }
+    except (OSError, ValueError) as exc:
+        log_err("month_calendar_read", exc)
+        return {
+            "events": [],
+            "updated": "",
+            "stale": True,
+            "range": (None, None),
+            "err": "Takvim okunamadı",
+        }
+
+    if not isinstance(raw, dict):
+        return {
+            "events": [],
+            "updated": "",
+            "stale": True,
+            "range": (None, None),
+            "err": "Geçersiz veri",
+        }
+
+    if raw.get("hata"):
+        return {
+            "events": [],
+            "updated": "",
+            "stale": True,
+            "range": (None, None),
+            "err": "Takvim güncellenemedi",
+        }
+
+    try:
+        now = now or dt.datetime.now(LOCAL_TZ)
+        upd_raw = raw.get("zaman")
+        upd = None
+        if isinstance(upd_raw, str) and upd_raw.strip():
+            try:
+                t = dt.datetime.fromisoformat(upd_raw.strip())
+                upd = t if t.tzinfo else t.replace(tzinfo=LOCAL_TZ)
+            except (ValueError, TypeError):
+                upd = None
+
+        updated_str = upd.strftime("%H:%M") if upd else ""
+        stale = bool(not upd or (now - upd).total_seconds() > 3 * 3600)
+
+        # Range extraction from top-level bas and bit
+        range_from, _ = _parse_month_date_or_dt(raw.get("bas"))
+        range_to, _ = _parse_month_date_or_dt(raw.get("bit"))
+        rf_date = range_from.date() if isinstance(range_from, dt.datetime) else range_from
+        rt_date = range_to.date() if isinstance(range_to, dt.datetime) else range_to
+        data_range = (rf_date, rt_date)
+
+        events: List[Dict[str, Any]] = []
+        raw_events = raw.get("etkinlikler")
+        if isinstance(raw_events, list):
+            for e in raw_events:
+                if not isinstance(e, dict):
+                    continue
+                start_val, all_day = _parse_month_date_or_dt(e.get("bas"))
+                if start_val is None:
+                    continue
+
+                end_val, _ = _parse_month_date_or_dt(e.get("bit"))
+                if end_val is None:
+                    if all_day and isinstance(start_val, dt.date):
+                        end_val = start_val + dt.timedelta(days=1)
+                    else:
+                        end_val = start_val
+                elif all_day and isinstance(end_val, dt.datetime):
+                    end_val = end_val.date()
+
+                title_str = str(e.get("baslik") or "(başlıksız)")
+                cat = classify_calendar_category(title_str)
+
+                events.append({
+                    "title": title_str,
+                    "start": start_val,
+                    "end": end_val,
+                    "all_day": all_day,
+                    "link": str(e.get("link") or ""),
+                    "category": cat,
+                })
+
+        # Sort events by start date/time
+        def _sort_key(ev: Dict[str, Any]) -> Tuple[dt.date, int, dt.time]:
+            s = ev["start"]
+            if isinstance(s, dt.datetime):
+                return s.date(), 1, s.time()
+            return s, 0, dt.time.min
+
+        events.sort(key=_sort_key)
+
+        return {
+            "events": events,
+            "updated": updated_str,
+            "stale": stale,
+            "range": data_range,
+            "err": None,
+        }
+    except Exception as exc:
+        log_err("month_calendar_parse", exc)
+        return {
+            "events": [],
+            "updated": "",
+            "stale": True,
+            "range": (None, None),
+            "err": "Takvim okunamadı",
+        }
 
 
 def _parse_event_time(s: Any) -> Optional[dt.datetime]:

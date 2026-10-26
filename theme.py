@@ -30,13 +30,13 @@ from PySide6.QtGui import (
 # 1. GEOMETRY & DIMENSION TOKENS
 # ==============================================================================
 
-# Dock capsule
-DOCK_HEIGHT: float = 56.0
-DOCK_RADIUS: float = 28.0  # Continuous capsule / pill: R = H / 2
-DOCK_PAD_X: float = 14.0
-GAP_MODULE: float = 6.0  # Gap between adjacent chips
-GAP_SEPARATOR: float = 10.0  # Gap flanking vertical separators
-ITEM_GAP: float = 2.0  # Gap between running app icons
+# Dock capsule (dock v3: height 64, corner radius 20, inner padding 6, gap 6)
+DOCK_HEIGHT: float = 64.0
+DOCK_RADIUS: float = 20.0
+DOCK_PAD_X: float = 6.0
+GAP_MODULE: float = 6.0  # Gap between adjacent items / cards
+GAP_SEPARATOR: float = 6.0  # Gap flanking vertical separators
+ITEM_GAP: float = 4.0  # Gap between app icons (dock v3)
 
 # Chips / modules
 CHIP_HEIGHT: float = 40.0
@@ -67,10 +67,10 @@ SEP_Y: float = 17.0  # (56 - 22) / 2
 ICON_SIZE: float = 28.0
 ICON_PREFILTER_SIZE: float = 56.0
 
-# Hover, lift & press
-HOVER_LIFT_Y: float = -3.5
-HOVER_SCALE_MAX: float = 1.20
-HOVER_SCALE_NEIGHBOR: float = 1.07
+# Hover, lift & press (dock v3: lift -2px, scale 1.10)
+HOVER_LIFT_Y: float = -2.0
+HOVER_SCALE_MAX: float = 1.10
+HOVER_SCALE_NEIGHBOR: float = 1.04
 PRESS_SCALE: float = 0.94
 
 # Popover flyout card
@@ -95,14 +95,16 @@ COLOR_ALERT_WARN: QColor = QColor("#FFC45C")  # >= 80% (Amber)
 COLOR_ALERT_CRIT: QColor = QColor("#FF6E6E")  # >= 95% (Coral Red)
 
 # Base glass material (Rich smoky translucent glass without rectangular DWM bleed)
-COLOR_GLASS_TINT: QColor = QColor(14, 17, 23, int(255 * 0.86))
-COLOR_GLASS_OUTER_STROKE: QColor = QColor(0, 0, 0, int(255 * 0.45))
+# Dock v3 smoky tint: QColor(18, 20, 26, ~205) for optimal readability over any window
+COLOR_GLASS_TINT: QColor = QColor(18, 20, 26, 205)
+COLOR_GLASS_OUTER_STROKE: QColor = QColor(255, 255, 255, int(255 * 0.13))
 
 # Specular rim gradient stops (top to bottom) - refined glass edge catch
-COLOR_GLASS_INNER_RIM_0: QColor = QColor(255, 255, 255, int(255 * 0.52))
-COLOR_GLASS_INNER_RIM_25: QColor = QColor(255, 255, 255, int(255 * 0.22))
-COLOR_GLASS_INNER_RIM_80: QColor = QColor(255, 255, 255, int(255 * 0.05))
-COLOR_GLASS_INNER_RIM_100: QColor = QColor(255, 255, 255, int(255 * 0.14))
+# Dock v3: 1px inner top highlight rgba(255,255,255,0.16)
+COLOR_GLASS_INNER_RIM_0: QColor = QColor(255, 255, 255, int(255 * 0.16))
+COLOR_GLASS_INNER_RIM_25: QColor = QColor(255, 255, 255, int(255 * 0.08))
+COLOR_GLASS_INNER_RIM_80: QColor = QColor(255, 255, 255, int(255 * 0.02))
+COLOR_GLASS_INNER_RIM_100: QColor = QColor(255, 255, 255, int(255 * 0.05))
 
 # Text colors
 COLOR_TEXT_PRIMARY: QColor = QColor(255, 255, 255, 255)
@@ -153,8 +155,8 @@ DUR_STALE_FADE: float = 600.0
 # 4. TYPOGRAPHY TOKENS & FONT FACTORY
 # ==============================================================================
 
-FONT_FAMILY: str = "Segoe UI Variable Text"
-FONT_FALLBACKS: List[str] = ["Segoe UI Variable Text", "Segoe UI", "Inter", "sans-serif"]
+FONT_FAMILY: str = "Segoe UI Variable"
+FONT_FALLBACKS: List[str] = ["Segoe UI Variable", "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", "sans-serif"]
 
 FONT_SIZE_CLOCK: float = 15.0
 FONT_SIZE_VAL: float = 13.0
