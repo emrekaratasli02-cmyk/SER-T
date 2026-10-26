@@ -1415,11 +1415,11 @@ class SeritDock(QWidget):
                 r_play = self._media_hit_rects.get("playpause")
                 r_next = self._media_hit_rects.get("next")
                 if r_prev and r_prev.contains(pos):
-                    media.send_media_key("prev")
+                    media.media_control("prev")
                 elif r_play and r_play.contains(pos):
-                    media.send_media_key("playpause")
+                    media.media_control("playpause")
                 elif r_next and r_next.contains(pos):
-                    media.send_media_key("next")
+                    media.media_control("next")
         elif key == "tray":
             if not self.preview_mode:
                 tray.open_hidden_icons()

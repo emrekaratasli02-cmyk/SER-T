@@ -369,6 +369,61 @@ except ImportError:
     _WinrtMediaManager = None
     _HAS_WINRT = False
 
+_WINRT_APP_NAMES = {"chrome": "Chrome", "msedge": "Edge", "spotify": "Spotify", "firefox": "Firefox"}
+
+
+def _now_playing_winrt() -> Optional[Dict[str, object]]:
+    """Windows medya oturumundan (GSMTC) çalan parçayı okur. Arka sekmede çalan YouTube'u da görür.
+    Döner: dict | None (oturum yok) | {'_fail': True} (WinRT hatası -> başlık yöntemine düş)."""
+    if not _HAS_WINRT:
+        return {"_fail": True}
+    import asyncio
+
+    async def _read():
+        mgr = await _WinrtMediaManager.request_async()
+        s = mgr.get_current_session()
+        if s is None:
+            return None
+        props = await s.try_get_media_properties_async()
+        status = int(s.get_playback_info().playback_status)  # 4 = çalıyor, 5 = duraklatıldı
+        aumid = s.source_app_user_model_id or ""
+        key = aumid.lower().split("!")[0].split(".")[0].replace(".exe", "")
+        title = (props.title or "").strip()
+        if not title:
+            return None
+        return {"title": title, "artist": (props.artist or "").strip(),
+                "app": _WINRT_APP_NAMES.get(key, aumid.split("!")[0] or "Medya"),
+                "exe": aumid, "playing": status == 4, "status": status,
+                "session_exes": [], "source": "Windows medya oturumu"}
+
+    try:
+        return asyncio.run(_read())
+    except Exception as exc:  # WinRT/COM hatası: çökme yok, yedek yönteme düş
+        _log(f"now_playing winrt: {type(exc).__name__}: {exc}")
+        return {"_fail": True}
+
+
+def media_control(action: str) -> bool:
+    """Oynat/duraklat/ileri/geri: önce Windows medya oturumuna doğrudan komut, olmazsa medya tuşu."""
+    if _HAS_WINRT:
+        import asyncio
+
+        async def _do():
+            mgr = await _WinrtMediaManager.request_async()
+            s = mgr.get_current_session()
+            if s is None:
+                return False
+            fn = {"playpause": s.try_toggle_play_pause_async, "next": s.try_skip_next_async,
+                  "prev": s.try_skip_previous_async}.get(action)
+            return bool(await fn()) if fn else False
+
+        try:
+            if asyncio.run(_do()):
+                return True
+        except Exception as exc:
+            _log(f"media_control winrt: {type(exc).__name__}: {exc}")
+    return send_media_key(action)
+
 _BROWSER_SUFFIXES = [
     " - Google Chrome",
     " - Microsoft Edge",
@@ -517,6 +572,9 @@ def now_playing() -> Optional[Dict[str, Union[str, bool, List[str]]]]:
         'session_exes': list[str]
       } or None if no media window detected.
     """
+    w = _now_playing_winrt()
+    if not (isinstance(w, dict) and w.get("_fail")):
+        return w  # Windows medya oturumu: güvenilir yol (None = çalan yok)
     try:
         active_sessions = get_active_audio_sessions()
         active_sessions_lower = [e.lower() for e in active_sessions]
