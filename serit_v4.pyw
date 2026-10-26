@@ -307,6 +307,8 @@ class SeritDock(QWidget):
             sources.submit(key, fn, lambda k, res: self.dispatcher.data_ready.emit(k, res))
 
     def on_data_ready(self, key: str, res: dict) -> None:
+        if isinstance(res, dict) and "err" in res:
+            sources.log_err(key, RuntimeError(str(res.get("err"))))
         self.store.update(key, res)
 
         # Tween retargeting & stale opacity adjustment

@@ -79,7 +79,7 @@ def _safe_float(v: Any, default: Optional[float] = None) -> Optional[float]:
 
 
 REFRESH = {
-    "claude": 120,
+    "claude": 300,
     "fx": 300,
     "wx": 900,
     "sys": 2,
@@ -234,7 +234,43 @@ def reset_clock(iso: str) -> str:
     return f"{loc.day} {m} {loc.hour:02d}:{loc.minute:02d}"
 
 
+CLAUDE_CACHE = Path("D:/Apps/serit/claude_cache.json")  # sadece kullanım yüzdeleri, token YOK
+_claude_cooldown_until = 0.0
+
+
+def _claude_cached(reason: str) -> Dict[str, Any]:
+    """Son iyi Claude değerini döndür (kaynak satırında önbellek saati yazar); yoksa hata."""
+    try:
+        c = json.loads(CLAUDE_CACHE.read_text(encoding="utf-8"))
+        at = dt.datetime.fromtimestamp(float(c.pop("cached_at"))).strftime("%H:%M")
+        c["source"] = f"Anthropic · önbellek {at} ({reason})"
+        return c
+    except (OSError, ValueError, KeyError, TypeError):
+        return {"err": reason}
+
+
 def fetch_claude() -> Dict[str, Any]:
+    """429/ağ hatasında bekleme süresine uyar ve son iyi değeri gösterir."""
+    global _claude_cooldown_until
+    if time.time() < _claude_cooldown_until:
+        return _claude_cached("Anthropic limiti, bekleniyor")
+    res = _fetch_claude_live()
+    if "err" not in res:
+        try:
+            CLAUDE_CACHE.write_text(json.dumps({**res, "cached_at": time.time()}, ensure_ascii=False),
+                                    encoding="utf-8")
+        except OSError:
+            pass
+        return res
+    if res.get("err") == "Hata 429":
+        _claude_cooldown_until = time.time() + res.pop("_retry_after", 600)
+        return _claude_cached("Anthropic limiti, bekleniyor")
+    if res.get("err") in ("Bağlantı yok",) or str(res.get("err", "")).startswith("Hata 5"):
+        return _claude_cached(res["err"])
+    return res
+
+
+def _fetch_claude_live() -> Dict[str, Any]:
     """Fetch Claude usage from Anthropic OAuth usage endpoint."""
     try:
         if not CRED_PATH.exists():
@@ -264,6 +300,12 @@ def fetch_claude() -> Dict[str, Any]:
             headers=headers,
             timeout=15,
         )
+        if resp.status_code == 429:
+            try:
+                ra = max(120.0, min(float(resp.headers.get("retry-after", 600)), 3600.0))
+            except ValueError:
+                ra = 600.0
+            return {"err": "Hata 429", "_retry_after": ra}
         if resp.status_code != 200:
             return {"err": f"Hata {resp.status_code}"}
 

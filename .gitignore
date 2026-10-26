@@ -3,3 +3,4 @@ __pycache__/
 *.log
 *.lock
 settings.json
+claude_cache.json
