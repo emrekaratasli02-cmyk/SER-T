@@ -528,41 +528,27 @@ def activate_or_minimize(hwnd: int) -> None:
 
 
 def enable_acrylic(hwnd: int, tint_argb: int = 0x50201812) -> bool:
-    """Enable Windows Acrylic blur-behind effect on a window.
+    """Disable Win32 rectangular SetWindowCompositionAttribute acrylic bleed.
 
-    Uses SetWindowCompositionAttribute with WCA_ACCENT_POLICY (19) and
-    ACCENT_ENABLE_ACRYLICBLURBEHIND (4), AccentFlags=2, GradientColor=tint in AABBGGRR.
-
-    Returns True if successfully applied, False otherwise.
+    On Windows 11, SetWindowCompositionAttribute (WCA_ACCENT_POLICY) paints a dark
+    rectangular backdrop across the entire HWND bounding box, leaving visible 90-degree
+    square corners outside rounded capsule/pill shapes. Leaving DWM accent disabled
+    allows Qt's per-pixel alpha channel (WA_TranslucentBackground) to render 100%
+    clean, anti-aliased rounded corners with zero rectangular bleed.
     """
     try:
         target_hwnd = int(hwnd or 0)
         if not target_hwnd or not user32.IsWindow(target_hwnd):
             return False
-
-        if not hasattr(user32, "SetWindowCompositionAttribute"):
-            return False
-
-        # Convert ARGB (0xAARRGGBB) to AABBGGRR (ABGR DWORD)
-        a = (tint_argb >> 24) & 0xFF
-        r = (tint_argb >> 16) & 0xFF
-        g = (tint_argb >> 8) & 0xFF
-        b = tint_argb & 0xFF
-        gradient_color = (a << 24) | (b << 16) | (g << 8) | r
-
-        policy = ACCENT_POLICY()
-        policy.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND
-        policy.AccentFlags = 2
-        policy.GradientColor = ctypes.c_uint32(gradient_color).value
-        policy.AnimationId = 0
-
-        data = WINDOWCOMPOSITIONATTRIBDATA()
-        data.Attribute = WCA_ACCENT_POLICY
-        data.Data = ctypes.cast(ctypes.pointer(policy), ctypes.c_void_p)
-        data.SizeOfData = ctypes.sizeof(policy)
-
-        ret = user32.SetWindowCompositionAttribute(target_hwnd, ctypes.byref(data))
-        return bool(ret)
+        if hasattr(user32, "SetWindowCompositionAttribute"):
+            policy = ACCENT_POLICY()
+            policy.AccentState = 0  # ACCENT_DISABLED
+            data = WINDOWCOMPOSITIONATTRIBDATA()
+            data.Attribute = WCA_ACCENT_POLICY
+            data.Data = ctypes.cast(ctypes.pointer(policy), ctypes.c_void_p)
+            data.SizeOfData = ctypes.sizeof(policy)
+            user32.SetWindowCompositionAttribute(target_hwnd, ctypes.byref(data))
+        return True
     except Exception as e:
         _log(f"enable_acrylic error for hwnd {hwnd}: {e}")
         return False
@@ -575,37 +561,13 @@ def set_round_region(
     radius_logical: int = 18,
     dpr: float = 1.0,
 ) -> bool:
-    """Clip a window to a rounded rectangle region in physical pixels.
-
-    Calculates physical dimensions and sets the region using CreateRoundRectRgn
-    and SetWindowRgn. SetWindowRgn takes ownership of hrgn on success; hrgn
-    is deleted with DeleteObject only on failure.
-    """
+    """Clear any jagged GDI window region so Qt's anti-aliased alpha channel clips the window."""
     try:
         target_hwnd = int(hwnd or 0)
         if not target_hwnd or not user32.IsWindow(target_hwnd):
             return False
-
-        w_phys = int(round(w_logical * dpr))
-        h_phys = int(round(h_logical * dpr))
-        r_phys = int(round(radius_logical * dpr))
-        ellipse_w = r_phys * 2
-        ellipse_h = r_phys * 2
-
-        hrgn = gdi32.CreateRoundRectRgn(0, 0, w_phys, h_phys, ellipse_w, ellipse_h)
-        if not hrgn:
-            return False
-
-        owned = False
-        try:
-            res = user32.SetWindowRgn(target_hwnd, hrgn, True)
-            if res != 0:
-                owned = True
-                return True
-            return False
-        finally:
-            if not owned:
-                gdi32.DeleteObject(hrgn)
+        user32.SetWindowRgn(target_hwnd, 0, True)
+        return True
     except Exception as e:
         _log(f"set_round_region error for hwnd {hwnd}: {e}")
         return False

@@ -93,15 +93,15 @@ COLOR_RAM: QColor = QColor("#B49CFF")  # Lavender Purple
 COLOR_ALERT_WARN: QColor = QColor("#FFC45C")  # >= 80% (Amber)
 COLOR_ALERT_CRIT: QColor = QColor("#FF6E6E")  # >= 95% (Coral Red)
 
-# Base glass material (Dark theme composite over Windows Acrylic blur)
-COLOR_GLASS_TINT: QColor = QColor(16, 20, 28, int(255 * 0.38))
-COLOR_GLASS_OUTER_STROKE: QColor = QColor(0, 0, 0, int(255 * 0.35))
+# Base glass material (Rich smoky translucent glass without rectangular DWM bleed)
+COLOR_GLASS_TINT: QColor = QColor(14, 17, 23, int(255 * 0.86))
+COLOR_GLASS_OUTER_STROKE: QColor = QColor(0, 0, 0, int(255 * 0.45))
 
 # Specular rim gradient stops (top to bottom) - refined glass edge catch
-COLOR_GLASS_INNER_RIM_0: QColor = QColor(255, 255, 255, int(255 * 0.48))
-COLOR_GLASS_INNER_RIM_25: QColor = QColor(255, 255, 255, int(255 * 0.18))
-COLOR_GLASS_INNER_RIM_80: QColor = QColor(255, 255, 255, int(255 * 0.04))
-COLOR_GLASS_INNER_RIM_100: QColor = QColor(255, 255, 255, int(255 * 0.12))
+COLOR_GLASS_INNER_RIM_0: QColor = QColor(255, 255, 255, int(255 * 0.52))
+COLOR_GLASS_INNER_RIM_25: QColor = QColor(255, 255, 255, int(255 * 0.22))
+COLOR_GLASS_INNER_RIM_80: QColor = QColor(255, 255, 255, int(255 * 0.05))
+COLOR_GLASS_INNER_RIM_100: QColor = QColor(255, 255, 255, int(255 * 0.14))
 
 # Text colors
 COLOR_TEXT_PRIMARY: QColor = QColor(255, 255, 255, 255)
@@ -270,9 +270,14 @@ def draw_glass_capsule(
 
     path = rounded_path(rect, radius)
 
-    # 1. Base tint fill
+    # 1. Base tint fill + subtle top-to-bottom glass sheen
     tint = bg_tint if bg_tint is not None else COLOR_GLASS_TINT
     p.fillPath(path, tint)
+    sheen = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
+    sheen.setColorAt(0.0, QColor(255, 255, 255, 18))
+    sheen.setColorAt(0.45, QColor(255, 255, 255, 3))
+    sheen.setColorAt(1.0, QColor(0, 0, 0, 16))
+    p.fillPath(path, QBrush(sheen))
 
     # 2. Subtle noise grain
     if show_grain:
