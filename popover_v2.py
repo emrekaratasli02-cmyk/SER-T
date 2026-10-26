@@ -601,7 +601,55 @@ def build_content(kind: str, data: dict, **kwargs) -> dict:
         return build_wx_content(data, **kwargs)
     elif kind == "fx":
         return build_fx_content(data)
+    elif kind == "cal":
+        return build_cal_content(data)
     return build_claude_content(data)
+
+
+def draw_cal_icon(p: QPainter, rect: QRectF) -> None:
+    """Küçük takvim yaprağı: kırmızı üst şerit + beyaz gövde."""
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    body = QRectF(rect.x() + 1, rect.y() + 2, rect.width() - 2, rect.height() - 3)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(240, 244, 250))
+    p.drawRoundedRect(body, 3, 3)
+    p.setBrush(QColor(255, 110, 110))
+    top = QPainterPath()
+    top.addRoundedRect(QRectF(body.x(), body.y(), body.width(), 5), 3, 3)
+    top.addRect(QRectF(body.x(), body.y() + 3, body.width(), 2))
+    p.drawPath(top)
+    p.restore()
+
+
+def build_cal_content(data: dict) -> dict:
+    """Kişisel takvim paneli: sıradaki etkinlikler (tarih/saat sağda)."""
+    err = data.get("err")
+    events = data.get("events") or []
+    rows = []
+    for ev in events[:6]:
+        when = sources.event_when(ev)
+        title = str(ev.get("title", ""))
+        if len(title) > 30:
+            title = title[:29] + "…"
+        rows.append({"type": "wx_detail", "label": title, "val": when})
+    if not rows and not err:
+        rows.append({"type": "wx_detail", "label": "Yakında etkinlik yok", "val": "36 sa"})
+    upd = data.get("updated") or ""
+    note = f"Güncelleme {upd} · Google Takvim (02)" if upd else "Google Takvim (kişisel 02)"
+    stale = bool(data.get("stale") or data.get("stale_file"))
+    return {
+        "kind": "cal",
+        "title": "Takvim",
+        "badge": "Hata" if err else "02",
+        "badge_bg": COLOR_BADGE_ERR_BG if err else COLOR_BADGE_LIVE_BG,
+        "badge_color": COLOR_BADGE_ERR_TXT if err else COLOR_BADGE_LIVE_TXT,
+        "stale": stale,
+        "error": str(err) if err else None,
+        "sections": [{"title": "SIRADA (36 SAAT)", "rows": rows}],
+        "footer_note": note,
+        "source": "Google Takvim",
+    }
 
 
 # PopoverV2 Widget Implementation
@@ -1062,6 +1110,8 @@ class PopoverV2(QWidget):
                 draw_claude_icon(p, icon_rect)
         elif cur_kind == "fx":
             draw_fx_icon(p, icon_rect)
+        elif cur_kind == "cal":
+            draw_cal_icon(p, icon_rect)
 
         title = self._content.get("title", "")
         p.setFont(self.f_title)
@@ -1251,14 +1301,18 @@ class PopoverV2(QWidget):
                     y += 28.0
 
                 elif rtype == "wx_detail":
-                    p.setFont(self.f_label)
-                    p.setPen(COLOR_TEXT_SECONDARY)
-                    p.drawText(QRectF(16, y, 140, 20), Qt.AlignLeft | Qt.AlignVCenter, r.get("label", ""))
-
                     val_str = r.get("val", "")
                     p.setFont(self.f_val_bold)
+                    val_w = min(110.0, QFontMetricsF(self.f_val_bold).horizontalAdvance(val_str) + 2.0)
                     p.setPen(COLOR_TEXT_PRIMARY)
-                    p.drawText(QRectF(w - 16 - 110, y, 110, 20), Qt.AlignRight | Qt.AlignVCenter, val_str)
+                    p.drawText(QRectF(w - 16 - val_w, y, val_w, 20), Qt.AlignRight | Qt.AlignVCenter, val_str)
+
+                    # Etiket kalan genişliğe sığar, sığmazsa "…" ile kısalır (takvim başlıkları uzun).
+                    p.setFont(self.f_label)
+                    p.setPen(COLOR_TEXT_SECONDARY)
+                    lbl_w = max(60.0, w - 32 - val_w - 10)
+                    lbl = QFontMetricsF(self.f_label).elidedText(r.get("label", ""), Qt.ElideRight, lbl_w)
+                    p.drawText(QRectF(16, y, lbl_w, 20), Qt.AlignLeft | Qt.AlignVCenter, lbl)
                     y += 24.0
 
                 # 1px hairline between rows in a section

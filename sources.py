@@ -83,6 +83,7 @@ REFRESH = {
     "fx": 300,
     "wx": 900,
     "sys": 2,
+    "cal": 60,  # yerel dosya okuması, Google'a gitmez
 }
 
 # WMO Weather interpretation codes
@@ -505,3 +506,77 @@ class Store:
 
     def get(self, key: str) -> Optional[Dict[str, Any]]:
         return self._data.get(key)
+
+
+# --- Takvim (kişisel 02) -------------------------------------------------------
+# Şerit Google'a hiç bağlanmaz: Hermes'in "Takvim yakın etkinlikler (panel)" zamanlanmış işi
+# (her 15 dk, 07-23) 02 takvimini salt-okunur çekip bu dosyaya yazıyor. Biz sadece dosyayı okuruz.
+CALENDAR_JSON = Path("C:/Users/Emre Karatasli/AppData/Local/hermes/takvim-02/yakin.json")
+
+
+def _parse_event_time(s: str) -> Optional[dt.datetime]:
+    try:
+        if len(s) == 10:  # tüm gün: YYYY-MM-DD
+            return dt.datetime.fromisoformat(s).replace(tzinfo=LOCAL_TZ)
+        t = dt.datetime.fromisoformat(s)
+        return t if t.tzinfo else t.replace(tzinfo=LOCAL_TZ)
+    except (TypeError, ValueError):
+        return None
+
+
+def fetch_calendar(now: Optional[dt.datetime] = None) -> Dict[str, Any]:
+    """Döner: {'next': {...}|None, 'events': [...], 'updated': 'HH:MM', 'source': ...} veya {'err': ...}."""
+    try:
+        raw = json.loads(CALENDAR_JSON.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"err": "Takvim dosyası yok"}
+    except (OSError, ValueError) as exc:
+        log_err("calendar", exc)
+        return {"err": "Takvim okunamadı"}
+    if not isinstance(raw, dict):
+        return {"err": "Geçersiz veri"}
+    if raw.get("hata"):
+        return {"err": "Takvim güncellenemedi"}
+    now = now or dt.datetime.now(LOCAL_TZ)
+    upd = _parse_event_time(str(raw.get("zaman") or ""))
+    events = []
+    for e in raw.get("etkinlikler") or []:
+        if not isinstance(e, dict):
+            continue
+        start = _parse_event_time(str(e.get("bas") or ""))
+        end = _parse_event_time(str(e.get("bit") or "")) or start
+        if start is None or (end and end <= now):
+            continue  # geçmiş etkinlik
+        all_day = bool(e.get("tum_gun")) or len(str(e.get("bas") or "")) == 10
+        events.append({"title": str(e.get("baslik") or "(başlıksız)"), "start": start, "end": end,
+                       "all_day": all_day, "where": str(e.get("yer") or ""), "link": str(e.get("link") or ""),
+                       "now": start <= now})
+    events.sort(key=lambda x: x["start"])
+    timed = [x for x in events if not x["all_day"]]
+    nxt = (timed or events or [None])[0]
+    return {"next": nxt, "events": events,
+            "updated": upd.strftime("%H:%M") if upd else "",
+            "stale_file": bool(upd and (now - upd).total_seconds() > 3 * 3600),
+            "source": "Google Takvim (kişisel 02)"}
+
+
+def event_when(ev: Dict[str, Any], now: Optional[dt.datetime] = None) -> str:
+    """'şimdi', '35 dk sonra', '2 sa 10 dk sonra', 'yarın 09:30', 'Çar 28 Eki', 'bugün'."""
+    now = now or dt.datetime.now(LOCAL_TZ)
+    st = ev["start"]
+    days = (st.date() - now.date()).days
+    if ev.get("now") and not ev.get("all_day"):
+        return "şimdi"
+    if ev.get("all_day"):
+        days = max(days, 0)
+        return "bugün" if days == 0 else ("yarın" if days == 1 else f"{st.day} {TR_MONTHS.get(st.month, '')}")
+    mins = int((st - now).total_seconds() // 60)
+    if days == 0 and mins < 60:
+        return f"{max(mins, 1)} dk sonra"
+    if days == 0 and mins < 6 * 60:
+        return f"{mins // 60} sa {mins % 60} dk sonra"
+    if days == 0:
+        return f"bugün {st:%H:%M}"
+    if days == 1:
+        return f"yarın {st:%H:%M}"
+    return f"{st.day} {TR_MONTHS.get(st.month, '')} {st:%H:%M}"

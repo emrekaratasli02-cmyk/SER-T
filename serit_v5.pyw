@@ -692,6 +692,7 @@ class SeritDock(QWidget):
                 lat=self.settings.get("lat", 38.37), lon=self.settings.get("lon", 34.03)
             ),
             "sys": sources.fetch_system,
+            "cal": sources.fetch_calendar,
         }
         fn = fetchers.get(key)
         if fn:
@@ -1331,6 +1332,22 @@ class SeritDock(QWidget):
         p.setFont(self.f_lbl)
         p.setPen(theme.COLOR_TEXT_SECONDARY)
         p.drawText(QRectF(cx_text, CHIP_Y + 19.0, w_clock_text + 4.0, 14.0), Qt.AlignLeft | Qt.AlignVCenter, date_str)
+
+        # Bugün (ya da 3 saat içinde) takvimde bir şey varsa sağ üstte küçük kırmızı nokta.
+        try:
+            cal = self.store.get("cal") or {}
+            soon = False
+            for ev in cal.get("events") or []:
+                st = ev.get("start")
+                if st is not None and (st.date() <= now.date() or (st - now).total_seconds() < 3 * 3600):
+                    soon = True
+                    break
+            if soon:
+                p.setPen(Qt.NoPen)
+                p.setBrush(theme.COLOR_ALERT_CRIT)
+                p.drawEllipse(QPointF(r_chip_clock.right() - 5.0, CHIP_Y + 6.0), 3.0, 3.0)
+        except Exception as exc:
+            sources.log_err("cal_dot", exc)
         p.restore()
 
         x += chip_clock_w + theme.GAP_MODULE
@@ -1521,6 +1538,13 @@ class SeritDock(QWidget):
                     rect.size(),
                 )
                 self.tray_popover.show_for(anchor_global)
+        elif key == "clock":
+            # Saat = takvim (kişisel 02). Aynı açılır panel altyapısı, tür "cal".
+            if self.popover.is_open("cal"):
+                self.popover.hide_animated()
+            elif not self.popover.recently_closed("cal"):
+                anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+                self.popover.show_for("cal", anchor_global, dict(self.store.get("cal") or {}))
         elif key in ("claude", "sys", "wx"):
             if self.popover.is_open(key):
                 self.popover.hide_animated()
@@ -1597,7 +1621,14 @@ class SeritDock(QWidget):
             )
             return f"Hava: {src} · {t_str}"
         elif key == "clock":
-            return now_dt.strftime("%d.%m.%Y %H:%M:%S")
+            cal = self.store.get("cal") or {}
+            nxt = cal.get("next")
+            base = now_dt.strftime("%d.%m.%Y %H:%M")
+            if cal.get("err"):
+                return f"{base}\nTakvim: {cal['err']}"
+            if nxt:
+                return f"{base}\nSıradaki: {nxt['title']} · {sources.event_when(nxt)}\nTıkla: takvim"
+            return f"{base}\nYakında etkinlik yok · Tıkla: takvim"
         elif key.startswith("app_") and extra:
             name = extra.get("name") or extra.get("title") or "Uygulama"
             cnt = extra.get("count", 1)
