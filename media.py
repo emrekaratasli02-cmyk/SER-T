@@ -391,7 +391,17 @@ def _now_playing_winrt() -> Optional[Dict[str, object]]:
         title = (props.title or "").strip()
         if not title:
             return None
-        return {"title": title, "artist": (props.artist or "").strip(),
+        raw_artist = (props.artist or "").strip()
+        # Web video/yayın adreslerini (hdfilmcehennemi, .com, http vb.) temizle
+        art_lower = raw_artist.lower()
+        if any(art_lower.startswith(x) for x in ("http", "www.")) or any(x in art_lower for x in (".com", ".net", ".org", "hdfilm", ".me", ".tv")):
+            cleaned_artist = "Web Yayını"
+        elif not raw_artist:
+            cleaned_artist = "Çalıyor"
+        else:
+            cleaned_artist = raw_artist
+
+        return {"title": title, "artist": cleaned_artist,
                 "app": _WINRT_APP_NAMES.get(key, aumid.split("!")[0] or "Medya"),
                 "exe": aumid, "playing": status == 4, "status": status,
                 "session_exes": [], "source": "Windows medya oturumu"}

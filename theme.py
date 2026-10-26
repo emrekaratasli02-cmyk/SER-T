@@ -94,14 +94,14 @@ COLOR_ALERT_WARN: QColor = QColor("#FFC45C")  # >= 80% (Amber)
 COLOR_ALERT_CRIT: QColor = QColor("#FF6E6E")  # >= 95% (Coral Red)
 
 # Base glass material (Dark theme composite over Windows Acrylic blur)
-COLOR_GLASS_TINT: QColor = QColor(15, 18, 24, int(255 * 0.55))
-COLOR_GLASS_OUTER_STROKE: QColor = QColor(0, 0, 0, int(255 * 0.40))
+COLOR_GLASS_TINT: QColor = QColor(16, 20, 28, int(255 * 0.38))
+COLOR_GLASS_OUTER_STROKE: QColor = QColor(0, 0, 0, int(255 * 0.35))
 
-# Specular rim gradient stops (top to bottom)
-COLOR_GLASS_INNER_RIM_0: QColor = QColor(255, 255, 255, int(255 * 0.38))
-COLOR_GLASS_INNER_RIM_25: QColor = QColor(255, 255, 255, int(255 * 0.16))
+# Specular rim gradient stops (top to bottom) - refined glass edge catch
+COLOR_GLASS_INNER_RIM_0: QColor = QColor(255, 255, 255, int(255 * 0.48))
+COLOR_GLASS_INNER_RIM_25: QColor = QColor(255, 255, 255, int(255 * 0.18))
 COLOR_GLASS_INNER_RIM_80: QColor = QColor(255, 255, 255, int(255 * 0.04))
-COLOR_GLASS_INNER_RIM_100: QColor = QColor(255, 255, 255, int(255 * 0.10))
+COLOR_GLASS_INNER_RIM_100: QColor = QColor(255, 255, 255, int(255 * 0.12))
 
 # Text colors
 COLOR_TEXT_PRIMARY: QColor = QColor(255, 255, 255, 255)
@@ -252,7 +252,7 @@ def draw_glass_capsule(
     is_hovered: bool = False,
     hover_opacity: float = 0.0,
     bg_tint: Optional[QColor] = None,
-    show_grain: bool = True,
+    show_grain: bool = False,
     show_specular: bool = True,
     show_outer_stroke: bool = True,
 ) -> None:
