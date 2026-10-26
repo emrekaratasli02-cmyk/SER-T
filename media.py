@@ -674,7 +674,7 @@ def draw_volume_chip(
 
     # Foreground Arc
     if not muted and val > 0.0:
-        fg_col = theme.get_ring_threshold_color(val, theme.COLOR_CPU)
+        fg_col = theme.COLOR_CPU  # ses için uyarı rengi yok: %100 ses hata değil
         p.setPen(QPen(fg_col, ring_stroke, Qt.SolidLine, Qt.RoundCap))
         span = -int(round((val / 100.0) * 360.0 * 16.0))
         p.drawArc(arc_rect, 90 * 16, span)
