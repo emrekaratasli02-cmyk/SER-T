@@ -915,7 +915,7 @@ def draw_volume_slider_panel(
         p.drawRoundedRect(r_badge, 5.0, 5.0)
         p.setFont(theme.make_font(10.5, QFont.Weight.DemiBold, tabular=True))
         p.setPen(theme.COLOR_TEXT_PRIMARY)
-        p.drawText(r_badge, Qt.AlignCenter, f"{int(round(val))}%")
+        p.drawText(r_badge, Qt.AlignCenter, f"%{int(round(val))}")
 
     # 3. Device Subtitle Row
     dev_y = top_y + 20.0
