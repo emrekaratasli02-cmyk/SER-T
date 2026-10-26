@@ -54,24 +54,24 @@ except ImportError:
     import winapi
 
 # Geometry tokens
-WIDTH: int = 280
+WIDTH: int = 300
 CORNER_RADIUS: float = 14.0
 
-# Base Material & Typography Colors
-COLOR_BG: QColor = QColor(16, 20, 28, 238)
+# Base Material & Typography Colors (Lumabar Deep Obsidian Matte)
+COLOR_BG: QColor = QColor(20, 21, 25, 248)
 COLOR_TEXT_PRIMARY: QColor = QColor(255, 255, 255, 255)
-COLOR_TEXT_SECONDARY: QColor = QColor(255, 255, 255, 185)
-COLOR_TEXT_MUTED: QColor = QColor(255, 255, 255, 130)
+COLOR_TEXT_SECONDARY: QColor = QColor(225, 228, 235, 240)
+COLOR_TEXT_MUTED: QColor = QColor(148, 154, 166, 220)
 
 # Section Titles & Hairlines
-COLOR_SECTION_TITLE: QColor = QColor(255, 255, 255, 115)
-COLOR_HAIRLINE: QColor = QColor(255, 255, 255, 20)  # rgba(255, 255, 255, 0.08)
-COLOR_PROGRESS_TRACK: QColor = QColor(255, 255, 255, 22)
+COLOR_SECTION_TITLE: QColor = QColor(135, 140, 152, 230)
+COLOR_HAIRLINE: QColor = QColor(255, 255, 255, 22)
+COLOR_PROGRESS_TRACK: QColor = QColor(255, 255, 255, 28)
 
-# Semantic Accent Colors
-COLOR_CLAUDE_S: QColor = QColor("#F08A5D")
-COLOR_CLAUDE_W: QColor = QColor("#F6B38F")
-COLOR_CLAUDE_OPUS: QColor = QColor("#E09F7D")
+# Semantic Accent Colors (Lumabar Emerald & Royal Blue)
+COLOR_CLAUDE_S: QColor = QColor("#22C55E")
+COLOR_CLAUDE_W: QColor = QColor("#22C55E")
+COLOR_CLAUDE_OPUS: QColor = QColor("#3B82F6")
 
 COLOR_CPU: QColor = QColor("#60B5FF")
 COLOR_RAM: QColor = QColor("#B49CFF")
@@ -84,22 +84,22 @@ COLOR_FX_UP: QColor = QColor("#78DC96")
 COLOR_FX_DOWN: QColor = QColor("#FF6E6E")
 COLOR_FX_FLAT: QColor = QColor(255, 255, 255, 160)
 
-# Badge Colors
-COLOR_BADGE_CLAUDE_BG: QColor = QColor(240, 138, 93, 45)
-COLOR_BADGE_CLAUDE_TXT: QColor = QColor("#FFB08A")
+# Badge Colors (Lumabar subtle dark pill badges)
+COLOR_BADGE_CLAUDE_BG: QColor = QColor(255, 255, 255, 22)
+COLOR_BADGE_CLAUDE_TXT: QColor = QColor(200, 205, 215, 235)
 COLOR_BADGE_STALE_BG: QColor = QColor(245, 158, 11, 45)
 COLOR_BADGE_STALE_TXT: QColor = QColor("#FCD34D")
 COLOR_BADGE_ERR_BG: QColor = QColor(239, 68, 68, 45)
 COLOR_BADGE_ERR_TXT: QColor = QColor("#FCA5A5")
-COLOR_BADGE_LIVE_BG: QColor = QColor(255, 255, 255, 24)
-COLOR_BADGE_LIVE_TXT: QColor = QColor(255, 255, 255, 210)
+COLOR_BADGE_LIVE_BG: QColor = QColor(255, 255, 255, 22)
+COLOR_BADGE_LIVE_TXT: QColor = QColor(200, 205, 215, 235)
 
-# Refresh Button Colors
-COLOR_REFRESH_BG: QColor = QColor(255, 255, 255, 16)
-COLOR_REFRESH_BG_HOVER: QColor = QColor(255, 255, 255, 34)
-COLOR_REFRESH_BG_PRESS: QColor = QColor(255, 255, 255, 54)
-COLOR_REFRESH_BORDER: QColor = QColor(255, 255, 255, 36)
-COLOR_REFRESH_TXT: QColor = QColor(255, 255, 255, 220)
+# Refresh Button Colors (Lumabar compact rounded-6px dark button)
+COLOR_REFRESH_BG: QColor = QColor(255, 255, 255, 22)
+COLOR_REFRESH_BG_HOVER: QColor = QColor(255, 255, 255, 38)
+COLOR_REFRESH_BG_PRESS: QColor = QColor(255, 255, 255, 55)
+COLOR_REFRESH_BORDER: QColor = QColor(255, 255, 255, 24)
+COLOR_REFRESH_TXT: QColor = QColor(255, 255, 255, 245)
 
 
 def make_font(
@@ -191,28 +191,23 @@ def top_processes(n: int = 3) -> List[Dict[str, Any]]:
 
 # Vector Icon Drawing Primitives
 def draw_claude_icon(p: QPainter, rect: QRectF) -> None:
-    """Draw Anthropic Claude spark mark in Coral accent."""
+    """Draw Lumabar-style Anthropic Claude terracotta squircle with starburst mark."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
-    cx, cy = rect.center().x(), rect.center().y()
-    r = min(rect.width(), rect.height()) * 0.46
-
-    path = QPainterPath()
-    # 8-point subtle starburst
-    points: List[QPointF] = []
-    for i in range(8):
-        ang = i * math.pi / 4.0
-        rad = r if (i % 2 == 0) else (r * 0.40)
-        points.append(QPointF(cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
-
-    path.moveTo(points[0])
-    for pt in points[1:]:
-        path.lineTo(pt)
-    path.closeSubpath()
-
+    # Terracotta squircle background (#D97757)
     p.setPen(Qt.NoPen)
-    p.setBrush(COLOR_CLAUDE_S)
-    p.drawPath(path)
+    p.setBrush(QColor("#D97757"))
+    p.drawRoundedRect(rect, 4.5, 4.5)
+
+    cx, cy = rect.center().x(), rect.center().y()
+    r = min(rect.width(), rect.height()) * 0.30
+    pen = QPen(QColor("#141519"), 1.35, Qt.SolidLine, Qt.RoundCap)
+    p.setPen(pen)
+    for i in range(6):
+        ang = i * math.pi / 6.0
+        dx = r * math.cos(ang)
+        dy = r * math.sin(ang)
+        p.drawLine(QPointF(cx - dx, cy - dy), QPointF(cx + dx, cy + dy))
     p.restore()
 
 
@@ -288,45 +283,98 @@ def draw_refresh_icon(p: QPainter, rect: QRectF, angle: float = 0.0) -> None:
     p.restore()
 
 
+def _format_reset_inline(iso: str, short_day: bool = False) -> str:
+    """Format reset time like Lumabar: '2sa 13dk sonra' or 'Cmt 09:00'."""
+    if not iso:
+        return ""
+    if not short_day:
+        left = sources.left_text(iso)
+        return f"sıfırlanır: {left}" if left else ""
+    try:
+        t = dt.datetime.fromisoformat(iso)
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=dt.timezone.utc)
+        loc = t.astimezone(sources.LOCAL_TZ)
+        days_tr = {0: "Pzt", 1: "Sal", 2: "Çar", 3: "Per", 4: "Cum", 5: "Cmt", 6: "Paz"}
+        return f"sıfırlanır: {days_tr.get(loc.weekday(), '')} {loc:%H:%M}"
+    except Exception:
+        left = sources.left_text(iso)
+        return f"sıfırlanır: {left}" if left else ""
+
+
+def _build_subscription_rows(sub_iso: str, extra_enabled: bool) -> List[Dict[str, Any]]:
+    """Compute Lumabar-style SUBSCRIPTION rows from subscriptionCreatedAt ISO timestamp."""
+    rows: List[Dict[str, Any]] = []
+    if not sub_iso:
+        return rows
+    try:
+        sub_dt = dt.datetime.fromisoformat(sub_iso.replace("Z", "+00:00")).astimezone(sources.LOCAL_TZ)
+        now_dt = dt.datetime.now(sources.LOCAL_TZ)
+        m_sub = sources.TR_MONTHS.get(sub_dt.month, "")
+        rows.append({"type": "wx_detail", "label": "Başlangıç", "val": f"{sub_dt.day} {m_sub} {sub_dt.year}"})
+
+        # Monthly billing cycle anchored on sub_dt.day
+        bill_day = sub_dt.day
+        if now_dt.day >= bill_day:
+            last_m = now_dt.month
+            next_m = 1 if now_dt.month == 12 else now_dt.month + 1
+            next_y = now_dt.year + (1 if now_dt.month == 12 else 0)
+        else:
+            last_m = 12 if now_dt.month == 1 else now_dt.month - 1
+            next_m = now_dt.month
+            next_y = now_dt.year
+        try:
+            next_dt = dt.date(next_y, next_m, min(bill_day, 28))
+            days_left = max(0, (next_dt - now_dt.date()).days)
+            next_str = f"≈ {bill_day} {sources.TR_MONTHS.get(next_m, '')} · {days_left} gün"
+        except Exception:
+            next_str = f"≈ {bill_day} {sources.TR_MONTHS.get(next_m, '')}"
+
+        rows.append({"type": "wx_detail", "label": "Son ödeme", "val": f"≈ {bill_day} {sources.TR_MONTHS.get(last_m, '')}"})
+        rows.append({"type": "wx_detail", "label": "Sonraki ödeme", "val": next_str})
+        rows.append({"type": "wx_detail", "label": "Ek kullanım", "val": "Açık" if extra_enabled else "Kapalı"})
+    except Exception:
+        pass
+    return rows
+
+
 # Content Builders
 def build_claude_content(data: dict) -> dict:
-    """Build sectioned popover content dictionary for Claude usage."""
+    """Build sectioned popover content dictionary for Claude usage (Lumabar layout)."""
     raw_source = data.get("source", "Anthropic · Claude Code")
     source = raw_source.replace(" · Claude Code girişi", "")
     t_str = format_source_time(data.get("fetched_at"))
     stale = bool(data.get("stale", False))
     err = data.get("err")
 
-    plan = (data.get("plan") or "Max").capitalize()
+    raw_plan = str(data.get("plan") or "Max")
+    plan = raw_plan if raw_plan.startswith("Max") else raw_plan.capitalize()
     s_val = float(data.get("session", 0.0))
     w_val = float(data.get("week", 0.0))
     s_reset = data.get("session_reset", "")
     w_reset = data.get("week_reset", "")
 
-    s_clock = sources.reset_clock(s_reset) if s_reset else ""
-    w_clock = sources.reset_clock(w_reset) if w_reset else ""
-    s_left = sources.left_text(s_reset) if s_reset else ""
-    w_left = sources.left_text(w_reset) if w_reset else ""
-
-    s_sub = f"{s_left} sonra sıfırlanır ({s_clock})" if (s_left or s_clock) else ""
-    w_sub = f"{w_left} sonra ({w_clock})" if (w_left or w_clock) else ""
+    s_meta = _format_reset_inline(s_reset, short_day=False)
+    w_meta = _format_reset_inline(w_reset, short_day=True)
 
     usage_rows = [
         {
             "type": "bar",
-            "label": "Oturum (5 sa)",
+            "label": "Oturum",
+            "meta": s_meta,
             "val": f"%{s_val:.0f}",
             "pct": s_val,
             "col": get_bar_color(s_val, COLOR_CLAUDE_S),
-            "sub": s_sub,
+            "sub": "",
         },
         {
             "type": "bar",
             "label": "Haftalık",
+            "meta": w_meta,
             "val": f"%{w_val:.0f}",
             "pct": w_val,
             "col": get_bar_color(w_val, COLOR_CLAUDE_W),
-            "sub": w_sub,
+            "sub": "",
         },
     ]
 
@@ -337,7 +385,8 @@ def build_claude_content(data: dict) -> dict:
             if o_val > 0.0:
                 usage_rows.append({
                     "type": "bar",
-                    "label": "Opus (7 gün)",
+                    "label": "Opus",
+                    "meta": w_meta,
                     "val": f"%{o_val:.0f}",
                     "pct": o_val,
                     "col": get_bar_color(o_val, COLOR_CLAUDE_OPUS),
@@ -353,7 +402,8 @@ def build_claude_content(data: dict) -> dict:
             if sn_val > 0.0:
                 usage_rows.append({
                     "type": "bar",
-                    "label": "Sonnet (7 gün)",
+                    "label": "Sonnet",
+                    "meta": w_meta,
                     "val": f"%{sn_val:.0f}",
                     "pct": sn_val,
                     "col": get_bar_color(sn_val, COLOR_CLAUDE_S),
@@ -363,6 +413,13 @@ def build_claude_content(data: dict) -> dict:
             pass
 
     sections = [{"title": "KULLANIM", "rows": usage_rows}]
+
+    sub_rows = _build_subscription_rows(
+        str(data.get("subscribed_at") or ""),
+        bool(data.get("extra_usage", False)),
+    )
+    if sub_rows:
+        sections.append({"title": "ABONELİK", "rows": sub_rows})
 
     if stale:
         footer_note = f"Claude Code girişinden okunur · önbellek {t_str}"
@@ -607,46 +664,71 @@ def build_content(kind: str, data: dict, **kwargs) -> dict:
 
 
 def draw_cal_icon(p: QPainter, rect: QRectF) -> None:
-    """Küçük takvim yaprağı: kırmızı üst şerit + beyaz gövde."""
+    """Lumabar tarzı takvim ikonu: turuncu üst şerit + gün sayısı."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
-    body = QRectF(rect.x() + 1, rect.y() + 2, rect.width() - 2, rect.height() - 3)
+    body = QRectF(rect.x() + 0.5, rect.y() + 1.5, rect.width() - 1.0, rect.height() - 2.0)
     p.setPen(Qt.NoPen)
-    p.setBrush(QColor(240, 244, 250))
-    p.drawRoundedRect(body, 3, 3)
-    p.setBrush(QColor(255, 110, 110))
+    p.setBrush(QColor(242, 244, 248))
+    p.drawRoundedRect(body, 3.5, 3.5)
+    p.setBrush(QColor("#F97316"))
     top = QPainterPath()
-    top.addRoundedRect(QRectF(body.x(), body.y(), body.width(), 5), 3, 3)
-    top.addRect(QRectF(body.x(), body.y() + 3, body.width(), 2))
+    top.addRoundedRect(QRectF(body.x(), body.y(), body.width(), 5.0), 3.5, 3.5)
+    top.addRect(QRectF(body.x(), body.y() + 2.5, body.width(), 2.5))
     p.drawPath(top)
+    now_day = str(dt.datetime.now(sources.LOCAL_TZ).day)
+    p.setFont(make_font(8, QFont.Weight.Bold, tabular=True))
+    p.setPen(QColor("#141519"))
+    p.drawText(QRectF(body.x(), body.y() + 3.2, body.width(), body.height() - 4.0), Qt.AlignCenter, now_day)
     p.restore()
 
 
 def build_cal_content(data: dict) -> dict:
-    """Kişisel takvim paneli: sıradaki etkinlikler (tarih/saat sağda)."""
+    """Lumabar tarzı takvim paneli: solunda renkli şerit olan modern etkinlik kartları."""
     err = data.get("err")
     events = data.get("events") or []
+    accent_palette = ["#F97316", "#3B82F6", "#22C55E", "#A855F7", "#EC4899"]
     rows = []
-    for ev in events[:6]:
+    for idx, ev in enumerate(events[:5]):
         when = sources.event_when(ev)
-        title = str(ev.get("title", ""))
-        if len(title) > 30:
-            title = title[:29] + "…"
-        rows.append({"type": "wx_detail", "label": title, "val": when})
+        if when == "bugün":
+            when = "Bugün · Tüm gün" if ev.get("all_day") else "Bugün"
+        elif when == "yarın":
+            when = "Yarın · Tüm gün" if ev.get("all_day") else "Yarın"
+        elif when == "şimdi":
+            when = "Şimdi devam ediyor"
+        title = str(ev.get("title", "")).strip()
+        # Strip leading emoji clutter so the clean vertical accent bar shines
+        while title and ord(title[0]) > 0x2000:
+            title = title[1:].strip()
+        rows.append({
+            "type": "cal_card",
+            "title": title or "(Başlıksız)",
+            "sub": when,
+            "accent": accent_palette[idx % len(accent_palette)],
+        })
     if not rows and not err:
-        rows.append({"type": "wx_detail", "label": "Yakında etkinlik yok", "val": "36 sa"})
+        rows.append({
+            "type": "cal_card",
+            "title": "Yakında etkinlik yok",
+            "sub": "Önümüzdeki 36 saat",
+            "accent": "#64748B",
+        })
     upd = data.get("updated") or ""
-    note = f"Güncelleme {upd} · Google Takvim (02)" if upd else "Google Takvim (kişisel 02)"
+    note = f"Google Takvim · {upd}" if upd else "Google Takvim"
     stale = bool(data.get("stale") or data.get("stale_file"))
+    now_dt = dt.datetime.now(sources.LOCAL_TZ)
+    days_full = {0: "Pazartesi", 1: "Salı", 2: "Çarşamba", 3: "Perşembe", 4: "Cuma", 5: "Cumartesi", 6: "Pazar"}
+    sec_hdr = f"{days_full.get(now_dt.weekday(), '')}, {now_dt.day} {sources.TR_MONTHS.get(now_dt.month, '')}"
     return {
         "kind": "cal",
         "title": "Takvim",
-        "badge": "Hata" if err else "02",
+        "badge": "Hata" if err else (f"{len(events)} etkinlik" if events else "Boş"),
         "badge_bg": COLOR_BADGE_ERR_BG if err else COLOR_BADGE_LIVE_BG,
         "badge_color": COLOR_BADGE_ERR_TXT if err else COLOR_BADGE_LIVE_TXT,
         "stale": stale,
         "error": str(err) if err else None,
-        "sections": [{"title": "SIRADA (36 SAAT)", "rows": rows}],
+        "sections": [{"title": sec_hdr, "rows": rows}],
         "footer_note": note,
         "source": "Google Takvim",
     }
@@ -788,31 +870,32 @@ class PopoverV2(QWidget):
             # Weather hero block: 46px + 8px margin = 54px
             h += 54.0
 
-        for sec in content.get("sections", []):
+        for s_idx, sec in enumerate(content.get("sections", [])):
             if sec.get("title"):
-                h += 20.0
+                h += 22.0
             rows = sec.get("rows", [])
             for r in rows:
                 rtype = r.get("type", "bar")
                 if rtype == "bar":
-                    # Label (16) + gap (6) + bar (4) + gap (6) = 32
-                    h += 32.0
+                    h += 38.0
                     if r.get("sub"):
-                        # Subtext line: 14 + gap (4) = 18
                         h += 18.0
-                    h += 6.0
+                elif rtype == "cal_card":
+                    h += 50.0
                 elif rtype == "proc":
                     h += 24.0
                 elif rtype == "fx":
                     h += 28.0
                 elif rtype == "wx_detail":
                     h += 24.0
-            # Section bottom padding
-            h += 4.0
+            if s_idx < len(content.get("sections", [])) - 1:
+                h += 8.0
+            else:
+                h += 6.0
 
         # Footer separator (1) + height (34) = 35
         h += 35.0
-        return max(150, int(math.ceil(h)))
+        return max(130, int(math.ceil(h)))
 
     def show_for(
         self,
@@ -1018,6 +1101,11 @@ class PopoverV2(QWidget):
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             pos = event.position()
+            close_rect = QRectF(self.width() - 32.0, 12.0, 22.0, 22.0)
+            if close_rect.contains(pos):
+                self.hide_animated()
+                event.accept()
+                return
             if self._refresh_rect.contains(pos):
                 self._refresh_pressed = True
                 self.update()
@@ -1147,8 +1235,21 @@ class PopoverV2(QWidget):
             p.setPen(COLOR_BADGE_STALE_TXT)
             p.drawText(stale_r, Qt.AlignCenter, "Bayat")
 
+        # Top-right subtle '✕' close mark (Lumabar style)
+        p.save()
+        p.setPen(QPen(COLOR_TEXT_MUTED, 1.3, Qt.SolidLine, Qt.RoundCap))
+        cx_close = w - 21.0
+        cy_close = 23.0
+        p.drawLine(QPointF(cx_close - 3.5, cy_close - 3.5), QPointF(cx_close + 3.5, cy_close + 3.5))
+        p.drawLine(QPointF(cx_close + 3.5, cy_close - 3.5), QPointF(cx_close - 3.5, cy_close + 3.5))
+        p.restore()
+
+        # Header bottom hairline
+        p.setPen(QPen(COLOR_HAIRLINE, 1))
+        p.drawLine(16, 40, int(w - 16), 40)
+
         # 5. Content Layout (Error Banner, Weather Hero, Sections)
-        y = 42.0
+        y = 46.0
 
         err_msg = self._content.get("error")
         has_sections = bool(self._content.get("sections"))
@@ -1228,34 +1329,48 @@ class PopoverV2(QWidget):
             if sec_title:
                 p.setFont(self.f_sec_title)
                 p.setPen(COLOR_SECTION_TITLE)
-                p.drawText(QRectF(16, y, w - 32, 16), Qt.AlignLeft | Qt.AlignVCenter, sec_title.upper())
-                y += 20.0
+                hdr_txt = sec_title if (cur_kind == "cal") else sec_title.upper()
+                p.drawText(QRectF(16, y, w - 32, 16), Qt.AlignLeft | Qt.AlignVCenter, hdr_txt)
+                y += 22.0
 
             rows = sec.get("rows", [])
             for r_idx, r in enumerate(rows):
                 rtype = r.get("type", "bar")
                 if rtype == "bar":
-                    p.setFont(self.f_label)
-                    p.setPen(COLOR_TEXT_SECONDARY)
-                    p.drawText(QRectF(16, y, 140, 16), Qt.AlignLeft | Qt.AlignVCenter, r.get("label", ""))
+                    p.setFont(make_font(12, QFont.Weight.DemiBold))
+                    p.setPen(COLOR_TEXT_PRIMARY)
+                    p.drawText(QRectF(16, y, 130, 16), Qt.AlignLeft | Qt.AlignVCenter, r.get("label", ""))
 
+                    val_str = r.get("val", "")
                     p.setFont(self.f_val_bold)
-                    val_col = r.get("col", COLOR_TEXT_PRIMARY)
-                    p.setPen(val_col)
-                    p.drawText(QRectF(w - 16 - 100, y, 100, 16), Qt.AlignRight | Qt.AlignVCenter, r.get("val", ""))
+                    val_w = QFontMetricsF(self.f_val_bold).horizontalAdvance(val_str) + 2.0
+                    p.setPen(COLOR_TEXT_PRIMARY)
+                    p.drawText(QRectF(w - 16 - val_w, y, val_w, 16), Qt.AlignRight | Qt.AlignVCenter, val_str)
 
-                    y += 22.0
+                    meta_str = r.get("meta", "")
+                    if meta_str:
+                        p.setFont(self.f_sub)
+                        p.setPen(COLOR_TEXT_MUTED)
+                        meta_w = max(40.0, w - 32 - 90 - val_w - 8.0)
+                        p.drawText(
+                            QRectF(w - 16 - val_w - 8.0 - meta_w, y, meta_w, 16),
+                            Qt.AlignRight | Qt.AlignVCenter,
+                            meta_str,
+                        )
+
+                    y += 21.0
                     bar_w = w - 32.0
-                    bar_r = QRectF(16, y, bar_w, 4)
-                    p.fillPath(rounded_path(bar_r, 2), COLOR_PROGRESS_TRACK)
+                    bar_r = QRectF(16, y, bar_w, 5)
+                    p.fillPath(rounded_path(bar_r, 2.5), COLOR_PROGRESS_TRACK)
 
+                    val_col = r.get("col", COLOR_TEXT_PRIMARY)
                     pct = max(0.0, min(100.0, float(r.get("pct", 0.0))))
                     if pct > 0.0:
-                        fill_w = max(4.0, bar_w * (pct / 100.0))
-                        fill_r = QRectF(16, y, fill_w, 4)
-                        p.fillPath(rounded_path(fill_r, 2), val_col)
+                        fill_w = max(5.0, bar_w * (pct / 100.0))
+                        fill_r = QRectF(16, y, fill_w, 5)
+                        p.fillPath(rounded_path(fill_r, 2.5), val_col)
 
-                    y += 10.0
+                    y += 13.0
                     sub = r.get("sub")
                     if sub:
                         p.setFont(self.f_sub)
@@ -1266,6 +1381,31 @@ class PopoverV2(QWidget):
                         y += 18.0
 
                     y += 4.0
+
+                elif rtype == "cal_card":
+                    card_r = QRectF(16, y, w - 32, 44)
+                    p.fillPath(rounded_path(card_r, 8.0), QColor(34, 36, 42, 235))
+                    p.setPen(QPen(QColor(255, 255, 255, 16), 1))
+                    p.drawPath(rounded_path(card_r, 8.0))
+
+                    # Left colored vertical accent bar (Lumabar agenda card style)
+                    acc_col = QColor(r.get("accent", "#F97316"))
+                    bar_pill = QRectF(23, y + 8, 3.5, 28)
+                    p.fillPath(rounded_path(bar_pill, 1.75), acc_col)
+
+                    f_ct = make_font(12, QFont.Weight.DemiBold)
+                    p.setFont(f_ct)
+                    p.setPen(COLOR_TEXT_PRIMARY)
+                    txt_w = w - 32 - 22.0
+                    t_elided = QFontMetricsF(f_ct).elidedText(r.get("title", ""), Qt.ElideRight, txt_w)
+                    p.drawText(QRectF(34, y + 6, txt_w, 16), Qt.AlignLeft | Qt.AlignVCenter, t_elided)
+
+                    p.setFont(self.f_sub)
+                    p.setPen(COLOR_TEXT_MUTED)
+                    s_elided = QFontMetricsF(self.f_sub).elidedText(r.get("sub", ""), Qt.ElideRight, txt_w)
+                    p.drawText(QRectF(34, y + 23, txt_w, 15), Qt.AlignLeft | Qt.AlignVCenter, s_elided)
+
+                    y += 50.0
 
                 elif rtype == "proc":
                     p.setFont(self.f_label)
@@ -1302,21 +1442,21 @@ class PopoverV2(QWidget):
 
                 elif rtype == "wx_detail":
                     val_str = r.get("val", "")
-                    p.setFont(self.f_val_bold)
-                    val_w = min(110.0, QFontMetricsF(self.f_val_bold).horizontalAdvance(val_str) + 2.0)
-                    p.setPen(COLOR_TEXT_PRIMARY)
+                    p.setFont(self.f_val)
+                    val_w = min(145.0, QFontMetricsF(self.f_val).horizontalAdvance(val_str) + 2.0)
+                    p.setPen(COLOR_TEXT_MUTED if cur_kind == "claude" else COLOR_TEXT_PRIMARY)
                     p.drawText(QRectF(w - 16 - val_w, y, val_w, 20), Qt.AlignRight | Qt.AlignVCenter, val_str)
 
-                    # Etiket kalan genişliğe sığar, sığmazsa "…" ile kısalır (takvim başlıkları uzun).
-                    p.setFont(self.f_label)
-                    p.setPen(COLOR_TEXT_SECONDARY)
+                    f_lbl = make_font(12, QFont.Weight.DemiBold) if cur_kind == "claude" else self.f_label
+                    p.setFont(f_lbl)
+                    p.setPen(COLOR_TEXT_PRIMARY if cur_kind == "claude" else COLOR_TEXT_SECONDARY)
                     lbl_w = max(60.0, w - 32 - val_w - 10)
-                    lbl = QFontMetricsF(self.f_label).elidedText(r.get("label", ""), Qt.ElideRight, lbl_w)
+                    lbl = QFontMetricsF(f_lbl).elidedText(r.get("label", ""), Qt.ElideRight, lbl_w)
                     p.drawText(QRectF(16, y, lbl_w, 20), Qt.AlignLeft | Qt.AlignVCenter, lbl)
                     y += 24.0
 
-                # 1px hairline between rows in a section
-                if r_idx < len(rows) - 1:
+                # 1px hairline between rows in a section (except cal_card which has its own card box)
+                if r_idx < len(rows) - 1 and rtype != "cal_card":
                     p.setPen(QPen(COLOR_HAIRLINE, 1))
                     p.drawLine(16, int(y - 2), int(w - 16), int(y - 2))
 
@@ -1329,7 +1469,7 @@ class PopoverV2(QWidget):
         if is_dimmed:
             p.restore()
 
-        # 6. Footer Line & Refresh Button
+        # 6. Footer Line & Refresh Button (Lumabar compact rounded-6px button)
         y_sep = h - 34.0
         p.setPen(QPen(COLOR_HAIRLINE, 1))
         p.drawLine(16, int(y_sep), int(w - 16), int(y_sep))
@@ -1339,14 +1479,14 @@ class PopoverV2(QWidget):
         p.setFont(self.f_footer)
         p.setPen(COLOR_TEXT_MUTED)
         fm_ft = QFontMetricsF(self.f_footer)
-        note_w = w - 32.0 - 74.0
+        note_w = w - 32.0 - 70.0
         elided_note = fm_ft.elidedText(footer_note, Qt.TextElideMode.ElideRight, note_w)
         p.drawText(QRectF(16, y_sep, note_w, 34), Qt.AlignLeft | Qt.AlignVCenter, elided_note)
 
-        # Footer Right "Yenile" Pill Button
-        self._refresh_rect = QRectF(w - 16.0 - 66.0, h - 28.0, 66.0, 22.0)
+        # Footer Right "Yenile" Button (Lumabar compact dark rounded rectangle)
+        self._refresh_rect = QRectF(w - 16.0 - 62.0, h - 28.0, 62.0, 22.0)
         btn_r = self._refresh_rect
-        btn_path = rounded_path(btn_r, 11)
+        btn_path = rounded_path(btn_r, 6.0)
 
         if self._refresh_pressed:
             btn_bg = COLOR_REFRESH_BG_PRESS
@@ -1359,15 +1499,10 @@ class PopoverV2(QWidget):
         p.setPen(QPen(COLOR_REFRESH_BORDER, 1))
         p.drawPath(btn_path)
 
-        # Refresh Spinner / Arrow Icon
-        icon_box = QRectF(btn_r.x() + 8.0, btn_r.y() + 5.0, 12.0, 12.0)
-        draw_refresh_icon(p, icon_box, angle=self._spin_angle)
-
-        # Refresh Button Label
         p.setFont(self.f_btn)
         p.setPen(COLOR_REFRESH_TXT)
-        p.drawText(
-            QRectF(btn_r.x() + 24.0, btn_r.y(), btn_r.width() - 28.0, btn_r.height()),
-            Qt.AlignLeft | Qt.AlignVCenter,
-            "Yenile",
-        )
+        if self._refresh_spinning:
+            icon_box = QRectF(btn_r.center().x() - 6.0, btn_r.center().y() - 6.0, 12.0, 12.0)
+            draw_refresh_icon(p, icon_box, angle=self._spin_angle)
+        else:
+            p.drawText(btn_r, Qt.AlignCenter, "Yenile")

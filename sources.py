@@ -335,13 +335,39 @@ def _fetch_claude_live() -> Dict[str, Any]:
         session_val = _safe_float(session_raw, 0.0)
         week_val = _safe_float(week_raw, 0.0)
 
+        # Read subscription metadata from ~/.claude.json (same as Lumabar)
+        sub_since = ""
+        tier_label = str(plan or "")
+        try:
+            claude_cfg = Path.home() / ".claude.json"
+            if claude_cfg.exists():
+                cfg_j = json.loads(claude_cfg.read_text(encoding="utf-8"))
+                acct = cfg_j.get("oauthAccount") or {}
+                raw_tier = str(acct.get("organizationRateLimitTier") or "")
+                if "max_20x" in raw_tier:
+                    tier_label = "Max 20x"
+                elif "max_5x" in raw_tier:
+                    tier_label = "Max 5x"
+                elif "max" in raw_tier or acct.get("organizationType") == "claude_max":
+                    tier_label = "Max"
+                sub_iso = str(acct.get("subscriptionCreatedAt") or "")
+                if sub_iso:
+                    sub_since = sub_iso
+        except Exception:
+            pass
+
+        extra_obj = data.get("extra_usage") or {}
+        extra_enabled = bool(extra_obj.get("is_enabled", False)) if isinstance(extra_obj, dict) else False
+
         return {
             "session": session_val if session_val is not None else 0.0,
             "session_reset": str(fh.get("resets_at", "") or ""),
             "week": week_val if week_val is not None else 0.0,
             "week_reset": str(sd.get("resets_at", "") or ""),
             "opus": opus_val,
-            "plan": str(plan or ""),
+            "plan": tier_label or "Max 5x",
+            "subscribed_at": sub_since,
+            "extra_usage": extra_enabled,
             "source": "Anthropic · Claude Code girişi",
         }
     except (httpx.RequestError, httpx.HTTPStatusError) as exc:
