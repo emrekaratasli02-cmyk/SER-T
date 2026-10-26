@@ -429,6 +429,12 @@ def parse_media_title(title: str, exe: str = "") -> Optional[Dict[str, str]]:
             raw = raw[: -len(sfx)].strip()
             break
 
+    # YouTube güncel başlıkları " | YouTube Music" / " | YouTube" ayıracı da kullanıyor
+    for sep in (" | YouTube Music", " | YouTube"):
+        if raw.endswith(sep):
+            raw = raw[: -len(sep)] + sep.replace(" | ", " - ")
+            break
+
     # 2a. YouTube Music
     if raw.endswith(" - YouTube Music"):
         body = raw[: -len(" - YouTube Music")].strip()
