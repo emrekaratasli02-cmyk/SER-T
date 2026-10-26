@@ -369,6 +369,7 @@ except ImportError:
     _WinrtMediaManager = None
     _HAS_WINRT = False
 
+_WINRT_STUCK = None  # takılı kalan son WinRT iş parçacığı (birikmeyi önlemek için)
 _WINRT_APP_NAMES = {"chrome": "Chrome", "msedge": "Edge", "spotify": "Spotify", "firefox": "Firefox"}
 
 
@@ -406,11 +407,31 @@ def _now_playing_winrt() -> Optional[Dict[str, object]]:
                 "exe": aumid, "playing": status == 4, "status": status,
                 "session_exes": [], "source": "Windows medya oturumu"}
 
-    try:
-        return asyncio.run(_read())
-    except Exception as exc:  # WinRT/COM hatası: çökme yok, yedek yönteme düş
+    # WinRT bazen hiç dönmüyor (açılışta bar'ı kilitliyordu): ayrı iş parçacığında, 1.5 sn sınırla çalıştır.
+    import threading
+    global _WINRT_STUCK
+    if _WINRT_STUCK is not None and _WINRT_STUCK.is_alive():
+        return {"_fail": True}  # önceki çağrı hâlâ takılı: yeni iş parçacığı açma, başlık yöntemine düş
+    box: Dict[str, object] = {}
+
+    def _worker() -> None:
+        try:
+            box["r"] = asyncio.run(_read())
+        except Exception as exc:  # WinRT/COM hatası: çökme yok, yedek yönteme düş
+            box["e"] = exc
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(1.5)
+    if t.is_alive():
+        _WINRT_STUCK = t
+        _log("now_playing winrt: zaman aşımı (1.5 sn)")
+        return {"_fail": True}
+    if "e" in box:
+        exc = box["e"]
         _log(f"now_playing winrt: {type(exc).__name__}: {exc}")
         return {"_fail": True}
+    return box.get("r")  # type: ignore[return-value]
 
 
 def media_control(action: str) -> bool:
@@ -427,11 +448,25 @@ def media_control(action: str) -> bool:
                   "prev": s.try_skip_previous_async}.get(action)
             return bool(await fn()) if fn else False
 
-        try:
-            if asyncio.run(_do()):
-                return True
-        except Exception as exc:
+        import threading
+        box: Dict[str, object] = {}
+
+        def _worker() -> None:
+            try:
+                box["r"] = asyncio.run(_do())
+            except Exception as exc:
+                box["e"] = exc
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        t.join(1.5)
+        if t.is_alive():
+            _log("media_control winrt: zaman aşımı (1.5 sn)")
+        elif "e" in box:
+            exc = box["e"]
             _log(f"media_control winrt: {type(exc).__name__}: {exc}")
+        elif box.get("r"):
+            return True
     return send_media_key(action)
 
 _BROWSER_SUFFIXES = [
