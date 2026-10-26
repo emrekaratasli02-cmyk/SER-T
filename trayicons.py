@@ -24,6 +24,8 @@ import os
 from pathlib import Path
 import struct
 import sys
+import threading
+import time
 from typing import Any, Dict, List, Optional, Union
 import winreg
 
@@ -69,6 +71,62 @@ LOG_PATH = Path("D:/Apps/serit/serit.log")
 user32 = ctypes.windll.user32
 ole32 = ctypes.windll.ole32
 
+# Explicit 64-bit argument and return types for user32 and ole32 Win32 APIs
+WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+user32.FindWindowW.restype = wintypes.HWND
+
+user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
+user32.FindWindowExW.restype = wintypes.HWND
+
+user32.EnumChildWindows.argtypes = [wintypes.HWND, WNDENUMPROC, wintypes.LPARAM]
+user32.EnumChildWindows.restype = wintypes.BOOL
+
+user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetClassNameW.restype = ctypes.c_int
+
+user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+user32.SetCursorPos.restype = wintypes.BOOL
+
+ULONG_PTR = getattr(wintypes, "ULONG_PTR", ctypes.c_size_t)
+user32.mouse_event.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ULONG_PTR]
+user32.mouse_event.restype = None
+
+user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+user32.GetWindowRect.restype = wintypes.BOOL
+
+ole32.CoInitializeEx.argtypes = [wintypes.LPVOID, wintypes.DWORD]
+ole32.CoInitializeEx.restype = ctypes.c_long
+
+ole32.CoInitialize.argtypes = [wintypes.LPVOID]
+ole32.CoInitialize.restype = ctypes.c_long
+
+ole32.CoUninitialize.argtypes = []
+ole32.CoUninitialize.restype = None
+
+_tls = threading.local()
+
+
+def _ensure_com_initialized() -> None:
+    """Initialize COM on the calling thread once (safe for worker threads)."""
+    if getattr(_tls, "com_initialized", False):
+        return
+    try:
+        # COINIT_APARTMENTTHREADED = 0x2: comtypes ile aynı kip (MTA seçilince comtypes importu RPC_E_CHANGED_MODE ile çöküyordu)
+        hr = ole32.CoInitializeEx(None, 0x2)
+        # S_OK = 0, S_FALSE = 1, RPC_E_CHANGED_MODE = 0x80010106
+        if hr in (0, 1) or (hr & 0xFFFFFFFF) == 0x80010106:
+            _tls.com_initialized = True
+            return
+    except Exception:
+        pass
+    try:
+        ole32.CoInitialize(None)
+        _tls.com_initialized = True
+    except Exception:
+        pass
+
 # Known folder GUIDs used in Windows 11 NotifyIconSettings
 GUID_KNOWN_FOLDERS: Dict[str, str] = {
     "{6D809377-6AF0-444B-8957-A3773F02200E}": os.environ.get("ProgramFiles", r"C:\Program Files"),
@@ -85,9 +143,20 @@ MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_RIGHTDOWN = 0x0008
 MOUSEEVENTF_RIGHTUP = 0x0010
 
+_last_log_msg: str = ""
+_last_log_time: float = 0.0
+_log_lock = threading.Lock()
+
 
 def _log(msg: str) -> None:
-    """Append a timestamped message to D:/Apps/serit/serit.log without raising."""
+    """Append a timestamped message to D:/Apps/serit/serit.log with 60s duplicate throttle."""
+    global _last_log_msg, _last_log_time
+    now = time.monotonic()
+    with _log_lock:
+        if msg == _last_log_msg and (now - _last_log_time) < 60.0:
+            return
+        _last_log_msg = msg
+        _last_log_time = now
     try:
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with LOG_PATH.open("a", encoding="utf-8") as f:
@@ -172,10 +241,7 @@ def _get_active_uia_tray_elements() -> List[Dict[str, Any]]:
     """
     items: List[Dict[str, Any]] = []
     try:
-        try:
-            ole32.CoInitialize(None)
-        except Exception:
-            pass
+        _ensure_com_initialized()
 
         import comtypes.client
         uia = comtypes.client.GetModule("UIAutomationCore.dll")
@@ -190,7 +256,7 @@ def _get_active_uia_tray_elements() -> List[Dict[str, Any]]:
                 child_hwnds.append(hwnd)
                 return True
 
-            enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)(_enum_child)
+            enum_proc = WNDENUMPROC(_enum_child)  # argtypes ile aynı tip olmalı (yoksa TypeError)
             user32.EnumChildWindows(hwnd_overflow, enum_proc, 0)
 
             for ch in child_hwnds:
@@ -255,6 +321,8 @@ def _get_active_uia_tray_elements() -> List[Dict[str, Any]]:
 def list_tray_items() -> List[Dict[str, Any]]:
     """Enumerate system tray items on Windows 11.
 
+    Safe to call from a non-GUI worker thread (pure Python data, no Qt objects created).
+
     Returns:
         List of item dictionaries:
         [{
@@ -270,7 +338,6 @@ def list_tray_items() -> List[Dict[str, Any]]:
             'uia_element': Optional[Any]
         }]
     """
-    _get_qapp()
     registry_items = _read_registry_tray_settings()
     active_uia = _get_active_uia_tray_elements()
 
@@ -290,6 +357,36 @@ def list_tray_items() -> List[Dict[str, Any]]:
         _log(f"psutil process enumeration error: {e}")
 
     results: List[Dict[str, Any]] = []
+
+    # Yedek yol: Gezgini yeniden başlayınca gizli-simge penceresi (overflow XAML) kullanıcı
+    # bir kez açana kadar yok; UIA boş döner. O zaman kayıt defterindeki, şu an çalışan uygulamaları göster.
+    if not active_uia:
+        generic = {"python.exe", "pythonw.exe", "powershell.exe", "pwsh.exe", "explorer.exe", "cmd.exe",
+                   "conhost.exe", "officeclicktorun.exe", "nvcontainer.exe", "phoneexperiencehost.exe"}
+        seen: set = set()
+        for r in registry_items:
+            exe = r.get("exe") or ""
+            low = exe.lower()
+            base = os.path.basename(low)
+            if not exe or low in seen or base in generic:
+                continue
+            if low not in running_procs and base not in running_procs:
+                continue
+            seen.add(low)
+            tip = (r.get("tooltip") or "").strip()
+            name = tip.split("\n")[0].strip() or os.path.splitext(os.path.basename(exe))[0]
+            name = {"WhatsApp.Root": "WhatsApp", "SecurityHealthSystray": "Windows Güvenlik",
+                    "DSATray": "Intel Destek Asistanı", "tapaj.ahk": "cmdpal-tab.ahk"}.get(name, name)
+            if name.lower() in seen:  # aynı uygulamanın eski sürüm kayıtları (ör. WhatsApp) tek satır olsun
+                continue
+            seen.add(name.lower())
+            results.append({
+                "name": name, "full_name": tip or name, "exe": exe, "running": True,
+                "promoted": False, "uia_available": False, "tooltip": tip or name,
+                "icon_bytes": r.get("icon_bytes"), "rect": (0, 0, 0, 0),
+                "is_offscreen": True, "uia_element": None,
+            })
+        return results
 
     # Match each live UIA item with registry metadata
     for uia_item in active_uia:
@@ -435,7 +532,10 @@ def _crop_transparent_borders(img: QImage) -> QImage:
 
 
 def get_tray_icons(items: List[Dict[str, Any]]) -> Dict[str, QPixmap]:
-    """Load or extract high-DPI QPixmap icons for the provided tray items."""
+    """Load or extract high-DPI QPixmap icons for the provided tray items.
+
+    GUI-thread only: creates and returns QPixmap objects.
+    """
     _get_qapp()
     provider = QFileIconProvider()
     icons: Dict[str, QPixmap] = {}

@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -173,6 +174,8 @@ class AlertEngine:
             pass
 
     def _save_state(self) -> None:
+        """Atomically persist alert state to disk using a unique temporary file and os.replace."""
+        tmp_path = None
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             data = {
@@ -181,14 +184,20 @@ class AlertEngine:
                 "queue": [dict(a) for a in self._queue],
                 "ram_high_timestamps": self._ram_high_timestamps,
             }
-            tmp_path = self.state_path.with_suffix(".tmp")
+            tmp_path = self.state_path.with_name(f"{self.state_path.name}.tmp.{os.getpid()}")
             tmp_path.write_text(
                 json.dumps(data, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
-            tmp_path.replace(self.state_path)
+            os.replace(str(tmp_path), str(self.state_path))
         except Exception:
             pass
+        finally:
+            if tmp_path is not None and tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
 
     def _extract_valid_entry(
         self,

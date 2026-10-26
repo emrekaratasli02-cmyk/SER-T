@@ -8,10 +8,13 @@ and media.py (volume slider popover, media keys & now-playing detection).
 
 from __future__ import annotations
 
+import atexit
 import datetime as dt
 import json
 import math
+import os
 from pathlib import Path
+import shutil
 import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -103,19 +106,44 @@ def safe_float(val: Any, default: Optional[float] = 0.0) -> Optional[float]:
 
 def load_settings() -> dict:
     cfg = dict(DEFAULT_SETTINGS)
+    bak_file = SETTINGS_FILE.parent / "settings.json.bak"
+    loaded = False
     if SETTINGS_FILE.exists():
         try:
-            cfg.update(json.loads(SETTINGS_FILE.read_text(encoding="utf-8")))
-        except Exception:
-            pass
+            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                cfg.update(data)
+                loaded = True
+        except Exception as exc:
+            sources.log_err("load_settings_corrupt", exc)
+    if not loaded and bak_file.exists():
+        try:
+            data = json.loads(bak_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                cfg.update(data)
+                sources.log_err(
+                    "load_settings_bak_used",
+                    RuntimeError("settings.json corrupt, recovered from settings.json.bak"),
+                )
+        except Exception as exc:
+            sources.log_err("load_settings_bak_corrupt", exc)
     return cfg
 
 
 def save_settings(cfg: dict) -> None:
     try:
-        SETTINGS_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+        tmp_file = SETTINGS_FILE.parent / "settings.json.tmp"
+        bak_file = SETTINGS_FILE.parent / "settings.json.bak"
+        content = json.dumps(cfg, ensure_ascii=False, indent=2)
+        tmp_file.write_text(content, encoding="utf-8")
+        if SETTINGS_FILE.exists():
+            try:
+                shutil.copy2(SETTINGS_FILE, bak_file)
+            except Exception as exc:
+                sources.log_err("save_settings_bak", exc)
+        os.replace(tmp_file, SETTINGS_FILE)
+    except Exception as exc:
+        sources.log_err("save_settings", exc)
 
 
 def draw_wallpaper_gradient(p: QPainter, w: float, h: float) -> None:
@@ -199,6 +227,7 @@ class TrayPopover(QWidget):
         self.setMouseTracking(True)
         self._items: list = []
         self._icons: dict = {}
+        self._icon_cache: Dict[str, QPixmap] = {}
         self._hits: list = []
         self._hover = -1
         self._closed_at = 0.0
@@ -206,9 +235,36 @@ class TrayPopover(QWidget):
     def recently_closed(self) -> bool:
         return (time.time() - self._closed_at) < 0.25
 
+    def set_items(self, items: list) -> None:
+        self._items = list(items or [])
+        if self.isVisible():
+            self._sync_icons()
+            self.update()
+
+    def _sync_icons(self) -> None:
+        uncached = []
+        for it in self._items:
+            key = f"{it.get('name', '')}::{it.get('exe', '')}"
+            if key not in self._icon_cache or self._icon_cache[key].isNull():
+                uncached.append(it)
+        if uncached:
+            try:
+                new_icons = trayicons.get_tray_icons(uncached)
+                for it in uncached:
+                    name = it.get("name", "")
+                    key = f"{name}::{it.get('exe', '')}"
+                    pm = new_icons.get(name)
+                    if pm is not None and not pm.isNull():
+                        self._icon_cache[key] = pm
+            except Exception as exc:
+                sources.log_err("tray_sync_icons", exc)
+        self._icons = {
+            it.get("name", ""): self._icon_cache.get(f"{it.get('name', '')}::{it.get('exe', '')}", QPixmap())
+            for it in self._items
+        }
+
     def show_for(self, anchor_global: QRectF) -> None:
-        self._items = trayicons.list_tray_items()
-        self._icons = trayicons.get_tray_icons(self._items)
+        self._sync_icons()
         rows = max(1, (len(self._items) + self.COLS - 1) // self.COLS)
         cols = max(1, min(self.COLS, len(self._items)))
         w = int(self.PAD * 2 + cols * self.TILE + (cols - 1) * 6)
@@ -271,6 +327,46 @@ class TrayPopover(QWidget):
             trayicons.activate(self._items[i], button=btn)
 
 
+class VolumeCoalescer(QObject):
+    """Coalesces volume change requests to avoid flooding worker/COM threads.
+
+    Applies at most once every 40ms, and guarantees final value is applied on force=True.
+    """
+
+    def __init__(self, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self._target_level: Optional[float] = None
+        self._last_apply_time: float = 0.0
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._flush)
+
+    def request(self, level: float, force: bool = False) -> None:
+        self._target_level = float(level)
+        now = time.monotonic()
+        elapsed = now - self._last_apply_time
+        if force or elapsed >= 0.040:
+            self._timer.stop()
+            self._flush()
+        elif not self._timer.isActive():
+            rem_ms = max(5, int((0.040 - elapsed) * 1000))
+            self._timer.start(rem_ms)
+
+    def _flush(self) -> None:
+        if self._target_level is None:
+            return
+        lvl = self._target_level
+
+        def _apply() -> None:
+            media.set_volume(lvl)
+
+        submitted = sources.submit("vol_set", _apply)
+        if submitted:
+            self._last_apply_time = time.monotonic()
+        else:
+            self._timer.start(15)
+
+
 class VolumePopover(QWidget):
     """Sectioned acrylic glass flyout panel for master audio volume control."""
 
@@ -288,6 +384,7 @@ class VolumePopover(QWidget):
         self.setMouseTracking(True)
         self.parent_dock = parent
         self.on_volume_change = on_volume_change
+        self._coalescer = VolumeCoalescer(self)
 
         self._level: float = 50.0
         self._muted: bool = False
@@ -295,6 +392,15 @@ class VolumePopover(QWidget):
         self._is_dragging_slider: bool = False
         self._hit_rects: Dict[str, QRectF] = {}
         self.resize(self.WIDTH, self.HEIGHT)
+
+    def _request_volume(self, level: float, force: bool = False) -> None:
+        self._level = float(level)
+        if self.on_volume_change:
+            self.on_volume_change(self._level, self._muted)
+        self.update()
+        if self.parent_dock and getattr(self.parent_dock, "preview_mode", False):
+            return
+        self._coalescer.request(self._level, force=force)
 
     def show_for(
         self,
@@ -343,7 +449,7 @@ class VolumePopover(QWidget):
             r_mute = self._hit_rects.get("mute_btn")
             if r_mute and r_mute.contains(pos):
                 if self.parent_dock and not getattr(self.parent_dock, "preview_mode", False):
-                    media.toggle_mute()
+                    sources.submit("vol_mute", media.toggle_mute)
                 self._muted = not self._muted
                 if self.on_volume_change:
                     self.on_volume_change(self._level, self._muted)
@@ -354,12 +460,7 @@ class VolumePopover(QWidget):
             if r_slider and r_slider.adjusted(-8.0, -8.0, 8.0, 8.0).contains(pos):
                 self._is_dragging_slider = True
                 pct = max(0.0, min(100.0, (pos.x() - r_slider.left()) / r_slider.width() * 100.0))
-                self._level = pct
-                if self.parent_dock and not getattr(self.parent_dock, "preview_mode", False):
-                    media.set_volume(pct)
-                if self.on_volume_change:
-                    self.on_volume_change(self._level, self._muted)
-                self.update()
+                self._request_volume(pct, force=False)
                 return
 
             # Presets (25%, 50%, 75%, 100%)
@@ -374,12 +475,7 @@ class VolumePopover(QWidget):
             for idx, (_, val) in enumerate(presets):
                 rp = QRectF(start_px + idx * (preset_w + preset_gap), footer_y, preset_w, preset_h)
                 if rp.contains(pos):
-                    self._level = val
-                    if self.parent_dock and not getattr(self.parent_dock, "preview_mode", False):
-                        media.set_volume(val)
-                    if self.on_volume_change:
-                        self.on_volume_change(self._level, self._muted)
-                    self.update()
+                    self._request_volume(val, force=True)
                     return
         super().mousePressEvent(event)
 
@@ -388,26 +484,20 @@ class VolumePopover(QWidget):
             r_slider = self._hit_rects.get("slider")
             if r_slider:
                 pct = max(0.0, min(100.0, (event.position().x() - r_slider.left()) / r_slider.width() * 100.0))
-                self._level = pct
-                if self.parent_dock and not getattr(self.parent_dock, "preview_mode", False):
-                    media.set_volume(pct)
-                if self.on_volume_change:
-                    self.on_volume_change(self._level, self._muted)
-                self.update()
+                self._request_volume(pct, force=False)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            self._is_dragging_slider = False
+            if self._is_dragging_slider:
+                self._is_dragging_slider = False
+                self._request_volume(self._level, force=True)
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event) -> None:
         diff = 2.0 if event.angleDelta().y() > 0 else -2.0
         self._level = max(0.0, min(100.0, self._level + diff))
-        if self.parent_dock and not getattr(self.parent_dock, "preview_mode", False):
-            media.set_volume(self._level)
-        if self.on_volume_change:
-            self.on_volume_change(self._level, self._muted)
+        self._request_volume(self._level, force=False)
         self.update()
 
     def keyPressEvent(self, event) -> None:
@@ -476,12 +566,14 @@ class SeritDock(QWidget):
         self._vol_device: str = ""
         self._now_playing_info: Optional[Dict[str, Any]] = None
         self._media_hit_rects: Dict[str, QRectF] = {}
+        self._vol_coalescer = VolumeCoalescer(self)
+        self._cleaned_up: bool = False
 
-        v_init = media.get_volume()
-        self._vol_level = float(v_init.get("level", 50.0))
-        self._vol_muted = bool(v_init.get("muted", False))
-        self._vol_device = str(v_init.get("device", ""))
-        self._now_playing_info = media.now_playing()
+        # Pre-warm icon cache for pinned items
+        for p in self.pins:
+            exe = p.get("exe") or p.get("path") or ""
+            if exe and exe not in self._icon_cache:
+                self._icon_cache[exe] = winapi.app_icon(exe, 64)
 
         # Drag tracking (dock position)
         self._drag_start_pos: Optional[QPoint] = None
@@ -598,13 +690,30 @@ class SeritDock(QWidget):
         if wh is not None:
             wh.screenChanged.connect(self._on_screen_changed)
 
+        # Görev çubuğu gizlenince ekranın kullanılabilir alanı birkaç yüz ms sonra büyür;
+        # bar o anda yerleşirse dipte değil, eski görev çubuğunun üstünde kalıyordu.
+        scr = self.screen() or QGuiApplication.primaryScreen()
+        if scr is not None:
+            scr.availableGeometryChanged.connect(lambda _g: self.place_dock())
+        for ms in (400, 1200, 3000):
+            QTimer.singleShot(ms, self.place_dock)
+
     def _on_screen_changed(self, screen) -> None:
         dpr = screen.devicePixelRatio() if screen else 1.25
         winapi.set_round_region(int(self.winId()), self.width(), int(DOCK_HEIGHT), int(DOCK_RADIUS), dpr)
+        self.place_dock()
         self.update()
+
+    def changeEvent(self, event: QEvent) -> None:
+        if event.type() in (QEvent.ScreenChangeInternal, QEvent.DevicePixelRatioChange):
+            self.place_dock()
+        super().changeEvent(event)
 
     def cleanup(self) -> None:
         """K3 Safe taskbar restoration on quit."""
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
         if self.settings.get("hide_taskbar", False):
             orig = self.settings.get("taskbar_original")
             if orig is not None:
@@ -639,8 +748,23 @@ class SeritDock(QWidget):
         # Media & Volume polling timer (3 s)
         self.media_timer = QTimer(self)
         self.media_timer.setInterval(3000)
-        self.media_timer.timeout.connect(self._poll_media_and_volume)
+        self.media_timer.timeout.connect(lambda: self.submit_fetch("media"))
         self.media_timer.start()
+        self.submit_fetch("media")
+
+        # Top processes polling timer (60 s)
+        self.top_timer = QTimer(self)
+        self.top_timer.setInterval(60000)
+        self.top_timer.timeout.connect(lambda: self.submit_fetch("top"))
+        self.top_timer.start()
+        self.submit_fetch("top")
+
+        # Hidden tray items polling timer (60 s)
+        self.tray_timer = QTimer(self)
+        self.tray_timer.setInterval(60000)
+        self.tray_timer.timeout.connect(lambda: self.submit_fetch("tray"))
+        self.tray_timer.start()
+        self.submit_fetch("tray")
 
         # Clock refresh timer (10 s) - repaints only the clock rect (Requirement 6)
         self.clock_timer = QTimer(self)
@@ -656,28 +780,8 @@ class SeritDock(QWidget):
             self.update()
 
     def _poll_media_and_volume(self) -> None:
-        """Poll volume and now-playing heuristics on UI thread; only repaint on change."""
-        changed = False
-        v_data = media.get_volume()
-        lvl = float(v_data.get("level", 50.0))
-        muted = bool(v_data.get("muted", False))
-        dev = str(v_data.get("device", ""))
-        if lvl != self._vol_level or muted != self._vol_muted or dev != self._vol_device:
-            self._vol_level = lvl
-            self._vol_muted = muted
-            self._vol_device = dev
-            if self.vol_popover.isVisible():
-                self.vol_popover.update_volume(lvl, muted, dev)
-            changed = True
-
-        np = media.now_playing()
-        if np != self._now_playing_info:
-            self._now_playing_info = np
-            changed = True
-
-        if changed:
-            self.compute_layout_and_resize()
-            self.update()
+        """Poll media in background worker."""
+        self.submit_fetch("media")
 
     def _on_volume_changed(self, lvl: float, muted: bool) -> None:
         self._vol_level = float(lvl)
@@ -693,18 +797,52 @@ class SeritDock(QWidget):
             ),
             "sys": sources.fetch_system,
             "cal": sources.fetch_calendar,
+            "media": sources.fetch_media,
+            "top": lambda: popover_v2.top_processes(3),
+            "tray": trayicons.list_tray_items,
         }
         fn = fetchers.get(key)
         if fn:
             sources.submit(key, fn, lambda k, res: self.dispatcher.data_ready.emit(k, res))
 
-    def on_data_ready(self, key: str, res: dict) -> None:
+    def on_data_ready(self, key: str, res: Any) -> None:
         if isinstance(res, dict) and "err" in res:
             sources.log_err(key, RuntimeError(str(res.get("err"))))
         self.store.update(key, res)
 
+        if key == "media":
+            if not isinstance(res, dict):
+                return
+            changed = False
+            v_data = res.get("vol") or {}
+            lvl = float(v_data.get("level", self._vol_level))
+            muted = bool(v_data.get("muted", self._vol_muted))
+            dev = str(v_data.get("device", self._vol_device))
+            if lvl != self._vol_level or muted != self._vol_muted or dev != self._vol_device:
+                self._vol_level = lvl
+                self._vol_muted = muted
+                self._vol_device = dev
+                if self.vol_popover.isVisible():
+                    self.vol_popover.update_volume(lvl, muted, dev)
+                changed = True
+
+            np = res.get("np")
+            if np != self._now_playing_info:
+                self._now_playing_info = np
+                changed = True
+
+            if changed:
+                self.compute_layout_and_resize()
+                self.update()
+            return
+
+        if key == "tray":
+            items = res if isinstance(res, list) else (res.get("items") or res.get("data") or [])
+            self.tray_popover.set_items(items)
+            return
+
         # Tween retargeting: only when value changed by >= 1 point (Requirement 6)
-        if key == "claude":
+        if key == "claude" and isinstance(res, dict):
             s = safe_float(res.get("session"), None)
             w = safe_float(res.get("week"), None)
             has_err = ("err" in res) or (s is None and w is None)
@@ -713,7 +851,7 @@ class SeritDock(QWidget):
                 self.anim_claude_s.retarget(s)
             if w is not None and abs(w - self.anim_claude_w.target_val) >= 1.0:
                 self.anim_claude_w.retarget(w)
-        elif key == "sys":
+        elif key == "sys" and isinstance(res, dict):
             cpu = safe_float(res.get("cpu"), None)
             ram = safe_float(res.get("ram"), None)
             has_err = ("err" in res) or (cpu is None and ram is None)
@@ -722,7 +860,7 @@ class SeritDock(QWidget):
                 self.anim_cpu.retarget(cpu)
             if ram is not None and abs(ram - self.anim_ram.target_val) >= 1.0:
                 self.anim_ram.retarget(ram)
-        elif key == "wx":
+        elif key == "wx" and isinstance(res, dict):
             has_err = ("err" in res) or (res.get("temp") is None)
             self.anim_wx_op.retarget(0.45 if has_err else 1.0)
 
@@ -743,6 +881,11 @@ class SeritDock(QWidget):
         raw_wins = winapi.list_windows()
         groups = winapi.group_by_app(raw_wins)
         tiles = pinned.merge_tiles(self.pins, groups)
+
+        for t in tiles:
+            exe = t.get("exe") or t.get("path") or ""
+            if exe and exe not in self._icon_cache:
+                self._icon_cache[exe] = winapi.app_icon(exe, 64)
 
         sig = tuple(
             (
@@ -781,25 +924,27 @@ class SeritDock(QWidget):
     def get_app_icon(self, exe: str) -> QPixmap:
         if not exe:
             return QPixmap()
-        if exe in self._icon_cache:
-            return self._icon_cache[exe]
-        pm = winapi.app_icon(exe, 64)
-        self._icon_cache[exe] = pm
-        return pm
+        return self._icon_cache.get(exe, QPixmap())
 
     def place_dock(self) -> None:
-        pos = self.settings.get("pos")
-        screen = QGuiApplication.primaryScreen()
+        screen = self.screen() or QGuiApplication.primaryScreen()
         geom = screen.availableGeometry() if screen else QRect(0, 0, 1536, 864)
+        pos = self.settings.get("pos")
 
         if pos and len(pos) == 2:
             cx, y = pos
             x = int(round(cx - self.width() / 2.0))
-            self.move(x, int(y))
+            # Kayıtlı yükseklik, ekranın dibine 60 px'ten yakınsa "dipte" sayılır ve dibe yapışır
+            # (görev çubuğu açıkken kaydedilen eski konum barı havada bırakmasın).
+            bottom_y = int(geom.bottom() - DOCK_HEIGHT - 12)
+            target_y = bottom_y if abs(int(y) - bottom_y) <= 60 or int(y) > bottom_y else int(y)
         else:
             x = int(round(geom.center().x() - self.width() / 2.0))
-            y = int(geom.bottom() - DOCK_HEIGHT - 12)
-            self.move(x, y)
+            target_y = int(geom.bottom() - DOCK_HEIGHT - 12)
+
+        clamped_x = max(geom.left(), min(x, geom.right() - self.width()))
+        clamped_y = max(geom.top(), min(target_y, geom.bottom() - int(DOCK_HEIGHT)))
+        self.move(clamped_x, clamped_y)
 
     def _on_width_tween_update(self, val: float) -> None:
         curr_w = int(round(val))
@@ -808,8 +953,6 @@ class SeritDock(QWidget):
             self.resize(curr_w, int(DOCK_HEIGHT))
             new_x = int(round(cx - curr_w / 2.0))
             self.move(new_x, self.y())
-            dpr = self.screen().devicePixelRatio() if self.screen() else 1.25
-            winapi.set_round_region(int(self.winId()), curr_w, int(DOCK_HEIGHT), int(DOCK_RADIUS), dpr)
 
     def compute_layout_and_resize(self, initial: bool = False) -> None:
         """Computes pixel-precise layout with symmetrical padding and animates dock width."""
@@ -1431,7 +1574,10 @@ class SeritDock(QWidget):
                 if not self.preview_mode:
                     self.bubble.hide()
 
-        self.setToolTip(tooltip_text)
+            self.setToolTip(tooltip_text)
+            if new_hover == "tray":
+                self.submit_fetch("tray")
+
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event: QEvent) -> None:
@@ -1440,6 +1586,7 @@ class SeritDock(QWidget):
         if self._hover_key is not None or self._hover_app_idx is not None:
             self._hover_key = None
             self._hover_app_idx = None
+            self.setToolTip("")
             self.update()
         super().leaveEvent(event)
 
@@ -1495,11 +1642,11 @@ class SeritDock(QWidget):
                 diff = 2.0 if event.angleDelta().y() > 0 else -2.0
                 new_val = max(0.0, min(100.0, self._vol_level + diff))
                 self._vol_level = new_val
-                if not self.preview_mode:
-                    media.set_volume(new_val)
                 if self.vol_popover.isVisible():
                     self.vol_popover.update_volume(new_val, self._vol_muted, self._vol_device)
                 self.update()
+                if not self.preview_mode:
+                    self._vol_coalescer.request(new_val, force=False)
                 break
         super().wheelEvent(event)
 
@@ -1520,12 +1667,16 @@ class SeritDock(QWidget):
                 r_prev = self._media_hit_rects.get("prev")
                 r_play = self._media_hit_rects.get("playpause")
                 r_next = self._media_hit_rects.get("next")
+                action = None
                 if r_prev and r_prev.contains(pos):
-                    media.media_control("prev")
+                    action = "prev"
                 elif r_play and r_play.contains(pos):
-                    media.media_control("playpause")
+                    action = "playpause"
                 elif r_next and r_next.contains(pos):
-                    media.media_control("next")
+                    action = "next"
+                if action:
+                    sources.submit("media_ctl", lambda a=action: media.media_control(a))
+                    QTimer.singleShot(350, lambda: self.submit_fetch("media"))
         elif key == "tray":
             # Kendi cam panelimiz; Windows'un köşedeki paneli yalnızca sağ tık menüsünden.
             if self.preview_mode:
@@ -1557,7 +1708,14 @@ class SeritDock(QWidget):
                 )
                 data = dict(self.store.get(key) or {})
                 if key == "sys":
-                    data["top"] = popover_v2.top_processes(3)
+                    top_entry = self.store.get("top")
+                    if isinstance(top_entry, dict):
+                        data["top"] = top_entry.get("top") or top_entry.get("data") or []
+                    elif isinstance(top_entry, list):
+                        data["top"] = top_entry
+                    else:
+                        data["top"] = []
+                    self.submit_fetch("top")
                 kwargs = {}
                 if key == "wx":
                     kwargs["city"] = self.settings.get("city", "Aksaray")
@@ -1816,6 +1974,11 @@ def render_preview(output_path_str: str) -> None:
     dock.pins = pins
     dock.tiles = tiles
 
+    for t in tiles:
+        exe = t.get("exe") or t.get("path") or ""
+        if exe and exe not in dock._icon_cache:
+            dock._icon_cache[exe] = winapi.app_icon(exe, 64)
+
     # Read-only live volume and now-playing
     vol_data = media.get_volume()
     dock._vol_level = float(vol_data.get("level", 50.0))
@@ -1978,7 +2141,26 @@ def render_preview(output_path_str: str) -> None:
     print(f"LIVE_TILES_COUNT: {len(dock.tiles)} (pinned={n_pins}, running={n_run})")
 
 
+def _handle_exception(exc_type, exc_value, exc_traceback) -> None:
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    import traceback
+    tb_str = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    try:
+        ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with sources.LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(f"{ts} [UNCAUGHT] {tb_str}\n")
+    except Exception:
+        pass
+
+
+sys.excepthook = _handle_exception
+
+
 def main() -> None:
+    sources.rotate_log_if_needed()
+
     if "--restore-taskbar" in sys.argv:
         settings = load_settings()
         orig = settings.get("taskbar_original")
@@ -2002,8 +2184,24 @@ def main() -> None:
 
     lock = QLockFile(str(LOCK_FILE_PATH))
     if not lock.tryLock(100):
-        print("Şerit zaten çalışıyor.")
-        return
+        pid, hostname, appname = lock.getLockInfo()
+        is_live = False
+        if pid and psutil.pid_exists(pid):
+            try:
+                proc = psutil.Process(pid)
+                cmdline = " ".join(proc.cmdline())
+                if "serit_v5.pyw" in cmdline:
+                    is_live = True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                is_live = False
+        if not is_live:
+            lock.removeStaleLockFile()
+            if not lock.tryLock(100):
+                print("Şerit zaten çalışıyor.")
+                return
+        else:
+            print("Şerit zaten çalışıyor.")
+            return
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
@@ -2011,6 +2209,7 @@ def main() -> None:
     settings = load_settings()
     dock = SeritDock(settings, preview_mode=False)
     app.aboutToQuit.connect(dock.cleanup)
+    atexit.register(dock.cleanup)
     dock.start()
 
     sys.exit(app.exec())

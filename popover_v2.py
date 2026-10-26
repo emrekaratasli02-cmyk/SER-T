@@ -53,6 +53,18 @@ except ImportError:
     import theme
     import winapi
 
+LOG_PATH = Path("D:/Apps/serit/serit.log")
+
+
+def _log(msg: str) -> None:
+    """Append a timestamped message to D:/Apps/serit/serit.log without raising."""
+    try:
+        now_str = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(f"{now_str} [popover_v2] {msg}\n")
+    except Exception:
+        pass
+
 # Geometry tokens
 WIDTH: int = 300
 CORNER_RADIUS: float = 14.0
@@ -283,13 +295,16 @@ def draw_refresh_icon(p: QPainter, rect: QRectF, angle: float = 0.0) -> None:
     p.restore()
 
 
-def _format_reset_inline(iso: str, short_day: bool = False) -> str:
+def _format_reset_inline(iso: Any, short_day: bool = False) -> str:
     """Format reset time like Lumabar: '2sa 13dk sonra' or 'Cmt 09:00'."""
-    if not iso:
+    if not iso or not isinstance(iso, str):
         return ""
     if not short_day:
-        left = sources.left_text(iso)
-        return f"sıfırlanır: {left}" if left else ""
+        try:
+            left = sources.left_text(iso)
+            return f"sıfırlanır: {left}" if left else ""
+        except Exception:
+            return ""
     try:
         t = dt.datetime.fromisoformat(iso)
         if t.tzinfo is None:
@@ -298,14 +313,17 @@ def _format_reset_inline(iso: str, short_day: bool = False) -> str:
         days_tr = {0: "Pzt", 1: "Sal", 2: "Çar", 3: "Per", 4: "Cum", 5: "Cmt", 6: "Paz"}
         return f"sıfırlanır: {days_tr.get(loc.weekday(), '')} {loc:%H:%M}"
     except Exception:
-        left = sources.left_text(iso)
-        return f"sıfırlanır: {left}" if left else ""
+        try:
+            left = sources.left_text(iso)
+            return f"sıfırlanır: {left}" if left else ""
+        except Exception:
+            return ""
 
 
-def _build_subscription_rows(sub_iso: str, extra_enabled: bool) -> List[Dict[str, Any]]:
+def _build_subscription_rows(sub_iso: Any, extra_enabled: bool) -> List[Dict[str, Any]]:
     """Compute Lumabar-style SUBSCRIPTION rows from subscriptionCreatedAt ISO timestamp."""
     rows: List[Dict[str, Any]] = []
-    if not sub_iso:
+    if not sub_iso or not isinstance(sub_iso, str):
         return rows
     try:
         sub_dt = dt.datetime.fromisoformat(sub_iso.replace("Z", "+00:00")).astimezone(sources.LOCAL_TZ)
@@ -338,10 +356,25 @@ def _build_subscription_rows(sub_iso: str, extra_enabled: bool) -> List[Dict[str
     return rows
 
 
+def _safe_float(val: Any, default: Optional[float] = None) -> Optional[float]:
+    """Parse a float safely, returning default on None/NaN/Inf/unparseable values."""
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return f
+    except (ValueError, TypeError):
+        return default
+
+
 # Content Builders
 def build_claude_content(data: dict) -> dict:
     """Build sectioned popover content dictionary for Claude usage (Lumabar layout)."""
-    raw_source = data.get("source", "Anthropic · Claude Code")
+    if not isinstance(data, dict):
+        data = {}
+    raw_source = str(data.get("source") or "Anthropic · Claude Code")
     source = raw_source.replace(" · Claude Code girişi", "")
     t_str = format_source_time(data.get("fetched_at"))
     stale = bool(data.get("stale", False))
@@ -349,8 +382,19 @@ def build_claude_content(data: dict) -> dict:
 
     raw_plan = str(data.get("plan") or "Max")
     plan = raw_plan if raw_plan.startswith("Max") else raw_plan.capitalize()
-    s_val = float(data.get("session", 0.0))
-    w_val = float(data.get("week", 0.0))
+
+    s_num = _safe_float(data.get("session"))
+    w_num = _safe_float(data.get("week"))
+
+    s_val = s_num if s_num is not None else 0.0
+    w_val = w_num if w_num is not None else 0.0
+
+    s_str = f"%{s_num:.0f}" if s_num is not None else "—"
+    w_str = f"%{w_num:.0f}" if w_num is not None else "—"
+
+    s_pct = max(0.0, min(100.0, s_val))
+    w_pct = max(0.0, min(100.0, w_val))
+
     s_reset = data.get("session_reset", "")
     w_reset = data.get("week_reset", "")
 
@@ -362,60 +406,52 @@ def build_claude_content(data: dict) -> dict:
             "type": "bar",
             "label": "Oturum",
             "meta": s_meta,
-            "val": f"%{s_val:.0f}",
-            "pct": s_val,
-            "col": get_bar_color(s_val, COLOR_CLAUDE_S),
+            "val": s_str,
+            "pct": s_pct,
+            "col": get_bar_color(s_val, COLOR_CLAUDE_S) if s_num is not None else COLOR_TEXT_MUTED,
             "sub": "",
         },
         {
             "type": "bar",
             "label": "Haftalık",
             "meta": w_meta,
-            "val": f"%{w_val:.0f}",
-            "pct": w_val,
-            "col": get_bar_color(w_val, COLOR_CLAUDE_W),
+            "val": w_str,
+            "pct": w_pct,
+            "col": get_bar_color(w_val, COLOR_CLAUDE_W) if w_num is not None else COLOR_TEXT_MUTED,
             "sub": "",
         },
     ]
 
     opus = data.get("opus")
-    if opus is not None:
-        try:
-            o_val = float(opus)
-            if o_val > 0.0:
-                usage_rows.append({
-                    "type": "bar",
-                    "label": "Opus",
-                    "meta": w_meta,
-                    "val": f"%{o_val:.0f}",
-                    "pct": o_val,
-                    "col": get_bar_color(o_val, COLOR_CLAUDE_OPUS),
-                    "sub": "",
-                })
-        except (ValueError, TypeError):
-            pass
+    o_val = _safe_float(opus)
+    if o_val is not None and o_val > 0.0:
+        usage_rows.append({
+            "type": "bar",
+            "label": "Opus",
+            "meta": w_meta,
+            "val": f"%{o_val:.0f}",
+            "pct": max(0.0, min(100.0, o_val)),
+            "col": get_bar_color(o_val, COLOR_CLAUDE_OPUS),
+            "sub": "",
+        })
 
     sonnet = data.get("sonnet")
-    if sonnet is not None:
-        try:
-            sn_val = float(sonnet)
-            if sn_val > 0.0:
-                usage_rows.append({
-                    "type": "bar",
-                    "label": "Sonnet",
-                    "meta": w_meta,
-                    "val": f"%{sn_val:.0f}",
-                    "pct": sn_val,
-                    "col": get_bar_color(sn_val, COLOR_CLAUDE_S),
-                    "sub": "",
-                })
-        except (ValueError, TypeError):
-            pass
+    sn_val = _safe_float(sonnet)
+    if sn_val is not None and sn_val > 0.0:
+        usage_rows.append({
+            "type": "bar",
+            "label": "Sonnet",
+            "meta": w_meta,
+            "val": f"%{sn_val:.0f}",
+            "pct": max(0.0, min(100.0, sn_val)),
+            "col": get_bar_color(sn_val, COLOR_CLAUDE_S),
+            "sub": "",
+        })
 
     sections = [{"title": "KULLANIM", "rows": usage_rows}]
 
     sub_rows = _build_subscription_rows(
-        str(data.get("subscribed_at") or ""),
+        data.get("subscribed_at"),
         bool(data.get("extra_usage", False)),
     )
     if sub_rows:
@@ -442,46 +478,55 @@ def build_claude_content(data: dict) -> dict:
 
 def build_sys_content(data: dict) -> dict:
     """Build sectioned popover content dictionary for system telemetry."""
-    source = data.get("source", "Bu bilgisayar")
+    if not isinstance(data, dict):
+        data = {}
+    source = str(data.get("source") or "Bu bilgisayar")
     t_str = format_source_time(data.get("fetched_at"))
     stale = bool(data.get("stale", False))
     err = data.get("err")
 
-    cpu_val = float(data.get("cpu", 0.0))
-    ram_val = float(data.get("ram", 0.0))
-    ram_used = float(data.get("ram_used_gb", 0.0))
-    ram_total = float(data.get("ram_total_gb", 0.0))
-    disk_val = float(data.get("disk_c", 0.0))
+    cpu_num = _safe_float(data.get("cpu"))
+    ram_num = _safe_float(data.get("ram"))
+    ram_used = _safe_float(data.get("ram_used_gb"))
+    ram_total = _safe_float(data.get("ram_total_gb"))
+    disk_num = _safe_float(data.get("disk_c"))
 
-    ram_label = (
-        f"RAM ({sources.fmt_tr(ram_used, 1)} / {sources.fmt_tr(ram_total, 1)} GB)"
-        if ram_total > 0
-        else "RAM"
-    )
+    cpu_val = cpu_num if cpu_num is not None else 0.0
+    ram_val = ram_num if ram_num is not None else 0.0
+    disk_val = disk_num if disk_num is not None else 0.0
+
+    cpu_str = f"%{cpu_num:.0f}" if cpu_num is not None else "—"
+    ram_str = f"%{ram_num:.0f}" if ram_num is not None else "—"
+    disk_str = f"%{disk_num:.0f}" if disk_num is not None else "—"
+
+    if ram_total is not None and ram_total > 0 and ram_used is not None:
+        ram_label = f"RAM ({sources.fmt_tr(ram_used, 1)} / {sources.fmt_tr(ram_total, 1)} GB)"
+    else:
+        ram_label = "RAM"
 
     sys_rows = [
         {
             "type": "bar",
             "label": "İşlemci",
-            "val": f"%{cpu_val:.0f}",
-            "pct": cpu_val,
-            "col": get_bar_color(cpu_val, COLOR_CPU),
+            "val": cpu_str,
+            "pct": max(0.0, min(100.0, cpu_val)),
+            "col": get_bar_color(cpu_val, COLOR_CPU) if cpu_num is not None else COLOR_TEXT_MUTED,
             "sub": "",
         },
         {
             "type": "bar",
             "label": ram_label,
-            "val": f"%{ram_val:.0f}",
-            "pct": ram_val,
-            "col": get_bar_color(ram_val, COLOR_RAM),
+            "val": ram_str,
+            "pct": max(0.0, min(100.0, ram_val)),
+            "col": get_bar_color(ram_val, COLOR_RAM) if ram_num is not None else COLOR_TEXT_MUTED,
             "sub": "",
         },
         {
             "type": "bar",
             "label": "Disk C:",
-            "val": f"%{disk_val:.0f}",
-            "pct": disk_val,
-            "col": get_bar_color(disk_val, COLOR_DISK),
+            "val": disk_str,
+            "pct": max(0.0, min(100.0, disk_val)),
+            "col": get_bar_color(disk_val, COLOR_DISK) if disk_num is not None else COLOR_TEXT_MUTED,
             "sub": "",
         },
     ]
@@ -492,11 +537,14 @@ def build_sys_content(data: dict) -> dict:
     if top and isinstance(top, list):
         proc_rows = []
         for p_item in top[:3]:
-            proc_rows.append({
-                "type": "proc",
-                "name": str(p_item.get("name", "")),
-                "mb": float(p_item.get("mb", 0.0)),
-            })
+            if isinstance(p_item, dict):
+                p_name = str(p_item.get("name") or "—")
+                p_mb = _safe_float(p_item.get("mb"), default=0.0)
+                proc_rows.append({
+                    "type": "proc",
+                    "name": p_name,
+                    "mb": p_mb if p_mb is not None else 0.0,
+                })
         if proc_rows:
             sections.append({"title": "EN ÇOK BELLEK", "rows": proc_rows})
 
@@ -518,22 +566,24 @@ def build_sys_content(data: dict) -> dict:
 
 def build_wx_content(data: dict, city: str = "Aksaray") -> dict:
     """Build sectioned popover content dictionary for weather conditions."""
-    source = data.get("source", "open-meteo.com")
+    if not isinstance(data, dict):
+        data = {}
+    source = str(data.get("source") or "open-meteo.com")
     t_str = format_source_time(data.get("fetched_at"))
     stale = bool(data.get("stale", False))
     err = data.get("err")
 
-    resolved_city = data.get("city", city)
+    resolved_city = str(data.get("city") or city)
 
-    temp = data.get("temp")
+    temp = _safe_float(data.get("temp"))
     temp_str = f"{sources.fmt_tr(temp, 1)}°" if temp is not None else "--°"
-    feel = data.get("feel")
+    feel = _safe_float(data.get("feel"))
     feel_str = f"{sources.fmt_tr(feel, 1)}°" if feel is not None else "--°"
-    desc = data.get("desc", "Bilinmiyor")
-    icon = data.get("icon", "cloud")
-    min_t = data.get("min")
-    max_t = data.get("max")
-    wind = data.get("wind")
+    desc = str(data.get("desc") or "Bilinmiyor")
+    icon = str(data.get("icon") or "cloud")
+    min_t = _safe_float(data.get("min"))
+    max_t = _safe_float(data.get("max"))
+    wind = _safe_float(data.get("wind"))
 
     hero = {
         "icon": icon,
@@ -545,9 +595,9 @@ def build_wx_content(data: dict, city: str = "Aksaray") -> dict:
     min_max_str = (
         f"{sources.fmt_tr(min_t, 1)}° / {sources.fmt_tr(max_t, 1)}°"
         if (min_t is not None and max_t is not None)
-        else "--"
+        else "—"
     )
-    wind_str = f"{sources.fmt_tr(wind, 1)} km/sa" if wind is not None else "--"
+    wind_str = f"{sources.fmt_tr(wind, 1)} km/sa" if wind is not None else "—"
 
     detail_rows = [
         {"type": "wx_detail", "label": "Hissedilen", "val": feel_str},
@@ -575,7 +625,9 @@ def build_wx_content(data: dict, city: str = "Aksaray") -> dict:
 
 def build_fx_content(data: dict) -> dict:
     """Build sectioned popover content dictionary for financial exchange rates."""
-    source = data.get("source", "finans.truncgil.com")
+    if not isinstance(data, dict):
+        data = {}
+    source = str(data.get("source") or "finans.truncgil.com")
     raw_updated = data.get("updated")
     if raw_updated and isinstance(raw_updated, str) and " " in raw_updated:
         t_str = raw_updated.split(" ")[1][:5]
@@ -585,20 +637,27 @@ def build_fx_content(data: dict) -> dict:
     stale = bool(data.get("stale", False))
     err = data.get("err")
 
-    usd = float(data.get("usd", 0.0))
-    usd_chg = float(data.get("usd_chg", 0.0))
-    eur = float(data.get("eur", 0.0))
-    eur_chg = float(data.get("eur_chg", 0.0))
-    gold = float(data.get("gold", 0.0))
-    gold_chg = float(data.get("gold_chg", 0.0))
+    usd = _safe_float(data.get("usd"))
+    usd_chg = _safe_float(data.get("usd_chg"))
+    eur = _safe_float(data.get("eur"))
+    eur_chg = _safe_float(data.get("eur_chg"))
+    gold = _safe_float(data.get("gold"))
+    gold_chg = _safe_float(data.get("gold_chg"))
 
-    def format_fx_change(chg: float) -> Tuple[str, QColor]:
+    def format_fx_change(chg: Optional[float]) -> Tuple[str, QColor]:
+        if chg is None:
+            return "—", COLOR_FX_FLAT
         chg_fmt = sources.fmt_tr(chg, 2)
         if chg > 0:
             return f"%+{chg_fmt}", COLOR_FX_UP
         if chg < 0:
             return f"%{chg_fmt}", COLOR_FX_DOWN
         return f"%{chg_fmt}", COLOR_FX_FLAT
+
+    def format_fx_val(val: Optional[float]) -> str:
+        if val is None:
+            return "—"
+        return f"{sources.fmt_tr(val, 2)} ₺"
 
     u_chg_str, u_col = format_fx_change(usd_chg)
     e_chg_str, e_col = format_fx_change(eur_chg)
@@ -608,21 +667,21 @@ def build_fx_content(data: dict) -> dict:
         {
             "type": "fx",
             "label": "Dolar",
-            "val": f"{sources.fmt_tr(usd, 2)} ₺",
+            "val": format_fx_val(usd),
             "chg": u_chg_str,
             "chg_col": u_col,
         },
         {
             "type": "fx",
             "label": "Euro",
-            "val": f"{sources.fmt_tr(eur, 2)} ₺",
+            "val": format_fx_val(eur),
             "chg": e_chg_str,
             "chg_col": e_col,
         },
         {
             "type": "fx",
             "label": "Gram altın",
-            "val": f"{sources.fmt_tr(gold, 2)} ₺",
+            "val": format_fx_val(gold),
             "chg": g_chg_str,
             "chg_col": g_col,
         },
@@ -647,6 +706,8 @@ def build_fx_content(data: dict) -> dict:
 
 def build_content(kind: str, data: dict, **kwargs) -> dict:
     """Route data payload to appropriate builder or return pre-built schema."""
+    if not isinstance(data, dict):
+        data = {}
     if "sections" in data and "footer_note" in data:
         return data
 
@@ -685,26 +746,48 @@ def draw_cal_icon(p: QPainter, rect: QRectF) -> None:
 
 def build_cal_content(data: dict) -> dict:
     """Lumabar tarzı takvim paneli: solunda renkli şerit olan modern etkinlik kartları."""
+    if not isinstance(data, dict):
+        data = {}
     err = data.get("err")
-    events = data.get("events") or []
+    events = data.get("events")
+    if not isinstance(events, list):
+        events = []
     accent_palette = ["#F97316", "#3B82F6", "#22C55E", "#A855F7", "#EC4899"]
     rows = []
     for idx, ev in enumerate(events[:5]):
-        when = sources.event_when(ev)
+        if not isinstance(ev, dict):
+            continue
+        try:
+            when = sources.event_when(ev)
+        except Exception:
+            when = "—"
         if when == "bugün":
             when = "Bugün · Tüm gün" if ev.get("all_day") else "Bugün"
         elif when == "yarın":
             when = "Yarın · Tüm gün" if ev.get("all_day") else "Yarın"
         elif when == "şimdi":
             when = "Şimdi devam ediyor"
-        title = str(ev.get("title", "")).strip()
-        # Strip leading emoji clutter so the clean vertical accent bar shines
-        while title and ord(title[0]) > 0x2000:
-            title = title[1:].strip()
+        elif not when:
+            when = "—"
+
+        raw_title = ev.get("title")
+        if raw_title is None:
+            title = "(Başlıksız)"
+        else:
+            title = str(raw_title).strip()
+            # Strip leading emoji clutter so the clean vertical accent bar shines
+            try:
+                while title and ord(title[0]) > 0x2000:
+                    title = title[1:].strip()
+            except Exception:
+                pass
+        if not title:
+            title = "(Başlıksız)"
+
         rows.append({
             "type": "cal_card",
-            "title": title or "(Başlıksız)",
-            "sub": when,
+            "title": title,
+            "sub": str(when),
             "accent": accent_palette[idx % len(accent_palette)],
         })
     if not rows and not err:
@@ -714,12 +797,22 @@ def build_cal_content(data: dict) -> dict:
             "sub": "Önümüzdeki 36 saat",
             "accent": "#64748B",
         })
+    elif not rows and err:
+        rows.append({
+            "type": "cal_card",
+            "title": "—",
+            "sub": "—",
+            "accent": "#EF4444",
+        })
     upd = data.get("updated") or ""
     note = f"Google Takvim · {upd}" if upd else "Google Takvim"
     stale = bool(data.get("stale") or data.get("stale_file"))
-    now_dt = dt.datetime.now(sources.LOCAL_TZ)
-    days_full = {0: "Pazartesi", 1: "Salı", 2: "Çarşamba", 3: "Perşembe", 4: "Cuma", 5: "Cumartesi", 6: "Pazar"}
-    sec_hdr = f"{days_full.get(now_dt.weekday(), '')}, {now_dt.day} {sources.TR_MONTHS.get(now_dt.month, '')}"
+    try:
+        now_dt = dt.datetime.now(sources.LOCAL_TZ)
+        days_full = {0: "Pazartesi", 1: "Salı", 2: "Çarşamba", 3: "Perşembe", 4: "Cuma", 5: "Cumartesi", 6: "Pazar"}
+        sec_hdr = f"{days_full.get(now_dt.weekday(), '')}, {now_dt.day} {sources.TR_MONTHS.get(now_dt.month, '')}"
+    except Exception:
+        sec_hdr = "YAKLAŞAN ETKİNLİKLER"
     return {
         "kind": "cal",
         "title": "Takvim",
@@ -1136,19 +1229,24 @@ class PopoverV2(QWidget):
         if self._anim_opacity <= 0.001:
             return
 
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setRenderHint(QPainter.TextAntialiasing)
-        p.setOpacity(self._anim_opacity)
+        try:
+            p = QPainter(self)
+            try:
+                p.setRenderHint(QPainter.Antialiasing)
+                p.setRenderHint(QPainter.TextAntialiasing)
+                p.setOpacity(self._anim_opacity)
 
-        cx = self.width() / 2.0
-        cy = self.height() / 2.0
-        p.translate(cx, cy + self._anim_offset_y)
-        p.scale(self._anim_scale, self._anim_scale)
-        p.translate(-cx, -cy)
+                cx = self.width() / 2.0
+                cy = self.height() / 2.0
+                p.translate(cx, cy + self._anim_offset_y)
+                p.scale(self._anim_scale, self._anim_scale)
+                p.translate(-cx, -cy)
 
-        self._paint_card(p)
-        p.end()
+                self._paint_card(p)
+            finally:
+                p.end()
+        except Exception as e:
+            _log(f"paintEvent error: {e}")
 
     # Painting Internal Implementation
     def _paint_card(self, p: QPainter) -> None:
@@ -1364,7 +1462,8 @@ class PopoverV2(QWidget):
                     p.fillPath(rounded_path(bar_r, 2.5), COLOR_PROGRESS_TRACK)
 
                     val_col = r.get("col", COLOR_TEXT_PRIMARY)
-                    pct = max(0.0, min(100.0, float(r.get("pct", 0.0))))
+                    pct_raw = _safe_float(r.get("pct"), 0.0)
+                    pct = max(0.0, min(100.0, pct_raw if pct_raw is not None else 0.0))
                     if pct > 0.0:
                         fill_w = max(5.0, bar_w * (pct / 100.0))
                         fill_r = QRectF(16, y, fill_w, 5)
@@ -1412,7 +1511,8 @@ class PopoverV2(QWidget):
                     p.setPen(COLOR_TEXT_SECONDARY)
                     p.drawText(QRectF(16, y, 150, 20), Qt.AlignLeft | Qt.AlignVCenter, r.get("name", ""))
 
-                    mb_val = float(r.get("mb", 0.0))
+                    mb_raw = _safe_float(r.get("mb"), 0.0)
+                    mb_val = mb_raw if mb_raw is not None else 0.0
                     mb_str = f"{sources.fmt_tr(mb_val, 1)} MB"
                     p.setFont(self.f_val)
                     p.setPen(COLOR_TEXT_PRIMARY)

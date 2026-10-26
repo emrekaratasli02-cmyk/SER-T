@@ -20,6 +20,8 @@ import ctypes.wintypes as w
 import datetime
 import os
 from pathlib import Path
+import threading
+import time
 from typing import Dict, List, Optional, Tuple, Union
 
 import comtypes
@@ -66,9 +68,20 @@ __all__ = [
 
 LOG_PATH = Path("D:/Apps/serit/serit.log")
 
+_last_log_msg: str = ""
+_last_log_time: float = 0.0
+_log_lock = threading.Lock()
+
 
 def _log(msg: str) -> None:
-    """Append a timestamped message to D:/Apps/serit/serit.log."""
+    """Append a timestamped message to D:/Apps/serit/serit.log with 60s duplicate throttle."""
+    global _last_log_msg, _last_log_time
+    now = time.monotonic()
+    with _log_lock:
+        if msg == _last_log_msg and (now - _last_log_time) < 60.0:
+            return
+        _last_log_msg = msg
+        _last_log_time = now
     try:
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with LOG_PATH.open("a", encoding="utf-8") as f:
@@ -210,39 +223,57 @@ def send_media_key(key: str) -> bool:
 # 2. CORE AUDIO VOLUME CONTROL (pycaw)
 # ==============================================================================
 
-_cached_endpoint: Optional[IAudioEndpointVolume] = None
-_cached_device_name: str = ""
+_tls = threading.local()
+
+
+def _ensure_com_initialized() -> None:
+    """Initialize COM on the calling thread once (safe for ThreadPoolExecutor reuse)."""
+    if getattr(_tls, "com_initialized", False):
+        return
+    try:
+        # COINIT_APARTMENTTHREADED = 0x2: comtypes ile aynı kip (MTA seçilince comtypes importu RPC_E_CHANGED_MODE ile çöküyordu)
+        hr = ctypes.windll.ole32.CoInitializeEx(None, 0x2)
+        # S_OK = 0, S_FALSE = 1, RPC_E_CHANGED_MODE = 0x80010106
+        if hr in (0, 1) or (hr & 0xFFFFFFFF) == 0x80010106:
+            _tls.com_initialized = True
+            return
+    except Exception:
+        pass
+    try:
+        comtypes.CoInitialize()
+        _tls.com_initialized = True
+    except Exception:
+        pass
 
 
 def _get_endpoint() -> Tuple[Optional[IAudioEndpointVolume], str]:
     """Retrieve or re-acquire the default render endpoint volume interface.
 
-    COM initialization is performed per thread (UI thread safe).
-    Re-acquires automatically if cached endpoint is invalid or device changed.
+    Thread-safe: caches endpoint per thread to avoid cross-apartment COM violations.
     """
-    global _cached_endpoint, _cached_device_name
-    try:
-        comtypes.CoInitialize()
-    except Exception:
-        pass
+    _ensure_com_initialized()
+    cached_endpoint = getattr(_tls, "cached_endpoint", None)
+    cached_device_name = getattr(_tls, "cached_device_name", "")
 
-    if _cached_endpoint is not None:
+    if cached_endpoint is not None:
         try:
             # Probe endpoint to verify validity
-            _cached_endpoint.GetMute()
-            return _cached_endpoint, _cached_device_name
+            cached_endpoint.GetMute()
+            return cached_endpoint, cached_device_name
         except Exception as err:
             _log(f"Cached audio endpoint stale, re-acquiring: {err}")
-            _cached_endpoint = None
-            _cached_device_name = ""
+            _tls.cached_endpoint = None
+            _tls.cached_device_name = ""
 
     try:
         speakers = AudioUtilities.GetSpeakers()
         if speakers is None:
             return None, "Default Audio"
-        _cached_device_name = getattr(speakers, "FriendlyName", "Speakers")
-        _cached_endpoint = speakers.EndpointVolume
-        return _cached_endpoint, _cached_device_name
+        dev_name = getattr(speakers, "FriendlyName", "Speakers")
+        endpoint = speakers.EndpointVolume
+        _tls.cached_endpoint = endpoint
+        _tls.cached_device_name = dev_name
+        return endpoint, dev_name
     except Exception as e:
         _log(f"_get_endpoint error: {e}")
         return None, "Default Audio"
@@ -320,10 +351,7 @@ def list_output_devices(active_only: bool = True) -> List[Dict[str, Union[str, b
     """
     devices: List[Dict[str, Union[str, bool]]] = []
     try:
-        try:
-            comtypes.CoInitialize()
-        except Exception:
-            pass
+        _ensure_com_initialized()
 
         speakers = AudioUtilities.GetSpeakers()
         default_id = getattr(speakers, "id", "") if speakers else ""
@@ -370,9 +398,28 @@ except ImportError:
     _HAS_WINRT = False
 
 _WINRT_STUCK = None  # takılı kalan son WinRT iş parçacığı (birikmeyi önlemek için)
-# GEÇİCİ (26 Eki 2026, Emre onayladı): WinRT çalan-parça sorgusu kapalı. UI iş parçacığında 1,5 sn
-# bekletip barı donduruyordu. Sorgu arka plan havuzuna taşınınca True yapılacak.
-_WINRT_NOW_PLAYING_ENABLED = False
+_cached_winrt_mgr = None
+# 26 Eki 2026: sorgu artık sources.fetch_media ile arka plan havuzunda çalışıyor (UI beklemiyor);
+# önbellekli yöneticiyle 15 denemede 2-65 ms, zaman aşımı yok. Bu yüzden yeniden açıldı.
+_WINRT_NOW_PLAYING_ENABLED = True
+
+
+def clean_media_title(title: str) -> str:
+    """Tarayıcı sekme başlığını okunur hale getirir.
+    'The Mentalist 2. Sezon 17. Bölüm izle | Hdfilmcehennemi' -> 'The Mentalist · 2. Sezon 17. Bölüm'."""
+    import re
+    t = (title or "").strip()
+    # ' | Site', ' - Site', ' – Site' gibi son ekleri at (yalnızca son ayırıcıdan sonrası kısa ise)
+    for sep in (" | ", " – ", " — ", " - "):
+        if sep in t:
+            head, tail = t.rsplit(sep, 1)
+            if head and len(tail) <= 40:
+                t = head.strip()
+    t = re.sub(r"\s+(izle|full hd izle|hd izle|online izle)$", "", t, flags=re.IGNORECASE).strip()
+    m = re.match(r"^(.*?)\s+(\d+\.\s*Sezon\s+\d+\.\s*Bölüm)$", t, flags=re.IGNORECASE)
+    if m and m.group(1):
+        t = f"{m.group(1).strip()} · {m.group(2)}"
+    return t or (title or "").strip()
 _WINRT_APP_NAMES = {"chrome": "Chrome", "msedge": "Edge", "spotify": "Spotify", "firefox": "Firefox"}
 
 
@@ -384,8 +431,20 @@ def _now_playing_winrt() -> Optional[Dict[str, object]]:
     import asyncio
 
     async def _read():
-        mgr = await _WinrtMediaManager.request_async()
-        s = mgr.get_current_session()
+        global _cached_winrt_mgr
+        if _WinrtMediaManager is None:
+            return None
+        mgr = _cached_winrt_mgr
+        if mgr is None:
+            mgr = await _WinrtMediaManager.request_async()
+            _cached_winrt_mgr = mgr
+        try:
+            s = mgr.get_current_session()
+        except Exception:
+            _cached_winrt_mgr = None
+            mgr = await _WinrtMediaManager.request_async()
+            _cached_winrt_mgr = mgr
+            s = mgr.get_current_session()
         if s is None:
             return None
         props = await s.try_get_media_properties_async()
@@ -405,7 +464,7 @@ def _now_playing_winrt() -> Optional[Dict[str, object]]:
         else:
             cleaned_artist = raw_artist
 
-        return {"title": title, "artist": cleaned_artist,
+        return {"title": clean_media_title(title), "artist": cleaned_artist,
                 "app": _WINRT_APP_NAMES.get(key, aumid.split("!")[0] or "Medya"),
                 "exe": aumid, "playing": status == 4, "status": status,
                 "session_exes": [], "source": "Windows medya oturumu"}
@@ -439,11 +498,17 @@ def _now_playing_winrt() -> Optional[Dict[str, object]]:
 
 def media_control(action: str) -> bool:
     """Oynat/duraklat/ileri/geri: önce Windows medya oturumuna doğrudan komut, olmazsa medya tuşu."""
-    if _HAS_WINRT:
+    _ensure_com_initialized()
+    if _HAS_WINRT and _WinrtMediaManager is not None:
         import asyncio
 
         async def _do():
-            mgr = await _WinrtMediaManager.request_async()
+            global _cached_winrt_mgr
+            mgr = _cached_winrt_mgr
+            if mgr is None:
+                assert _WinrtMediaManager is not None
+                mgr = await _WinrtMediaManager.request_async()
+                _cached_winrt_mgr = mgr
             s = mgr.get_current_session()
             if s is None:
                 return False
@@ -584,10 +649,7 @@ def get_active_audio_sessions() -> List[str]:
     """
     active_exes: List[str] = []
     try:
-        try:
-            comtypes.CoInitialize()
-        except Exception:
-            pass
+        _ensure_com_initialized()
 
         sessions = AudioUtilities.GetAllSessions()
         for s in sessions:

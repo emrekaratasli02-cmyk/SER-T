@@ -4,3 +4,7 @@ __pycache__/
 *.lock
 settings.json
 claude_cache.json
+alerts_state.json
+settings.json.bak
+settings.json.tmp
+serit.log.1

@@ -4,6 +4,7 @@ import concurrent.futures
 import datetime as dt
 import json
 import math
+import os
 from pathlib import Path
 import threading
 import time
@@ -172,9 +173,28 @@ except Exception:
     LOCAL_TZ = dt.timezone(dt.timedelta(hours=3))
 
 
+def rotate_log_if_needed() -> None:
+    """Rotate serit.log to serit.log.1 if it exceeds 1 MB."""
+    try:
+        if LOG_PATH.exists() and LOG_PATH.stat().st_size > 1024 * 1024:
+            log1 = LOG_PATH.with_name(LOG_PATH.name + ".1")
+            if log1.exists():
+                try:
+                    log1.unlink()
+                except OSError:
+                    pass
+            os.replace(LOG_PATH, log1)
+    except Exception:
+        pass
+
+
+rotate_log_if_needed()
+
+
 def log_err(source: str, exc: Exception) -> None:
     """Log network/source exception without sensitive tokens."""
     try:
+        rotate_log_if_needed()
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with LOG_PATH.open("a", encoding="utf-8") as f:
             ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -195,10 +215,40 @@ def tr_num(s: Any) -> float:
         return 0.0
 
 
-def fmt_tr(x: float, dec: int = 2) -> str:
-    """Format float into Turkish number format (e.g. 6423.18 -> '6.423,18')."""
-    fmt = f"{x:,.{dec}f}"
-    return fmt.replace(",", "X").replace(".", ",").replace("X", ".")
+def fmt_tr(x: Any, dec: int = 2) -> str:
+    """Format float into Turkish number format (e.g. 6423.18 -> '6.423,18').
+
+    Returns '—' on None, NaN, inf, or non-numeric values.
+    """
+    if x is None:
+        return "—"
+    try:
+        f = float(x)
+        if math.isnan(f) or math.isinf(f):
+            return "—"
+        fmt = f"{f:,.{dec}f}"
+        return fmt.replace(",", "X").replace(".", ",").replace("X", ".")
+    except (ValueError, TypeError):
+        return "—"
+
+
+def fetch_media() -> Dict[str, Any]:
+    """Fetch current media playback and volume state off the GUI thread."""
+    try:
+        import media
+        np = media.now_playing()
+    except Exception as exc:
+        log_err("fetch_media_np", exc)
+        np = None
+
+    try:
+        import media
+        vol = media.get_volume()
+    except Exception as exc:
+        log_err("fetch_media_vol", exc)
+        vol = {"level": 50, "muted": False, "device": ""}
+
+    return {"np": np, "vol": vol}
 
 
 def left_text(iso: str) -> str:
@@ -513,8 +563,11 @@ class Store:
     def __init__(self) -> None:
         self._data: Dict[str, Dict[str, Any]] = {}
 
-    def update(self, key: str, result: Dict[str, Any]) -> None:
+    def update(self, key: str, result: Any) -> None:
         now = time.time()
+        if not isinstance(result, dict):
+            self._data[key] = {"data": result, "fetched_at": now, "stale": False}
+            return
         prev = self._data.get(key)
         has_err = "err" in result
 
@@ -540,7 +593,9 @@ class Store:
 CALENDAR_JSON = Path("C:/Users/Emre Karatasli/AppData/Local/hermes/takvim-02/yakin.json")
 
 
-def _parse_event_time(s: str) -> Optional[dt.datetime]:
+def _parse_event_time(s: Any) -> Optional[dt.datetime]:
+    if not isinstance(s, str) or not s:
+        return None
     try:
         if len(s) == 10:  # tüm gün: YYYY-MM-DD
             return dt.datetime.fromisoformat(s).replace(tzinfo=LOCAL_TZ)
@@ -563,46 +618,83 @@ def fetch_calendar(now: Optional[dt.datetime] = None) -> Dict[str, Any]:
         return {"err": "Geçersiz veri"}
     if raw.get("hata"):
         return {"err": "Takvim güncellenemedi"}
-    now = now or dt.datetime.now(LOCAL_TZ)
-    upd = _parse_event_time(str(raw.get("zaman") or ""))
-    events = []
-    for e in raw.get("etkinlikler") or []:
-        if not isinstance(e, dict):
-            continue
-        start = _parse_event_time(str(e.get("bas") or ""))
-        end = _parse_event_time(str(e.get("bit") or "")) or start
-        if start is None or (end and end <= now):
-            continue  # geçmiş etkinlik
-        all_day = bool(e.get("tum_gun")) or len(str(e.get("bas") or "")) == 10
-        events.append({"title": str(e.get("baslik") or "(başlıksız)"), "start": start, "end": end,
-                       "all_day": all_day, "where": str(e.get("yer") or ""), "link": str(e.get("link") or ""),
-                       "now": start <= now})
-    events.sort(key=lambda x: x["start"])
-    timed = [x for x in events if not x["all_day"]]
-    nxt = (timed or events or [None])[0]
-    return {"next": nxt, "events": events,
+    try:
+        now = now or dt.datetime.now(LOCAL_TZ)
+        upd = _parse_event_time(raw.get("zaman"))
+        events = []
+        for e in raw.get("etkinlikler") or []:
+            if not isinstance(e, dict):
+                continue
+            start_raw = e.get("bas")
+            if isinstance(start_raw, dt.datetime):
+                start = start_raw if start_raw.tzinfo else start_raw.replace(tzinfo=LOCAL_TZ)
+            else:
+                start = _parse_event_time(start_raw)
+
+            end_raw = e.get("bit")
+            if isinstance(end_raw, dt.datetime):
+                end = end_raw if end_raw.tzinfo else end_raw.replace(tzinfo=LOCAL_TZ)
+            else:
+                end = _parse_event_time(end_raw) or start
+
+            if start is None or (end and end <= now):
+                continue  # geçmiş etkinlik veya geçersiz başlangıç
+            all_day = bool(e.get("tum_gun")) or (isinstance(start_raw, str) and len(start_raw) == 10)
+            events.append({
+                "title": str(e.get("baslik") or "(başlıksız)"),
+                "start": start,
+                "end": end,
+                "all_day": all_day,
+                "where": str(e.get("yer") or ""),
+                "link": str(e.get("link") or ""),
+                "now": start <= now,
+            })
+        events.sort(key=lambda x: x["start"])
+        timed = [x for x in events if not x["all_day"]]
+        nxt = (timed or events or [None])[0]
+        return {
+            "next": nxt,
+            "events": events,
             "updated": upd.strftime("%H:%M") if upd else "",
             "stale_file": bool(upd and (now - upd).total_seconds() > 3 * 3600),
-            "source": "Google Takvim (kişisel 02)"}
+            "source": "Google Takvim (kişisel 02)",
+        }
+    except Exception as exc:
+        log_err("calendar_parse", exc)
+        return {"err": "Takvim okunamadı"}
 
 
-def event_when(ev: Dict[str, Any], now: Optional[dt.datetime] = None) -> str:
+def event_when(ev: Any, now: Optional[dt.datetime] = None) -> str:
     """'şimdi', '35 dk sonra', '2 sa 10 dk sonra', 'yarın 09:30', 'Çar 28 Eki', 'bugün'."""
-    now = now or dt.datetime.now(LOCAL_TZ)
-    st = ev["start"]
-    days = (st.date() - now.date()).days
-    if ev.get("now") and not ev.get("all_day"):
-        return "şimdi"
-    if ev.get("all_day"):
-        days = max(days, 0)
-        return "bugün" if days == 0 else ("yarın" if days == 1 else f"{st.day} {TR_MONTHS.get(st.month, '')}")
-    mins = int((st - now).total_seconds() // 60)
-    if days == 0 and mins < 60:
-        return f"{max(mins, 1)} dk sonra"
-    if days == 0 and mins < 6 * 60:
-        return f"{mins // 60} sa {mins % 60} dk sonra"
-    if days == 0:
-        return f"bugün {st:%H:%M}"
-    if days == 1:
-        return f"yarın {st:%H:%M}"
-    return f"{st.day} {TR_MONTHS.get(st.month, '')} {st:%H:%M}"
+    try:
+        if not isinstance(ev, dict):
+            return ""
+        st = ev.get("start")
+        if isinstance(st, str):
+            st = _parse_event_time(st)
+        if not isinstance(st, dt.datetime):
+            return ""
+        now = now or dt.datetime.now(LOCAL_TZ)
+        if st.tzinfo is None:
+            st = st.replace(tzinfo=LOCAL_TZ)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=LOCAL_TZ)
+        days = (st.date() - now.date()).days
+        if ev.get("now") and not ev.get("all_day"):
+            return "şimdi"
+        if ev.get("all_day"):
+            days = max(days, 0)
+            return "bugün" if days == 0 else ("yarın" if days == 1 else f"{st.day} {TR_MONTHS.get(st.month, '')}")
+        mins = int((st - now).total_seconds() // 60)
+        if days == 0 and mins < 60:
+            return f"{max(mins, 1)} dk sonra"
+        if days == 0 and mins < 6 * 60:
+            return f"{mins // 60} sa {mins % 60} dk sonra"
+        if days == 0:
+            return f"bugün {st:%H:%M}"
+        if days == 1:
+            return f"yarın {st:%H:%M}"
+        return f"{st.day} {TR_MONTHS.get(st.month, '')} {st:%H:%M}"
+    except Exception as exc:
+        log_err("event_when", exc)
+        return ""

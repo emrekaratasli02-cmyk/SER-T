@@ -6,9 +6,10 @@ approved glass dock specification (Variant A). Zero internal application state.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import math
 import random
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import (
@@ -165,32 +166,44 @@ FONT_SIZE_POP_SUB: float = 11.0
 FONT_SIZE_BADGE: float = 10.5
 
 
+_FONT_CACHE: Dict[Tuple[float, QFont.Weight, bool, Optional[float]], QFont] = {}
+
+
 def make_font(
     size_px: float,
     weight: QFont.Weight = QFont.Weight.Normal,
     tabular: bool = False,
     letter_spacing: Optional[float] = None,
 ) -> QFont:
-    """Creates a high-DPI Segoe UI Variable font instance with OpenType feature support."""
-    f = QFont(FONT_FAMILY)
-    f.setFamilies(FONT_FALLBACKS)
-    f.setPixelSize(max(1, int(round(size_px))))
-    f.setWeight(weight)
-    f.setStyleStrategy(QFont.PreferAntialias)
+    """Creates a high-DPI Segoe UI Variable font instance with OpenType feature support.
 
-    if tabular:
-        try:
-            f.setFeature(QFont.Tag.fromString("tnum"), 1)
-        except Exception:
-            pass
+    Cached internally; returns a defensive copy so caller mutations do not pollute the cache.
+    """
+    key = (round(float(size_px), 2), weight, tabular, letter_spacing)
+    cached = _FONT_CACHE.get(key)
+    if cached is None:
+        f = QFont(FONT_FAMILY)
+        f.setFamilies(FONT_FALLBACKS)
+        f.setPixelSize(max(1, int(round(size_px))))
+        f.setWeight(weight)
+        f.setStyleStrategy(QFont.PreferAntialias)
 
-    if letter_spacing is not None:
-        try:
-            f.setLetterSpacing(QFont.AbsoluteSpacing, letter_spacing)
-        except Exception:
-            pass
+        if tabular:
+            try:
+                f.setFeature(QFont.Tag.fromString("tnum"), 1)
+            except Exception:
+                pass
 
-    return f
+        if letter_spacing is not None:
+            try:
+                f.setLetterSpacing(QFont.AbsoluteSpacing, letter_spacing)
+            except Exception:
+                pass
+
+        _FONT_CACHE[key] = f
+        cached = f
+
+    return QFont(cached)
 
 
 # ==============================================================================
@@ -245,29 +258,20 @@ def get_ring_threshold_color(value: float, default_color: QColor) -> QColor:
 # ==============================================================================
 
 
-def draw_glass_capsule(
+_GLASS_CAPSULE_CACHE: OrderedDict[Tuple[Any, ...], QPixmap] = OrderedDict()
+_GLASS_CAPSULE_CACHE_MAX: int = 8
+
+
+def _render_glass_capsule_vector(
     p: QPainter,
     rect: QRectF,
-    radius: float = DOCK_RADIUS,
-    is_hovered: bool = False,
-    hover_opacity: float = 0.0,
-    bg_tint: Optional[QColor] = None,
-    show_grain: bool = False,
-    show_specular: bool = True,
-    show_outer_stroke: bool = True,
+    radius: float,
+    eff_hover: float,
+    bg_tint: Optional[QColor],
+    show_grain: bool,
+    show_specular: bool,
+    show_outer_stroke: bool,
 ) -> None:
-    """Draws a physical acrylic glass capsule with grain texture and specular rim highlights.
-
-    Layer stack:
-      1. Base dark tint fill
-      2. 64x64 monochrome noise grain tile clipped to path (~3% alpha)
-      3. Hover / interaction fill overlay (if hovered or hover_opacity > 0)
-      4. Inner top specular highlight rim (linear gradient along inner contour)
-      5. 1px outer perimeter boundary stroke
-    """
-    p.save()
-    p.setRenderHint(QPainter.Antialiasing)
-
     path = rounded_path(rect, radius)
 
     # 1. Base tint fill + subtle top-to-bottom glass sheen
@@ -287,10 +291,13 @@ def draw_glass_capsule(
         p.restore()
 
     # 3. Interactive hover overlay
-    eff_hover = max(0.0, min(1.0, hover_opacity if hover_opacity > 0.0 else (1.0 if is_hovered else 0.0)))
     if eff_hover > 0.0:
-        h_col = QColor(COLOR_CHIP_HOVER.red(), COLOR_CHIP_HOVER.green(), COLOR_CHIP_HOVER.blue(),
-                       int(COLOR_CHIP_HOVER.alpha() * eff_hover))
+        h_col = QColor(
+            COLOR_CHIP_HOVER.red(),
+            COLOR_CHIP_HOVER.green(),
+            COLOR_CHIP_HOVER.blue(),
+            int(COLOR_CHIP_HOVER.alpha() * eff_hover),
+        )
         p.fillPath(path, h_col)
 
     # 4. Inner specular highlight rim
@@ -319,7 +326,76 @@ def draw_glass_capsule(
         p.setBrush(Qt.NoBrush)
         p.drawPath(outer_path)
 
-    p.restore()
+
+def draw_glass_capsule(
+    p: QPainter,
+    rect: QRectF,
+    radius: float = DOCK_RADIUS,
+    is_hovered: bool = False,
+    hover_opacity: float = 0.0,
+    bg_tint: Optional[QColor] = None,
+    show_grain: bool = False,
+    show_specular: bool = True,
+    show_outer_stroke: bool = True,
+) -> None:
+    """Draws a physical acrylic glass capsule with grain texture and specular rim highlights.
+
+    Cached into a QPixmap keyed by dimensions, radius, dpr and visual parameters (bounded to 8 entries).
+    """
+    w = rect.width()
+    h = rect.height()
+    if w <= 0.0 or h <= 0.0:
+        return
+
+    dev = p.device()
+    dpr = float(dev.devicePixelRatioF()) if dev is not None else 1.0
+
+    eff_hover = max(0.0, min(1.0, hover_opacity if hover_opacity > 0.0 else (1.0 if is_hovered else 0.0)))
+    tint_rgba = bg_tint.rgba() if bg_tint is not None else None
+
+    key = (
+        round(w, 2),
+        round(h, 2),
+        round(radius, 2),
+        round(dpr, 2),
+        round(eff_hover, 2),
+        tint_rgba,
+        show_grain,
+        show_specular,
+        show_outer_stroke,
+    )
+
+    pm = _GLASS_CAPSULE_CACHE.get(key)
+    if pm is not None:
+        _GLASS_CAPSULE_CACHE.move_to_end(key)
+        p.drawPixmap(rect.topLeft(), pm)
+        return
+
+    pw = max(1, int(round(w * dpr)))
+    ph = max(1, int(round(h * dpr)))
+    pm = QPixmap(pw, ph)
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(Qt.transparent)
+
+    p_off = QPainter(pm)
+    p_off.setRenderHint(QPainter.Antialiasing)
+    _render_glass_capsule_vector(
+        p_off,
+        QRectF(0, 0, w, h),
+        radius=radius,
+        eff_hover=eff_hover,
+        bg_tint=bg_tint,
+        show_grain=show_grain,
+        show_specular=show_specular,
+        show_outer_stroke=show_outer_stroke,
+    )
+    p_off.end()
+
+    if len(_GLASS_CAPSULE_CACHE) >= _GLASS_CAPSULE_CACHE_MAX:
+        _GLASS_CAPSULE_CACHE.popitem(last=False)
+    _GLASS_CAPSULE_CACHE[key] = pm
+
+    p.drawPixmap(rect.topLeft(), pm)
 
 
 def draw_dual_stroke(
