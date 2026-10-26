@@ -370,13 +370,16 @@ except ImportError:
     _HAS_WINRT = False
 
 _WINRT_STUCK = None  # takılı kalan son WinRT iş parçacığı (birikmeyi önlemek için)
+# GEÇİCİ (26 Eki 2026, Emre onayladı): WinRT çalan-parça sorgusu kapalı. UI iş parçacığında 1,5 sn
+# bekletip barı donduruyordu. Sorgu arka plan havuzuna taşınınca True yapılacak.
+_WINRT_NOW_PLAYING_ENABLED = False
 _WINRT_APP_NAMES = {"chrome": "Chrome", "msedge": "Edge", "spotify": "Spotify", "firefox": "Firefox"}
 
 
 def _now_playing_winrt() -> Optional[Dict[str, object]]:
     """Windows medya oturumundan (GSMTC) çalan parçayı okur. Arka sekmede çalan YouTube'u da görür.
     Döner: dict | None (oturum yok) | {'_fail': True} (WinRT hatası -> başlık yöntemine düş)."""
-    if not _HAS_WINRT:
+    if not _HAS_WINRT or not _WINRT_NOW_PLAYING_ENABLED:
         return {"_fail": True}
     import asyncio
 
