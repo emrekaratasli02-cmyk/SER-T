@@ -106,13 +106,22 @@ def draw_weather_icon(p: QPainter, r: QRectF, icon: str) -> None:
     p.setRenderHint(QPainter.Antialiasing)
 
     def draw_cloud(base_x: float, base_y: float, w: float = 16, h: float = 10, col: QColor = QColor(230, 235, 245)):
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(base_x - w / 2, base_y, w, h * 0.7), 3, 3)
-        path.addEllipse(QRectF(base_x - w / 2 + 2, base_y - h * 0.4, h * 0.9, h * 0.9))
-        path.addEllipse(QRectF(base_x - w / 2 + 6, base_y - h * 0.6, h, h))
+        # Bulut = alt hap + sol küçük + sağ büyük tepe; parçalar birleştirilir (üst üste binen
+        # yerlerde delik oluşmasın diye united() kullanılır).
+        left = base_x - w / 2
+        base_h = h * 0.62
+        base = QPainterPath()
+        base.addRoundedRect(QRectF(left, base_y, w, base_h), base_h / 2, base_h / 2)
+        small = QPainterPath()
+        d1 = h * 0.78
+        small.addEllipse(QRectF(left + w * 0.12, base_y + base_h * 0.55 - d1, d1, d1))
+        big = QPainterPath()
+        d2 = h * 1.05
+        big.addEllipse(QRectF(left + w * 0.36, base_y + base_h * 0.62 - d2, d2, d2))
+        cloud = base.united(small).united(big)
         p.setPen(Qt.NoPen)
         p.setBrush(col)
-        p.drawPath(path)
+        p.drawPath(cloud)
 
     if icon == "sun":
         p.setPen(Qt.NoPen)
