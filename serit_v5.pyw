@@ -41,7 +41,7 @@ from PySide6.QtGui import (
     QPixmap,
     QRadialGradient,
 )
-from PySide6.QtWidgets import QApplication, QMenu, QWidget
+from PySide6.QtWidgets import QApplication, QMenu, QToolTip, QWidget
 
 import alerts
 import anim
@@ -51,6 +51,7 @@ import popover_v2
 import sources
 import theme
 import tray
+import trayicons
 import winapi
 
 APP_DIR = Path(__file__).resolve().parent
@@ -181,6 +182,93 @@ class BubbleWidget(QWidget):
             gap=0.0,
         )
         p.end()
+
+
+class TrayPopover(QWidget):
+    """^ düğmesinin açtığı kendi cam panelimiz: Windows'un gizli simgeleri (trayicons.py)."""
+
+    COLS = 6
+    TILE = 44.0
+    PAD = 14.0
+    HEAD = 30.0
+
+    def __init__(self) -> None:
+        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+                         | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setMouseTracking(True)
+        self._items: list = []
+        self._icons: dict = {}
+        self._hits: list = []
+        self._hover = -1
+        self._closed_at = 0.0
+
+    def recently_closed(self) -> bool:
+        return (time.time() - self._closed_at) < 0.25
+
+    def show_for(self, anchor_global: QRectF) -> None:
+        self._items = trayicons.list_tray_items()
+        self._icons = trayicons.get_tray_icons(self._items)
+        rows = max(1, (len(self._items) + self.COLS - 1) // self.COLS)
+        cols = max(1, min(self.COLS, len(self._items)))
+        w = int(self.PAD * 2 + cols * self.TILE + (cols - 1) * 6)
+        h = int(self.HEAD + self.PAD + rows * self.TILE + (rows - 1) * 6 + 6)
+        self.resize(max(w, 200), h)
+        scr = QGuiApplication.screenAt(anchor_global.center().toPoint()) or QGuiApplication.primaryScreen()
+        g = scr.availableGeometry()
+        x = int(min(max(anchor_global.center().x() - self.width() / 2, g.left() + 8), g.right() - self.width() - 8))
+        y = int(anchor_global.top() - self.height() - 10)
+        self.move(x, y)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        dpr = self.screen().devicePixelRatio() if self.screen() else 1.25
+        winapi.enable_acrylic(int(self.winId()), 0x50181612)
+        winapi.set_round_region(int(self.winId()), self.width(), self.height(), 18, dpr)
+
+    def changeEvent(self, e) -> None:
+        if e.type() == QEvent.ActivationChange and not self.isActiveWindow() and self.isVisible():
+            self._closed_at = time.time()
+            self.hide()
+        super().changeEvent(e)
+
+    def keyPressEvent(self, e) -> None:
+        if e.key() == Qt.Key_Escape:
+            self._closed_at = time.time()
+            self.hide()
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        try:
+            self._hits = trayicons.draw_tray_panel(p, QRectF(self.rect()), self._items, self._icons, self._hover)
+            if not self._items:
+                p.setPen(theme.COLOR_TEXT_SECONDARY)
+                p.drawText(QRectF(self.rect()), Qt.AlignCenter, "Gizli simge yok")
+        except Exception as exc:
+            sources.log_err("tray_paint", exc)
+        p.end()
+
+    def _index_at(self, pos) -> int:
+        for i, r in enumerate(self._hits):
+            if r.contains(pos):
+                return i
+        return -1
+
+    def mouseMoveEvent(self, e) -> None:
+        i = self._index_at(e.position())
+        if i != self._hover:
+            self._hover = i
+            self.update()
+            if 0 <= i < len(self._items):
+                QToolTip.showText(e.globalPosition().toPoint(), self._items[i].get("name", ""), self)
+
+    def mouseReleaseEvent(self, e) -> None:
+        i = self._index_at(e.position())
+        if 0 <= i < len(self._items):
+            btn = "right" if e.button() == Qt.RightButton else "left"
+            self._closed_at = time.time()
+            self.hide()
+            trayicons.activate(self._items[i], button=btn)
 
 
 class VolumePopover(QWidget):
@@ -446,6 +534,7 @@ class SeritDock(QWidget):
         # Rich acrylic popover flyouts
         self.popover = popover_v2.PopoverV2(self, on_refresh=self.submit_fetch)
         self.vol_popover = VolumePopover(self, on_volume_change=self._on_volume_changed)
+        self.tray_popover = TrayPopover()
         self.bubble = BubbleWidget(self)
 
         # Proactive alerts engine & toast manager (normal mode only)
@@ -1421,8 +1510,17 @@ class SeritDock(QWidget):
                 elif r_next and r_next.contains(pos):
                     media.media_control("next")
         elif key == "tray":
-            if not self.preview_mode:
-                tray.open_hidden_icons()
+            # Kendi cam panelimiz; Windows'un köşedeki paneli yalnızca sağ tık menüsünden.
+            if self.preview_mode:
+                pass
+            elif self.tray_popover.isVisible():
+                self.tray_popover.hide()
+            elif not self.tray_popover.recently_closed():
+                anchor_global = QRectF(
+                    self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))),
+                    rect.size(),
+                )
+                self.tray_popover.show_for(anchor_global)
         elif key in ("claude", "sys", "wx"):
             if self.popover.is_open(key):
                 self.popover.hide_animated()

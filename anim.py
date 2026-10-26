@@ -115,6 +115,10 @@ class Tween(BaseTween):
 
     def retarget(self, new_target: float, duration: Optional[float] = None) -> None:
         """Redirects tween to a new target starting smoothly from its current value."""
+        # Zaten hedefte ve hareketsizse hiçbir şey yapma: aksi halde her veri gelişinde
+        # (2 sn) sürücü 60 fps tam çizim başlatıp boşta işlemci harcıyordu.
+        if abs(float(new_target) - self.target_val) < 1e-6 and abs(self.value - self.target_val) < 1e-6:
+            return
         self.start_val = self.value
         self.target_val = float(new_target)
         if duration is not None:
