@@ -329,14 +329,6 @@ def draw_tile(
 
     eff_hover = max(0.0, min(1.0, hover_t))
 
-    # Base: 0.07 -> Hover: 0.13
-    fill_alpha = int(255.0 * (0.07 + 0.06 * eff_hover))
-    # Base: 0.10 -> Hover: 0.14
-    border_alpha = int(255.0 * (0.10 + 0.04 * eff_hover))
-
-    fill_color = QColor(255, 255, 255, fill_alpha)
-    border_color = QColor(255, 255, 255, border_alpha)
-
     cx = rect.center().x()
     cy = rect.center().y()
 
@@ -347,25 +339,24 @@ def draw_tile(
         p.scale(press_scale, press_scale)
         p.translate(-cx, -cy)
 
-    tile_path = theme.rounded_path(rect, TILE_RADIUS)
-    # 1. Dark glass base for depth
-    p.fillPath(tile_path, COLOR_TILE_DARK_BASE)
-    # 2. Semi-translucent white surface (brightens on hover)
-    p.fillPath(tile_path, fill_color)
+    # 1. Hover/press highlight only - idle icons float cleanly on the glass without rigid dark square boxes
+    if eff_hover > 0.0:
+        hover_bg = QColor(255, 255, 255, int(255 * 0.09 * eff_hover))
+        hover_border = QColor(255, 255, 255, int(255 * 0.16 * eff_hover))
+        tile_path = theme.rounded_path(rect, 16.0)
+        p.fillPath(tile_path, hover_bg)
+        border_rect = rect.adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(hover_border, BORDER_WIDTH))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(theme.rounded_path(border_rect, 15.5))
 
-    # 3. 1px crisp outer border
-    border_rect = rect.adjusted(0.5, 0.5, -0.5, -0.5)
-    border_radius = max(0.0, TILE_RADIUS - 0.5)
-    p.setPen(QPen(border_color, BORDER_WIDTH))
-    p.setBrush(Qt.NoBrush)
-    p.drawPath(theme.rounded_path(border_rect, border_radius))
-
-    # 4. Icon (30 logical px centered)
+    # 4. Icon (32 logical px centered, floating directly on glass)
+    ICON_SIZE_RENDER = 32.0
     icon_rect = QRectF(
-        rect.x() + (rect.width() - ICON_SIZE) / 2.0,
-        rect.y() + (rect.height() - ICON_SIZE) / 2.0,
-        ICON_SIZE,
-        ICON_SIZE,
+        rect.x() + (rect.width() - ICON_SIZE_RENDER) / 2.0,
+        rect.y() + (rect.height() - ICON_SIZE_RENDER) / 2.0,
+        ICON_SIZE_RENDER,
+        ICON_SIZE_RENDER,
     )
     if pixmap is not None and not pixmap.isNull():
         theme.draw_icon_crisp(p, pixmap, icon_rect)

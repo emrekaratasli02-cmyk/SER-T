@@ -914,7 +914,7 @@ class SeritDock(QWidget):
 
         # 1. Physical Glass Capsule with Specular Rim & Grain
         r_dock = QRectF(0.5, 0.5, self.width() - 1.0, DOCK_HEIGHT - 1.0)
-        theme.draw_glass_capsule(p, r_dock, radius=DOCK_RADIUS)
+        theme.draw_glass_capsule(p, r_dock, radius=(DOCK_HEIGHT - 1.0) / 2.0)
 
         self.hit_boxes.clear()
         x = theme.DOCK_PAD_X
