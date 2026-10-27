@@ -534,7 +534,8 @@ def fetch_weather(lat: float = 38.37, lon: float = 34.03) -> Dict[str, Any]:
         if temp_val is None or feel_val is None:
             return {"err": "Geçersiz veri"}
 
-        wind_val = _safe_float(cur.get("wind_speed_10m"), 0.0)
+        # Eksik değer None kalır -> panelde "—" (uydurma 0 km/sa gösterme)
+        wind_val = _safe_float(cur.get("wind_speed_10m"), None)
 
         code_raw = cur.get("weather_code")
         try:
@@ -549,8 +550,9 @@ def fetch_weather(lat: float = 38.37, lon: float = 34.03) -> Dict[str, Any]:
         min_list = daily.get("temperature_2m_min")
         max_raw = max_list[0] if isinstance(max_list, list) and max_list else None
         min_raw = min_list[0] if isinstance(min_list, list) and min_list else None
-        max_val = _safe_float(max_raw, temp_val)
-        min_val = _safe_float(min_raw, temp_val)
+        # Günlük en yüksek/en düşük gelmezse anlık sıcaklığı kopyalama; None -> "—"
+        max_val = _safe_float(max_raw, None)
+        min_val = _safe_float(min_raw, None)
 
         return {
             "temp": temp_val,
@@ -558,9 +560,9 @@ def fetch_weather(lat: float = 38.37, lon: float = 34.03) -> Dict[str, Any]:
             "code": code,
             "desc": desc,
             "icon": icon,
-            "max": max_val if max_val is not None else temp_val,
-            "min": min_val if min_val is not None else temp_val,
-            "wind": wind_val if wind_val is not None else 0.0,
+            "max": max_val,
+            "min": min_val,
+            "wind": wind_val,
             "source": "open-meteo.com",
         }
     except (httpx.RequestError, httpx.HTTPStatusError) as exc:
