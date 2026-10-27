@@ -13,9 +13,12 @@ Implements approved 'dock v3' cards:
 from __future__ import annotations
 
 import datetime as dt
+import math
+from pathlib import Path
+import re
 from typing import Any, Dict, Optional, Tuple
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QByteArray, QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -25,7 +28,9 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPixmap,
 )
+from PySide6.QtSvg import QSvgRenderer
 
 import sources
 import theme
@@ -100,6 +105,52 @@ def draw_card_base(
 # 1. CLAUDE CARD
 # ==============================================================================
 
+APP_DIR = Path(__file__).resolve().parent
+_CLAUDE_SVG_CACHE: Dict[Tuple[float, float], QPixmap] = {}
+
+
+def get_claude_symbol_pixmap(target_size: float = 29.0, dpr: float = 1.0) -> Optional[QPixmap]:
+    """Render and cache Claude official symbol Option C (#D97757)."""
+    key = (target_size, dpr)
+    if key in _CLAUDE_SVG_CACHE:
+        return _CLAUDE_SVG_CACHE[key]
+
+    svg_file = APP_DIR / "assets" / "claude-symbol.svg"
+    if not svg_file.is_file():
+        return None
+
+    try:
+        raw_svg = svg_file.read_text(encoding="utf-8")
+        # Ensure fill colour is #D97757 (replacing hsl(...) or unset)
+        fixed_svg = re.sub(r'fill="[^"]*"', 'fill="#D97757"', raw_svg)
+        if 'fill="#D97757"' not in fixed_svg:
+            fixed_svg = fixed_svg.replace("<path ", '<path fill="#D97757" ')
+
+        renderer = QSvgRenderer(QByteArray(fixed_svg.encode("utf-8")))
+        if not renderer.isValid():
+            return None
+
+        px_w = max(1, int(round(target_size * dpr)))
+        px_h = max(1, int(round(target_size * dpr)))
+        pm = QPixmap(px_w, px_h)
+        pm.fill(Qt.transparent)
+        pm.setDevicePixelRatio(dpr)
+
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        renderer.render(p, QRectF(0.0, 0.0, target_size, target_size))
+        p.end()
+
+        _CLAUDE_SVG_CACHE[key] = pm
+        return pm
+    except Exception as exc:
+        try:
+            sources.log_err("claude_svg_render", exc)
+        except Exception:
+            pass
+        return None
+
+
 def draw_claude_tile_star(p: QPainter, rect: QRectF) -> None:
     """Draw 40x40 tile radius 10 fill #D97757 with 6-spoke rounded star (colour #1d1410)."""
     p.save()
@@ -154,9 +205,17 @@ def draw_claude_card(
     """Renders 182x52 Claude card according to dock v3 spec."""
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
 
-    # 40x40 Tile at left + 6px padding
-    tile_rect = QRectF(rect.x() + 6.0, rect.y() + 6.0, 40.0, 40.0)
-    draw_claude_tile_star(p, tile_rect)
+    # 40x40 Slot at left + 6px padding (Option C: flat symbol 29x29 centred, no tile)
+    slot_rect = QRectF(rect.x() + 6.0, rect.y() + 6.0, 40.0, 40.0)
+    dev = p.device()
+    dpr = dev.devicePixelRatioF() if dev is not None else 1.0
+    claude_pm = get_claude_symbol_pixmap(29.0, dpr)
+    if claude_pm is not None and not claude_pm.isNull():
+        sym_x = slot_rect.x() + (slot_rect.width() - 29.0) / 2.0
+        sym_y = slot_rect.y() + (slot_rect.height() - 29.0) / 2.0
+        p.drawPixmap(QPointF(sym_x, sym_y), claude_pm)
+    else:
+        draw_claude_tile_star(p, slot_rect)
 
     # Data
     s_pct = claude_data.get("session")
@@ -672,26 +731,89 @@ def draw_calendar_card(
 
 
 # ==============================================================================
-# 6. CLOCK BLOCK
+# 6. CLOCK V1 'SADE'
 # ==============================================================================
 
-def draw_clock_block(
+TR_MONTHS: Dict[int, str] = {
+    1: "Ocak",
+    2: "Şubat",
+    3: "Mart",
+    4: "Nisan",
+    5: "Mayıs",
+    6: "Haziran",
+    7: "Temmuz",
+    8: "Ağustos",
+    9: "Eylül",
+    10: "Ekim",
+    11: "Kasım",
+    12: "Aralık",
+}
+
+
+def format_clock_v1_date(d: dt.date) -> str:
+    """Format date for Clock V1, e.g. 'Sal, 27 Ekim'."""
+    weekday = TR_DAYS_SHORT.get(d.weekday(), "")
+    month_name = TR_MONTHS.get(d.month, "")
+    return f"{weekday}, {d.day} {month_name}"
+
+
+def measure_clock_v1_width(
+    now: Optional[dt.datetime] = None,
+    temp_str: Optional[str] = None,
+    has_weather: bool = True,
+) -> float:
+    """Measure exact width for Clock V1 Sade based on typography metrics."""
+    if now is None:
+        now = dt.datetime.now(sources.LOCAL_TZ)
+    time_str = now.strftime("%H:%M")
+    date_str = format_clock_v1_date(now.date())
+
+    f_time = theme.make_font(20.0, QFont.Weight.DemiBold, tabular=True, letter_spacing=-0.3)
+    f_date = theme.make_font(11.0, QFont.Weight.Medium)
+
+    fm_time = QFontMetricsF(f_time)
+    fm_date = QFontMetricsF(f_date)
+    w_time = fm_time.horizontalAdvance(time_str)
+    w_date = fm_date.horizontalAdvance(date_str)
+    w_left = max(w_time, w_date)
+
+    w = 10.0 + w_left  # 10px left padding
+    if has_weather and temp_str:
+        f_temp = theme.make_font(13.0, QFont.Weight.DemiBold)
+        fm_temp = QFontMetricsF(f_temp)
+        w_temp = fm_temp.horizontalAdvance(temp_str)
+        # 12px gap + 1px separator + 8px left padding + 14px icon + 5px gap + temp_w
+        w += 12.0 + 1.0 + 8.0 + 14.0 + 5.0 + w_temp
+    w += 10.0  # 10px right padding
+    return float(math.ceil(w))
+
+
+def draw_clock_v1(
     p: QPainter,
     rect: QRectF,
-    temp_str: str = "12°",
+    temp_str: Optional[str] = None,
     hover: bool = False,
     press_scale: float = 1.0,
-) -> QRectF:
-    """Renders 70x52 clipped clock block.
+    wx_icon: str = "cloud",
+    has_weather: bool = True,
+    now: Optional[dt.datetime] = None,
+) -> Tuple[QRectF, Optional[QRectF]]:
+    """Renders Clock V1 'Sade' without box or background.
 
-    Top 26px: red gradient (#ff4d2e -> #f23a1d) with HH:MM bold tabular white.
-    Bottom 26px: #0f1013 with short weekday (Pzt) over day number (26) left,
-                 and 21px light circle #e9e9ec with temperature (9.5px bold dark text) right.
+    Left column:
+      time 'HH:MM' 20px weight 600 tabular white, letter-spacing -0.3
+      gap 3px
+      date 'Sal, 27 Ekim' 11px weight 500 colour rgba(235,238,245,.58)
+    Right column (if weather available):
+      12px gap, 1px separator rgba(255,255,255,.10) 24px high with 8px left padding
+      14px weather icon (white 85%) + 5px gap + temp '16°' 13px weight 600.
 
-    Returns the QRectF of the temperature circle for hit testing.
+    Hover: rounded rect rgba(255,255,255,.07) radius 11 behind whole clock.
+    Returns (r_clock, r_wx).
     """
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.TextAntialiasing)
 
     if press_scale != 1.0:
         pc = rect.center()
@@ -699,71 +821,193 @@ def draw_clock_block(
         p.scale(press_scale, press_scale)
         p.translate(-pc)
 
-    # Capsule clipping
-    clip_path = theme.rounded_path(rect, 13.0)
-    p.save()
-    p.setClipPath(clip_path)
+    # Hover background: rounded rect rgba(255,255,255,.07) radius 11
+    if hover:
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * 0.07)))
+        p.drawRoundedRect(rect, 11.0, 11.0)
 
-    # Top 26px
-    top_rect = QRectF(rect.x(), rect.y(), rect.width(), 26.0)
-    top_grad = QLinearGradient(top_rect.topLeft(), top_rect.bottomLeft())
-    top_grad.setColorAt(0.0, QColor("#ff4d2e"))
-    top_grad.setColorAt(1.0, QColor("#f23a1d"))
-    p.fillRect(top_rect, top_grad)
-
-    now = dt.datetime.now(sources.LOCAL_TZ)
+    if now is None:
+        now = dt.datetime.now(sources.LOCAL_TZ)
     time_str = now.strftime("%H:%M")
+    date_str = format_clock_v1_date(now.date())
 
-    f_time = theme.make_font(16.0, QFont.Weight.Bold, tabular=True, letter_spacing=0.3)
+    f_time = theme.make_font(20.0, QFont.Weight.DemiBold, tabular=True, letter_spacing=-0.3)
+    f_date = theme.make_font(11.0, QFont.Weight.Medium)
+
+    fm_time = QFontMetricsF(f_time)
+    fm_date = QFontMetricsF(f_date)
+    w_time = fm_time.horizontalAdvance(time_str)
+    w_date = fm_date.horizontalAdvance(date_str)
+    w_left = max(w_time, w_date)
+
+    cur_x = rect.x() + 10.0
+
+    # Vertical centering of left column:
+    # time 22px high, 3px gap, date 14px high -> total 39px in 52px slot
+    total_h = 22.0 + 3.0 + 14.0
+    start_y = rect.y() + (rect.height() - total_h) / 2.0
+
+    # Draw Time
+    r_time = QRectF(cur_x, start_y, w_left, 22.0)
     p.setFont(f_time)
     p.setPen(Qt.white)
-    p.drawText(top_rect, Qt.AlignCenter, time_str)
+    p.drawText(r_time, Qt.AlignLeft | Qt.AlignVCenter, time_str)
 
-    # Bottom 26px
-    bot_rect = QRectF(rect.x(), rect.y() + 26.0, rect.width(), 26.0)
-    p.fillRect(bot_rect, QColor("#0f1013"))
+    # Draw Date
+    r_date = QRectF(cur_x, start_y + 22.0 + 3.0, w_left, 14.0)
+    p.setFont(f_date)
+    p.setPen(QColor(235, 238, 245, int(255 * 0.58)))
+    p.drawText(r_date, Qt.AlignLeft | Qt.AlignVCenter, date_str)
 
-    # Left: Short weekday ('Pzt') and Day ('26')
-    weekday_str = TR_DAYS_SHORT.get(now.weekday(), "Pzt")
-    day_str = str(now.day)
+    cur_x += w_left
 
-    f_day_lbl = theme.make_font(8.5, QFont.Weight.Normal)
-    f_day_num = theme.make_font(12.5, QFont.Weight.Bold, tabular=True)
+    r_wx: Optional[QRectF] = None
+    if has_weather and temp_str:
+        cur_x += 12.0
+        sep_x = cur_x
+        # 1px separator rgba(255,255,255,.10) 24px high
+        sep_y = rect.y() + (rect.height() - 24.0) / 2.0
+        p.fillRect(QRectF(sep_x, sep_y, 1.0, 24.0), QColor(255, 255, 255, int(255 * 0.10)))
 
-    d_x = bot_rect.x() + 7.0
-    p.setFont(f_day_lbl)
-    p.setPen(QColor(255, 255, 255, int(255 * 0.70)))
-    p.drawText(QRectF(d_x, bot_rect.y() + 2.0, 32.0, 10.0), Qt.AlignLeft | Qt.AlignVCenter, weekday_str)
+        cur_x += 1.0 + 8.0
+        # 14px weather icon (white 85%)
+        icon_y = rect.y() + (rect.height() - 14.0) / 2.0
+        r_icon = QRectF(cur_x, icon_y, 14.0, 14.0)
+        p.save()
+        p.setOpacity(0.85)
+        theme.draw_weather_icon(p, r_icon, icon=wx_icon or "cloud")
+        p.restore()
 
-    p.setFont(f_day_num)
-    p.setPen(Qt.white)
-    p.drawText(QRectF(d_x, bot_rect.y() + 11.0, 32.0, 14.0), Qt.AlignLeft | Qt.AlignVCenter, day_str)
+        cur_x += 14.0 + 5.0
+        # Temperature
+        f_temp = theme.make_font(13.0, QFont.Weight.DemiBold)
+        fm_temp = QFontMetricsF(f_temp)
+        w_temp = fm_temp.horizontalAdvance(temp_str)
+        r_temp_text = QRectF(cur_x, rect.y(), w_temp, rect.height())
+        p.setFont(f_temp)
+        p.setPen(COLOR_TXT_PRIMARY)
+        p.drawText(r_temp_text, Qt.AlignLeft | Qt.AlignVCenter, temp_str)
 
-    # Right: 21px light circle #e9e9ec with temperature
-    tmp_size = 21.0
-    tmp_x = bot_rect.right() - tmp_size - 5.0
-    tmp_y = bot_rect.y() + (bot_rect.height() - tmp_size) / 2.0
-    r_tmp = QRectF(tmp_x, tmp_y, tmp_size, tmp_size)
-
-    p.setPen(Qt.NoPen)
-    p.setBrush(QColor("#e9e9ec"))
-    p.drawEllipse(r_tmp)
-
-    f_tmp = theme.make_font(9.5, QFont.Weight.Bold, tabular=True)
-    p.setFont(f_tmp)
-    p.setPen(QColor("#111111"))
-    p.drawText(r_tmp, Qt.AlignCenter, temp_str)
-
-    p.restore()  # End clip
-
-    # Border: 1px solid rgba(255,255,255,0.10)
-    border_r = rect.adjusted(0.5, 0.5, -0.5, -0.5)
-    p.setPen(QPen(QColor(255, 255, 255, int(255 * 0.10)), 1.0))
-    p.setBrush(Qt.NoBrush)
-    p.drawPath(theme.rounded_path(border_r, 12.5))
+        # Weather hit box from separator to the right edge of clock
+        r_wx = QRectF(sep_x, rect.y(), max(0.0, rect.right() - sep_x), rect.height())
 
     p.restore()
-    return r_tmp
+    return rect, r_wx
+
+
+def draw_clock_block(
+    p: QPainter,
+    rect: QRectF,
+    temp_str: str = "12°",
+    hover: bool = False,
+    press_scale: float = 1.0,
+    wx_icon: str = "cloud",
+    has_weather: bool = True,
+    now: Optional[dt.datetime] = None,
+) -> Tuple[QRectF, Optional[QRectF]]:
+    """Backward-compatible clock block routing to draw_clock_v1."""
+    return draw_clock_v1(
+        p=p,
+        rect=rect,
+        temp_str=temp_str,
+        hover=hover,
+        press_scale=press_scale,
+        wx_icon=wx_icon,
+        has_weather=has_weather,
+        now=now,
+    )
+
+
+# ==============================================================================
+# 7. QUICK ACTION BUTTONS & TRAY CLUSTER
+# ==============================================================================
+
+def draw_action_button(
+    p: QPainter,
+    rect: QRectF,
+    kind: str,
+    hover: bool = False,
+    active: bool = False,
+    vol_level: float = 100.0,
+    vol_muted: bool = False,
+) -> None:
+    """Draw 30x30 action button: chevron ('tray'), sun ('bright'), or speaker ('vol').
+
+    Radius 8, hover rgba(255,255,255,.10), active rgba(255,255,255,.15).
+    Glyph: 18px line icon stroke 1.8-2.2, white 78% (100% on hover/active).
+    """
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+
+    if active:
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * 0.15)))
+        p.drawRoundedRect(rect, 8.0, 8.0)
+    elif hover:
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
+        p.drawRoundedRect(rect, 8.0, 8.0)
+
+    glyph_col = QColor(255, 255, 255) if (hover or active) else QColor(255, 255, 255, int(255 * 0.78))
+    pen = QPen(glyph_col, 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+
+    cx = rect.center().x()
+    cy = rect.center().y()
+
+    if kind == "tray":
+        # Chevron-up (18px stroke glyph)
+        path_chv = QPainterPath()
+        path_chv.moveTo(cx - 5.0, cy + 2.5)
+        path_chv.lineTo(cx, cy - 2.5)
+        path_chv.lineTo(cx + 5.0, cy + 2.5)
+        p.drawPath(path_chv)
+
+    elif kind == "bright":
+        # Sun: center circle r=3.5, 8 radial rays
+        p.drawEllipse(QRectF(cx - 3.5, cy - 3.5, 7.0, 7.0))
+        for i in range(8):
+            ang = i * math.pi / 4.0
+            r1 = 5.5
+            r2 = 8.0
+            p.drawLine(
+                QPointF(cx + r1 * math.cos(ang), cy + r1 * math.sin(ang)),
+                QPointF(cx + r2 * math.cos(ang), cy + r2 * math.sin(ang)),
+            )
+
+    elif kind == "vol":
+        # Speaker cone
+        spk = QPainterPath()
+        spk.moveTo(cx - 6.0, cy - 3.0)
+        spk.lineTo(cx - 3.0, cy - 3.0)
+        spk.lineTo(cx + 1.0, cy - 7.0)
+        spk.lineTo(cx + 1.0, cy + 7.0)
+        spk.lineTo(cx - 3.0, cy + 3.0)
+        spk.lineTo(cx - 6.0, cy + 3.0)
+        spk.closeSubpath()
+        p.drawPath(spk)
+
+        if vol_muted:
+            # Diagonal slash across speaker
+            p.drawLine(QPointF(cx - 4.0, cy - 7.0), QPointF(cx + 7.0, cy + 7.0))
+        else:
+            lvl = max(0.0, min(100.0, float(vol_level)))
+            if lvl > 0.0:
+                # 1 sound wave
+                w1 = QPainterPath()
+                w1.arcMoveTo(QRectF(cx - 1.0, cy - 5.0, 6.0, 10.0), -50.0)
+                w1.arcTo(QRectF(cx - 1.0, cy - 5.0, 6.0, 10.0), -50.0, 100.0)
+                p.drawPath(w1)
+            if lvl >= 50.0:
+                # 2 sound waves
+                w2 = QPainterPath()
+                w2.arcMoveTo(QRectF(cx + 1.0, cy - 8.0, 8.0, 16.0), -50.0)
+                w2.arcTo(QRectF(cx + 1.0, cy - 8.0, 8.0, 16.0), -50.0, 100.0)
+                p.drawPath(w2)
+
+    p.restore()
 
 
 # ==============================================================================

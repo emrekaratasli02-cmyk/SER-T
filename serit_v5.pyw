@@ -50,6 +50,8 @@ from PySide6.QtWidgets import QApplication, QMenu, QToolTip, QWidget
 
 import alerts
 import anim
+import brightness
+import brightness_popover
 import dock_cards
 import media
 import pinned
@@ -58,6 +60,23 @@ import sources
 import theme
 import trayicons
 import winapi
+
+try:
+    import tray_panel
+except ImportError:
+    tray_panel = None
+
+
+def clean_tray_name(item: Any) -> str:
+    """Helper to get cleaned tray name according to tray_panel contract."""
+    if tray_panel is not None and hasattr(tray_panel, "clean_tray_name"):
+        try:
+            return tray_panel.clean_tray_name(item)
+        except Exception:
+            pass
+    if isinstance(item, dict):
+        return str(item.get("name") or item.get("tooltip") or "")
+    return str(item)
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_FILE = APP_DIR / "settings.json"
@@ -95,6 +114,11 @@ SYS_CARD_WIDTH: float = 166.0
 MARKET_CARD_WIDTH: float = 160.0
 CLOCK_BLOCK_WIDTH: float = 70.0
 TRAY_COLUMN_WIDTH: float = 32.0
+ACTION_BUTTONS_WIDTH: float = 96.0
+ACTION_BTN_SIZE: float = 30.0
+ACTION_BTN_GAP: float = 3.0
+TRAY_ICON_SIZE: float = 26.0
+TRAY_ICON_GAP: float = 2.0
 
 TR_DAYS = {0: "Pzt", 1: "Sal", 2: "Çar", 3: "Per", 4: "Cum", 5: "Cmt", 6: "Paz"}
 _LAST_PAINT_ERROR_LOG: float = 0.0
@@ -524,7 +548,8 @@ class VolumePopover(QWidget):
 class DataDispatcher(QObject):
     """Thread-safe UI dispatcher bridging background fetcher thread pool to Qt signals."""
 
-    data_ready = Signal(str, dict)
+    data_ready = Signal(str, object)
+    brightness_done = Signal(str, int)
 
 
 class SeritDock(QWidget):
@@ -564,10 +589,13 @@ class SeritDock(QWidget):
         self.hit_boxes: List[Tuple[QRectF, str, Any]] = []
         self._hover_key: Optional[str] = None
         self._hover_app_idx: Optional[int] = None
+        self._hover_tray_item: Optional[Dict[str, Any]] = None
         self._preview_hover_idx: Optional[int] = None
         self._pressed_key: Optional[str] = None
         self._icon_cache: Dict[str, QPixmap] = {}
         self._clock_rect: Optional[QRectF] = None
+        self._tray_items: List[Dict[str, Any]] = []
+        self._tray_icons: Dict[str, QPixmap] = {}
 
         # Audio & Media state
         self._vol_level: float = 50.0
@@ -636,7 +664,23 @@ class SeritDock(QWidget):
         self.popover = popover_v2.PopoverV2(self, on_refresh=self.submit_fetch)
         self.vol_popover = VolumePopover(self, on_volume_change=self._on_volume_changed)
         self.tray_popover = TrayPopover()
+        self.brightness_popover = brightness_popover.BrightnessPopover()
+        self.brightness_popover.level_requested.connect(self._on_brightness_requested)
+        self._pending_brightness: Dict[str, int] = {}
         self.bubble = BubbleWidget(self)
+
+        # Tray Panel contract
+        self.tray_panel = None
+        try:
+            import tray_panel
+            self.tray_panel = tray_panel.TrayPanel()
+            if hasattr(self.tray_panel, "item_activated"):
+                self.tray_panel.item_activated.connect(
+                    lambda item, btn: trayicons.activate(item, button=btn)
+                )
+        except (ImportError, Exception) as exc:
+            sources.log_err("tray_panel_init", exc)
+            self.tray_panel = None
 
         # Calendar Panel contract
         self.cal_panel = None
@@ -667,10 +711,11 @@ class SeritDock(QWidget):
             self.alert_engine = None
             self.toast_mgr = None
 
-        # Data thread dispatcher & timers (normal mode only)
+        # Data thread dispatcher & timers
+        self.dispatcher = DataDispatcher(self)
+        self.dispatcher.data_ready.connect(self.on_data_ready)
+        self.dispatcher.brightness_done.connect(self._on_brightness_task_done)
         if not self.preview_mode:
-            self.dispatcher = DataDispatcher(self)
-            self.dispatcher.data_ready.connect(self.on_data_ready)
             self.setup_timers()
 
     def sync_anim_values(self) -> None:
@@ -895,11 +940,89 @@ class SeritDock(QWidget):
         self.tray_timer.start()
         self.submit_fetch("tray")
 
+        # Brightness polling timer (60 s)
+        self.bright_timer = QTimer(self)
+        self.bright_timer.setInterval(60000)
+        self.bright_timer.timeout.connect(lambda: self.submit_fetch("bright"))
+        self.bright_timer.start()
+        self.submit_fetch("bright")
+
         # Clock refresh timer (10 s) - repaints only the clock rect (Requirement 6)
         self.clock_timer = QTimer(self)
         self.clock_timer.setInterval(10000)
         self.clock_timer.timeout.connect(self._on_clock_tick)
         self.clock_timer.start()
+
+    def _sync_tray_icons(self) -> None:
+        """Cache tray icon pixmaps on GUI thread without blocking."""
+        uncached = []
+        for it in self._tray_items:
+            name = it.get("name", "")
+            if name not in self._tray_icons or self._tray_icons[name].isNull():
+                uncached.append(it)
+        if uncached:
+            try:
+                new_icons = trayicons.get_tray_icons(uncached)
+                for name, pm in new_icons.items():
+                    if pm is not None and not pm.isNull():
+                        self._tray_icons[name] = pm
+            except Exception as exc:
+                sources.log_err("dock_sync_tray_icons", exc)
+
+    def _get_store_monitors(self) -> List[Dict[str, Any]]:
+        raw = self.store.get("bright")
+        if isinstance(raw, dict) and "data" in raw:
+            return list(raw["data"] or [])
+        if isinstance(raw, list):
+            return list(raw)
+        return []
+
+    def _update_store_brightness_level(self, mon_id: str, level: int) -> None:
+        """Update monitor level in local store optimistically."""
+        monitors = self._get_store_monitors()
+        found = False
+        for m in monitors:
+            if isinstance(m, dict) and str(m.get("id")) == str(mon_id):
+                m["level"] = level
+                found = True
+                break
+        if not found:
+            monitors.append({"id": mon_id, "name": mon_id, "level": level, "ok": True})
+        self.store.update("bright", monitors)
+
+    def _on_brightness_requested(self, mon_id: str, level: int) -> None:
+        """Handle coalesced brightness slider change, queuing latest value."""
+        level = max(0, min(100, int(round(level))))
+        self._update_store_brightness_level(mon_id, level)
+        if not self.preview_mode:
+            self._pending_brightness[mon_id] = level
+            self._flush_brightness(mon_id)
+
+    def _flush_brightness(self, mon_id: str) -> None:
+        """Apply pending brightness level on worker thread pool."""
+        if mon_id not in self._pending_brightness:
+            return
+        lvl = self._pending_brightness[mon_id]
+        submit_key = f"bright_set_{mon_id}"
+
+        def _worker():
+            return brightness.set_level(mon_id, lvl)
+
+        def _callback(*_args):
+            if hasattr(self, "dispatcher") and self.dispatcher is not None:
+                self.dispatcher.brightness_done.emit(mon_id, lvl)
+
+        submitted = sources.submit(submit_key, _worker, _callback)
+        if submitted:
+            if self._pending_brightness.get(mon_id) == lvl:
+                del self._pending_brightness[mon_id]
+        else:
+            QTimer.singleShot(25, lambda: self._flush_brightness(mon_id))
+
+    def _on_brightness_task_done(self, mon_id: str, _finished_lvl: int) -> None:
+        """Invoked on GUI thread when worker completes: re-flush if newer value pending."""
+        if mon_id in self._pending_brightness:
+            self._flush_brightness(mon_id)
 
     def _on_clock_tick(self) -> None:
         """Repaint only the clock rect for near-zero idle CPU."""
@@ -930,6 +1053,7 @@ class SeritDock(QWidget):
             "media": sources.fetch_media,
             "top": lambda: popover_v2.top_processes(3),
             "tray": trayicons.list_tray_items,
+            "bright": brightness.list_monitors,
         }
         fn = fetchers.get(key)
         if fn:
@@ -939,6 +1063,12 @@ class SeritDock(QWidget):
         if isinstance(res, dict) and res.get("err"):
             sources.log_err(key, RuntimeError(str(res.get("err"))))
         self.store.update(key, res)
+
+        if key == "bright":
+            if self.brightness_popover.is_open():
+                self.brightness_popover.update_levels(res)
+            self.update()
+            return
 
         if key == "media":
             if not isinstance(res, dict):
@@ -968,7 +1098,15 @@ class SeritDock(QWidget):
 
         if key == "tray":
             items = res if isinstance(res, list) else (res.get("items") or res.get("data") or [])
-            self.tray_popover.set_items(items)
+            self._tray_items = list(items)
+            self._sync_tray_icons()
+            if self.tray_panel is not None and hasattr(self.tray_panel, "set_items"):
+                try:
+                    self.tray_panel.set_items(self._tray_items, self._tray_icons)
+                except Exception as exc:
+                    sources.log_err("tray_panel_set_items", exc)
+            self.tray_popover.set_items(self._tray_items)
+            self.update()
             return
 
         # Tween retargeting: only when value changed by >= 1 point (Requirement 6)
@@ -1142,11 +1280,18 @@ class SeritDock(QWidget):
             w_cal = dock_cards.measure_calendar_card_width(cal_data)
             items.append(w_cal)
 
-        # 7. Clock Block: 70px
-        items.append(CLOCK_BLOCK_WIDTH)
+        # 7. Clock Block: dynamic Clock V1 width
+        now_dt = dt.datetime.now(sources.LOCAL_TZ)
+        wx_entry = self.store.get("wx") or {}
+        temp_val = safe_float(wx_entry.get("temp"), None)
+        has_wx = (temp_val is not None)
+        temp_str = f"{int(round(temp_val))}°" if has_wx else None
+        w_clock = dock_cards.measure_clock_v1_width(now_dt, temp_str=temp_str, has_weather=has_wx)
+        items.append(w_clock)
 
-        # 8. Tray Column: 32px
-        items.append(TRAY_COLUMN_WIDTH)
+        # 8. Action buttons (Pill style only: chevron, sun, speaker inside capsule)
+        if not self._is_band():
+            items.append(ACTION_BUTTONS_WIDTH)
 
         # Symmetrical padding: 6px on left and right, 6px between items
         n_items = len(items)
@@ -1312,32 +1457,123 @@ class SeritDock(QWidget):
             dock_cards.draw_calendar_card(p, r_cal, cal_data, hover=cal_hover, press_scale=cal_press)
             x += w_cal + GAP_MODULE
 
-        # 7. Clock Block (70x52)
-        r_clock = QRectF(x, card_y, CLOCK_BLOCK_WIDTH, card_h)
+        # 7. Clock Block (Clock V1 Sade)
+        now_dt = dt.datetime.now(sources.LOCAL_TZ)
+        wx_entry = self.store.get("wx") or {}
+        temp_val = safe_float(wx_entry.get("temp"), None)
+        has_wx = (temp_val is not None)
+        temp_str = f"{int(round(temp_val))}°" if has_wx else None
+        wx_icon = str(wx_entry.get("icon") or "cloud")
+        w_clock = dock_cards.measure_clock_v1_width(now_dt, temp_str=temp_str, has_weather=has_wx)
+
+        r_clock = QRectF(x, card_y, w_clock, card_h)
         self._clock_rect = r_clock
-        self.hit_boxes.append((r_clock, "clock", None))
         clk_hover = self._hover_key == "clock"
         clk_press = self.press_tween.scale if (self._pressed_key == "clock") else 1.0
 
-        wx_entry = self.store.get("wx") or {}
-        temp_val = safe_float(wx_entry.get("temp"), None)
-        temp_str = f"{int(round(temp_val))}°" if temp_val is not None else "12°"
+        r_clk, r_wx = dock_cards.draw_clock_v1(
+            p,
+            r_clock,
+            temp_str=temp_str,
+            hover=clk_hover,
+            press_scale=clk_press,
+            wx_icon=wx_icon,
+            has_weather=has_wx,
+            now=now_dt,
+        )
+        self.hit_boxes.append((r_clk, "clock", None))
+        if r_wx is not None:
+            self.hit_boxes.append((r_wx, "wx", None))
+        x += w_clock + GAP_MODULE
 
-        r_temp = dock_cards.draw_clock_block(p, r_clock, temp_str=temp_str, hover=clk_hover, press_scale=clk_press)
-        # Add temperature circle hit box with higher priority
-        self.hit_boxes.append((r_temp, "wx", None))
-        x += CLOCK_BLOCK_WIDTH + GAP_MODULE
+        btn_y = card_y + (card_h - ACTION_BTN_SIZE) / 2.0
+        tray_open = bool(self.tray_panel.is_open()) if self.tray_panel else bool(self.tray_popover.isVisible())
+        bright_open = bool(self.brightness_popover.is_open())
+        vol_open = bool(self.vol_popover.isVisible())
 
-        # 8. Tray Column (32px width)
-        r_tray_col = QRectF(x, card_y, TRAY_COLUMN_WIDTH, card_h)
-        h_btn = None
-        if self._hover_key == "vol":
-            h_btn = "spk"
-        elif self._hover_key == "tray":
-            h_btn = "chv"
-        r_spk, r_chv = dock_cards.draw_tray_column(p, r_tray_col, vol_muted=self._vol_muted, hovered_btn=h_btn)
-        self.hit_boxes.append((r_spk, "vol", None))
-        self.hit_boxes.append((r_chv, "tray", None))
+        # 8. Pill Style: Action buttons (Chevron, Sun, Speaker) inside capsule
+        if not self._is_band():
+            r_chv = QRectF(x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
+            r_sun = QRectF(x + ACTION_BTN_SIZE + ACTION_BTN_GAP, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
+            r_spk = QRectF(x + (ACTION_BTN_SIZE + ACTION_BTN_GAP) * 2, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
+
+            dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
+            dock_cards.draw_action_button(p, r_sun, "bright", hover=(self._hover_key == "bright"), active=bright_open)
+            dock_cards.draw_action_button(
+                p, r_spk, "vol", hover=(self._hover_key == "vol"), active=vol_open, vol_level=self._vol_level, vol_muted=self._vol_muted
+            )
+
+            self.hit_boxes.append((r_chv, "tray", None))
+            self.hit_boxes.append((r_sun, "bright", None))
+            self.hit_boxes.append((r_spk, "vol", None))
+        else:
+            # 8. Band Style: Tray cluster pinned to right end (14px from right screen edge)
+            right_edge = float(self.width()) - 14.0
+            card_group_right = x0 + self._content_w
+
+            all_items = list(self._tray_items)
+            max_icons = min(7, len(all_items))
+
+            def cluster_w_for(n: int) -> float:
+                icons_w = (n * TRAY_ICON_SIZE + max(0, n - 1) * TRAY_ICON_GAP) if n > 0 else 0.0
+                gap_to_actions = 4.0 if n > 0 else 0.0
+                return 9.0 + icons_w + gap_to_actions + ACTION_BUTTONS_WIDTH
+
+            shown_icons = max_icons
+            while shown_icons > 0 and (right_edge - cluster_w_for(shown_icons)) < (card_group_right + 12.0):
+                shown_icons -= 1
+
+            cluster_w = cluster_w_for(shown_icons)
+            cluster_x = right_edge - cluster_w
+
+            # 1. Separator (1px x 24px, rgba(255,255,255,.10), margin 0 6px 0 2px)
+            sep_x = cluster_x + 2.0
+            sep_y = card_y + (card_h - 24.0) / 2.0
+            p.fillRect(QRectF(sep_x, sep_y, 1.0, 24.0), QColor(255, 255, 255, int(255 * 0.10)))
+            cur_x = sep_x + 1.0 + 6.0
+
+            # 2. Tray icons (18x18 inside 26x26, 2px gap, hover fill rgba(255,255,255,.10) radius 6)
+            icon_btn_y = card_y + (card_h - TRAY_ICON_SIZE) / 2.0
+            for i in range(shown_icons):
+                item = all_items[i]
+                r_btn = QRectF(cur_x, icon_btn_y, TRAY_ICON_SIZE, TRAY_ICON_SIZE)
+                is_h = (self._hover_key == "tray_icon" and self._hover_tray_item == item)
+                if is_h:
+                    p.setPen(Qt.NoPen)
+                    p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
+                    p.drawRoundedRect(r_btn, 6.0, 6.0)
+
+                name = item.get("name", "")
+                pm = self._tray_icons.get(name)
+                if pm and not pm.isNull():
+                    r_ico = QRectF(
+                        r_btn.x() + (TRAY_ICON_SIZE - 18.0) / 2.0,
+                        r_btn.y() + (TRAY_ICON_SIZE - 18.0) / 2.0,
+                        18.0,
+                        18.0,
+                    )
+                    theme.draw_icon_crisp(p, pm, r_ico)
+
+                self.hit_boxes.append((r_btn, "tray_icon", item))
+                cur_x += TRAY_ICON_SIZE + TRAY_ICON_GAP
+
+            if shown_icons > 0:
+                cur_x = cur_x - TRAY_ICON_GAP + 4.0
+
+            # 3. Action buttons (Chevron, Sun, Speaker)
+            r_chv = QRectF(cur_x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
+            r_sun = QRectF(cur_x + ACTION_BTN_SIZE + ACTION_BTN_GAP, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
+            r_spk = QRectF(cur_x + (ACTION_BTN_SIZE + ACTION_BTN_GAP) * 2, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
+
+            dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
+            dock_cards.draw_action_button(p, r_sun, "bright", hover=(self._hover_key == "bright"), active=bright_open)
+            dock_cards.draw_action_button(
+                p, r_spk, "vol", hover=(self._hover_key == "vol"), active=vol_open, vol_level=self._vol_level, vol_muted=self._vol_muted
+            )
+
+            self.hit_boxes.append((r_chv, "tray", None))
+            self.hit_boxes.append((r_sun, "bright", None))
+            self.hit_boxes.append((r_spk, "vol", None))
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
@@ -1385,6 +1621,7 @@ class SeritDock(QWidget):
         new_hover = None
         new_app_idx = None
         new_media_ctrl = None
+        new_tray_item = None
         tooltip_text = ""
         for r, key, extra in reversed(self.hit_boxes):
             if r.contains(pos):
@@ -1400,14 +1637,22 @@ class SeritDock(QWidget):
                             if m_rect.contains(pos):
                                 new_media_ctrl = m_ctrl
                                 break
+                elif key == "tray_icon":
+                    new_tray_item = extra
                 tooltip_text = self.get_tooltip_text(key, extra)
                 break
 
         self._hover_media_ctrl = new_media_ctrl
 
-        if new_hover != self._hover_key or new_app_idx != self._hover_app_idx:
+        hover_changed = (
+            new_hover != self._hover_key
+            or new_app_idx != self._hover_app_idx
+            or new_tray_item != self._hover_tray_item
+        )
+        if hover_changed:
             self._hover_key = new_hover
             self._hover_app_idx = new_app_idx
+            self._hover_tray_item = new_tray_item
             self.update()
 
             # Show floating label bubble above hovered tile in normal mode
@@ -1424,15 +1669,22 @@ class SeritDock(QWidget):
             self.setToolTip(tooltip_text)
             if new_hover == "tray":
                 self.submit_fetch("tray")
+            elif new_hover == "bright":
+                self.submit_fetch("bright")
 
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event: QEvent) -> None:
         if not self.preview_mode:
             self.bubble.hide()
-        if self._hover_key is not None or self._hover_app_idx is not None:
+        if (
+            self._hover_key is not None
+            or self._hover_app_idx is not None
+            or self._hover_tray_item is not None
+        ):
             self._hover_key = None
             self._hover_app_idx = None
+            self._hover_tray_item = None
             self.setToolTip("")
             self.update()
         super().leaveEvent(event)
@@ -1475,7 +1727,7 @@ class SeritDock(QWidget):
                 save_settings(self.settings)
             else:
                 pos = event.position()
-                for r, key, extra in self.hit_boxes:
+                for r, key, extra in reversed(self.hit_boxes):
                     if r.contains(pos):
                         self.handle_click(key, extra, r, pos)
                         break
@@ -1484,7 +1736,7 @@ class SeritDock(QWidget):
 
     def wheelEvent(self, event) -> None:
         pos = event.position()
-        for r, key, _extra in self.hit_boxes:
+        for r, key, _extra in reversed(self.hit_boxes):
             if key == "vol" and r.contains(pos):
                 diff = 2.0 if event.angleDelta().y() > 0 else -2.0
                 new_val = max(0.0, min(100.0, self._vol_level + diff))
@@ -1495,11 +1747,44 @@ class SeritDock(QWidget):
                 if not self.preview_mode:
                     self._vol_coalescer.request(new_val, force=False)
                 break
+            elif key == "bright" and r.contains(pos):
+                diff = 5 if event.angleDelta().y() > 0 else -5
+                monitors = self._get_store_monitors()
+                updated = False
+                for m in monitors:
+                    if isinstance(m, dict) and m.get("ok", True):
+                        cur_lvl = m.get("level")
+                        if cur_lvl is not None:
+                            new_lvl = max(0, min(100, int(cur_lvl) + diff))
+                            m["level"] = new_lvl
+                            updated = True
+                            if not self.preview_mode:
+                                self._on_brightness_requested(str(m.get("id")), new_lvl)
+                if updated:
+                    self.store.update("bright", monitors)
+                    if self.brightness_popover.is_open():
+                        self.brightness_popover.update_levels(monitors)
+                    self.update()
+                break
         super().wheelEvent(event)
 
     def handle_click(self, key: str, extra: Any, rect: QRectF, pos: Optional[QPointF] = None) -> None:
-        if key.startswith("app_") and extra:
+        if key == "tray_icon" and extra:
+            if not self.preview_mode:
+                trayicons.activate(extra, button="left")
+        elif key.startswith("app_") and extra:
             self.handle_tile_click(extra)
+        elif key == "bright":
+            if self.brightness_popover.is_open():
+                self.brightness_popover.hide_animated()
+            elif not self.brightness_popover.recently_closed():
+                self.submit_fetch("bright")
+                anchor_global = QRectF(
+                    self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))),
+                    rect.size(),
+                )
+                monitors = self._get_store_monitors()
+                self.brightness_popover.show_for(anchor_global, monitors)
         elif key == "vol":
             if self.vol_popover.isVisible():
                 self.vol_popover.hide()
@@ -1525,9 +1810,25 @@ class SeritDock(QWidget):
                     sources.submit("media_ctl", lambda a=action: media.media_control(a))
                     QTimer.singleShot(350, lambda: self.submit_fetch("media"))
         elif key == "tray":
-            # Kendi cam panelimiz; Windows'un köşedeki paneli yalnızca sağ tık menüsünden.
             if self.preview_mode:
                 pass
+            elif self.tray_panel is not None and hasattr(self.tray_panel, "show_for"):
+                is_open = getattr(self.tray_panel, "is_open", None)
+                recently_closed = getattr(self.tray_panel, "recently_closed", None)
+                hide_animated = getattr(self.tray_panel, "hide_animated", None)
+                if is_open and is_open():
+                    if hide_animated:
+                        hide_animated()
+                    else:
+                        self.tray_panel.hide()
+                elif recently_closed and recently_closed():
+                    pass
+                else:
+                    anchor_global = QRectF(
+                        self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))),
+                        rect.size(),
+                    )
+                    self.tray_panel.show_for(anchor_global)
             elif self.tray_popover.isVisible():
                 self.tray_popover.hide()
             elif not self.tray_popover.recently_closed():
@@ -1638,6 +1939,20 @@ class SeritDock(QWidget):
             return f"{app}: {t} - {a}" if (t or a) else "Medya"
         elif key == "tray":
             return "Gizli simgeleri göster"
+        elif key == "tray_icon" and extra:
+            return clean_tray_name(extra)
+        elif key == "bright":
+            monitors = self._get_store_monitors()
+            parts = ["Parlaklık"]
+            for m in monitors:
+                if isinstance(m, dict) and m.get("ok", True):
+                    name = m.get("name") or "Ekran"
+                    lvl = m.get("level")
+                    lvl_str = f"%{lvl}" if lvl is not None else "—"
+                    parts.append(f"{name} {lvl_str}")
+            if len(parts) == 1:
+                return "Parlaklık"
+            return " · ".join(parts)
         elif key == "wx":
             w = self.store.get("wx") or {}
             src = w.get("source", "open-meteo.com")
@@ -1666,7 +1981,11 @@ class SeritDock(QWidget):
         return ""
 
     def contextMenuEvent(self, event) -> None:
-        for r, key, extra in self.hit_boxes:
+        for r, key, extra in reversed(self.hit_boxes):
+            if key == "tray_icon" and extra and r.contains(event.position()):
+                if not self.preview_mode:
+                    trayicons.activate(extra, button="right")
+                return
             if key.startswith("app_") and extra and r.contains(event.position()):
                 # App tile context menu: Sabitle / Sabitlemeyi kaldır
                 tile_menu = QMenu(self)

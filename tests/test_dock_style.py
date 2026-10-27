@@ -28,15 +28,18 @@ def test_styles() -> None:
     assert 0 < band._content_w < sw, band._content_w
     img = QImage(band.size(), QImage.Format.Format_ARGB32)
     band.render(img)  # paintEvent hit_boxes'ı doldurur
-    xs = [r.left() for r, _k, _e in band.hit_boxes]
-    xe = [r.right() for r, _k, _e in band.hit_boxes]
+    # Kart grubunun ortalanması: sağ kenara sabitlenen tepsi kümesi hariç ortalanmış kartlar
+    card_hits = [r for r, k, _e in band.hit_boxes if not (k.startswith("tray") or k in ("bright", "vol"))]
+    xs = [r.left() for r in card_hits]
+    xe = [r.right() for r in card_hits]
     left_gap, right_gap = min(xs), band.width() - max(xe)
     assert abs(left_gap - right_gap) < 12, ("kart grubu ortada değil", left_gap, right_gap)
 
     pill = serit_mod.SeritDock({"style": "pill", "pinned": []}, preview_mode=True)
     pill.compute_layout_and_resize(initial=True)
     assert not pill._is_band()
-    assert pill.width() < sw and abs(pill.width() - band._content_w) <= 1, (pill.width(), band._content_w)
+    # Kapsül modunda aksiyon düğmeleri kapsül içinde yer aldığından pill genişliği bant merkez grubundan geniştir
+    assert pill.width() < sw and pill.width() > band._content_w, (pill.width(), band._content_w)
 
     # Varsayılan (ayar yoksa) bant
     dflt = serit_mod.SeritDock({"pinned": []}, preview_mode=True)
