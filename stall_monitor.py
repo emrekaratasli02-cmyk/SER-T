@@ -155,7 +155,8 @@ class StallMonitor(QObject):
                 self._worst_ms = ms
             self._stalls.append({"ms": ms, "time": time.time(), "top": top})
         try:
-            sources.log_err("ui_stall", UiStall(f"GUI {ms} ms durdu"))
+            where = f" · {top}" if top and top != "—" else ""
+            sources.log_err("ui_stall", UiStall(f"GUI {ms} ms durdu{where}"))
         except Exception:
             pass
 
