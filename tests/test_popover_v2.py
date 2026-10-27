@@ -9,7 +9,6 @@ Tests:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import sys
 import time
@@ -30,9 +29,10 @@ from popover_v2 import (
     build_wx_content,
     top_processes,
 )
-import sources
+import panel_style
 
-SCRATCH_DIR = Path("C:/Users/Emre Karatasli/AppData/Local/hermes/cache/scratch/serit-v5")
+REF_DIR = Path(__file__).resolve().parent.parent / "_ref"
+SCRATCH_DIR = REF_DIR / "tmp"
 SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -176,7 +176,7 @@ def test_refresh_button_and_callbacks():
 
     btn_rect = popover.refresh_button_rect()
     assert btn_rect.isValid()
-    assert btn_rect.width() >= 60.0
+    assert btn_rect.width() >= 44.0
     assert btn_rect.height() >= 20.0
 
     # Hit testing inside button
@@ -223,106 +223,80 @@ def test_k4_logic():
 
 
 def render_all_snapshots():
-    """Render every kind + stale + error to DPR 2.0 PNGs in scratch directory."""
+    """Render every kind + stale + error to DPR 2.0 PNGs using static stub data only."""
     _app = get_qapp()
     popover = PopoverV2()
     anchor = QRect(400, 900, 100, 48)
 
-    # 1. Claude (Live cache or sample)
-    cache_path = Path("D:/Apps/serit/claude_cache.json")
-    if cache_path.exists():
-        try:
-            claude_data = json.loads(cache_path.read_text(encoding="utf-8"))
-            print("Loaded live Claude data from claude_cache.json.")
-        except Exception:
-            claude_data = {
-                "plan": "Max (Sample)",
-                "session": 77.0,
-                "session_reset": "2026-10-26T19:30:00Z",
-                "week": 11.0,
-                "week_reset": "2026-10-31T06:00:00Z",
-                "source": "Sample Claude Data",
-                "fetched_at": time.time(),
-            }
-            print("Used sample Claude data (cache read error).")
-    else:
-        claude_data = {
-            "plan": "Max (Sample)",
-            "session": 77.0,
-            "session_reset": "2026-10-26T19:30:00Z",
-            "week": 11.0,
-            "week_reset": "2026-10-31T06:00:00Z",
-            "source": "Sample Claude Data",
-            "fetched_at": time.time(),
-        }
-        print("Used sample Claude data (no claude_cache.json).")
+    claude_data = {
+        "plan": "Max 5x",
+        "session": 77.0,
+        "session_reset": "2026-10-26T19:30:00Z",
+        "week": 11.0,
+        "week_reset": "2026-10-31T06:00:00Z",
+        "source": "Anthropic · Claude Code girişi",
+        "fetched_at": time.time(),
+    }
+    sys_data = {
+        "cpu": 28.0,
+        "ram": 74.0,
+        "ram_used_gb": 9.6,
+        "ram_total_gb": 15.7,
+        "disk_c": 27.0,
+        "cpu_name": "Core 5 210H",
+        "disk_free_gb": 748.0,
+        "top": [
+            {"name": "chrome.exe", "mb": 3501.5},
+            {"name": "Hermes.exe", "mb": 1509.5},
+            {"name": "MemCompression", "mb": 939.5},
+        ],
+        "fetched_at": time.time(),
+    }
+    wx_data = {
+        "temp": 19.5,
+        "feel": 18.0,
+        "desc": "Parçalı bulutlu",
+        "icon": "partly",
+        "min": 11.0,
+        "max": 22.0,
+        "wind": 12.5,
+        "city": "Aksaray",
+        "source": "open-meteo.com",
+        "fetched_at": time.time(),
+    }
+    fx_data = {
+        "usd": 34.25,
+        "usd_chg": 0.14,
+        "eur": 37.10,
+        "eur_chg": -0.22,
+        "gold": 3012.0,
+        "gold_chg": 0.45,
+        "updated": "2026-10-26 16:30:00",
+        "source": "finans.truncgil.com",
+        "fetched_at": time.time(),
+    }
 
-    popover.show_for("claude", anchor, claude_data)
-    _app.processEvents()
-    img_claude = popover.render_to_image(dpr=2.0)
-    p_claude = SCRATCH_DIR / "pv2_claude.png"
-    img_claude.save(str(p_claude))
-    print(f"Saved {p_claude} ({img_claude.width()}x{img_claude.height()})")
+    snapshots = [
+        ("pv2_claude.png", "claude", claude_data),
+        ("pv2_claude_stale.png", "claude", dict(claude_data, stale=True)),
+        ("pv2_claude_error.png", "claude", dict(claude_data, err="Claude Code girişi yok")),
+        ("pv2_sys.png", "sys", sys_data),
+        ("pv2_sys_error.png", "sys", dict(sys_data, err="psutil telemetrisi alınamadı")),
+        ("pv2_wx.png", "wx", wx_data),
+        ("pv2_fx.png", "fx", fx_data),
+    ]
+    for fname, kind, data in snapshots:
+        popover.show_for(kind, anchor, data)
+        _app.processEvents()
+        img = popover.render_to_image(dpr=2.0)
+        path = SCRATCH_DIR / fname
+        img.save(str(path))
+        print(f"Saved {path} ({img.width()}x{img.height()})")
 
-    # 2. Claude Stale
-    claude_stale = dict(claude_data, stale=True)
-    popover.show_for("claude", anchor, claude_stale)
-    _app.processEvents()
-    img_claude_stale = popover.render_to_image(dpr=2.0)
-    p_claude_stale = SCRATCH_DIR / "pv2_claude_stale.png"
-    img_claude_stale.save(str(p_claude_stale))
-    print(f"Saved {p_claude_stale}")
-
-    # 3. Claude Error (with dimmed cached usage)
-    claude_err = dict(claude_data, err="Claude Code girişi yok")
-    popover.show_for("claude", anchor, claude_err)
-    _app.processEvents()
-    img_claude_err = popover.render_to_image(dpr=2.0)
-    p_claude_err = SCRATCH_DIR / "pv2_claude_error.png"
-    img_claude_err.save(str(p_claude_err))
-    print(f"Saved {p_claude_err}")
-
-    # 4. System (Live telemetry with top processes)
-    live_sys = sources.fetch_system()
-    live_sys["top"] = top_processes(3)
-    popover.show_for("sys", anchor, live_sys)
-    _app.processEvents()
-    img_sys = popover.render_to_image(dpr=2.0)
-    p_sys = SCRATCH_DIR / "pv2_sys.png"
-    img_sys.save(str(p_sys))
-    print(f"Saved {p_sys}")
-
-    # 5. System Error
-    sys_err = dict(live_sys, err="psutil telemetrisi alınamadı")
-    popover.show_for("sys", anchor, sys_err)
-    _app.processEvents()
-    img_sys_err = popover.render_to_image(dpr=2.0)
-    p_sys_err = SCRATCH_DIR / "pv2_sys_error.png"
-    img_sys_err.save(str(p_sys_err))
-    print(f"Saved {p_sys_err}")
-
-    # 6. Weather (Live open-meteo)
-    live_wx = sources.fetch_weather()
-    popover.show_for("wx", anchor, live_wx)
-    _app.processEvents()
-    img_wx = popover.render_to_image(dpr=2.0)
-    p_wx = SCRATCH_DIR / "pv2_wx.png"
-    img_wx.save(str(p_wx))
-    print(f"Saved {p_wx}")
-
-    # 7. FX (Live finans.truncgil)
-    live_fx = sources.fetch_fx()
-    popover.show_for("fx", anchor, live_fx)
-    _app.processEvents()
-    img_fx = popover.render_to_image(dpr=2.0)
-    p_fx = SCRATCH_DIR / "pv2_fx.png"
-    img_fx.save(str(p_fx))
-    print(f"Saved {p_fx}")
-
-    # 8. Refresh Button Spinning / Pressed Micro-state
+    # Refresh Button Spinning / Pressed Micro-state
     popover.show_for("claude", anchor, claude_data)
     popover._refresh_spinning = True
-    popover._spin_angle = 120.0  # Angle midway in spin
+    popover._spin_angle = 120.0
     popover._refresh_hovered = True
     popover._refresh_pressed = True
     _app.processEvents()
@@ -343,11 +317,13 @@ def test_direction_c_requirements():
     # 1. Width verification
     popover.show_for("claude", anchor, {"session": 10.0, "week": 20.0, "plan": "Max 5x"})
     _app.processEvents()
-    assert popover.width() == 360, f"Claude width must be 360, got {popover.width()}"
+    assert popover.width() == panel_style.WIDTH["claude"], \
+        f"Claude width must be {panel_style.WIDTH['claude']}, got {popover.width()}"
 
     popover.show_for("sys", anchor, {"cpu": 50.0, "ram": 60.0, "disk_c": 30.0})
     _app.processEvents()
-    assert popover.width() == 400, f"Sistem width must be 400, got {popover.width()}"
+    assert popover.width() == panel_style.WIDTH["sys"], \
+        f"Sistem width must be {panel_style.WIDTH['sys']}, got {popover.width()}"
 
     # 2. Plan badge hidden when plan is ''
     c_empty_plan = build_claude_content({"session": 10.0, "week": 20.0, "plan": ""})
@@ -368,8 +344,8 @@ def test_direction_c_requirements():
     assert sources.fmt_tr(939.5, 1) == "939,5"
     assert sources.fmt_tr(None) == "—"
 
-    # 5. Render evidence into serit-v13
-    v13_dir = Path("C:/Users/Emre Karatasli/AppData/Local/hermes/cache/scratch/serit-v13")
+    # 5. Render evidence inside the worktree
+    v13_dir = REF_DIR / "tmp"
     v13_dir.mkdir(parents=True, exist_ok=True)
 
     import datetime as dt
