@@ -1,17 +1,18 @@
-"""Modern dark-mode card-layered calendar popover panel for Şerit dock (Direction C).
+"""Takvim açılır paneli — ortak panel kiti (panel_style v2) üzerinde yeniden yazıldı.
 
-Displays:
-- Hero card split into Today status (big 42px day number, blue weekday, month/year, status chip)
-  and Upcoming Events list (dots for Holiday red, Tax amber with bold amber amount, Google blue).
-- Month grid tile with month navigation (< >), Pzt..Paz headers, today in solid blue circle,
-  event category dots under dates.
-- Footer with category legend (Google / Vergi / Tatil) and event count / sync status.
+İçerik korunur: ay ızgarası (bugün + etkinlik noktaları), seçili gün listesi, Hermes
+takvim dosyalarından gelen yaklaşan etkinlikler, ay gezinme, "Bugün", klavye ve yenileme.
+Yeni: son 48 saat içindeki vergi/ödeme etkinliği için tutar kopyalama çipi.
+
+Panel yalnızca önbellekteki veriyi çizer; ağır okuma/yenileme işi dock'un arka plan
+işçisindedir. Veri yoksa '—' gösterilir, sayı uydurulmaz.
 """
 
 from __future__ import annotations
 
 import calendar
 import datetime as dt
+import math
 from pathlib import Path
 import re
 import sys
@@ -19,17 +20,7 @@ import time
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import unicodedata
 
-from PySide6.QtCore import (
-    QEasingCurve,
-    QEvent,
-    QPointF,
-    QRectF,
-    Qt,
-    QTimer,
-    QUrl,
-    QVariantAnimation,
-    Signal,
-)
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -39,7 +30,6 @@ from PySide6.QtGui import (
     QGuiApplication,
     QImage,
     QPainter,
-    QPainterPath,
     QPen,
 )
 from PySide6.QtWidgets import QWidget
@@ -58,6 +48,11 @@ except ImportError:
     sources = None
     winapi = None
 
+try:
+    import logpath
+except ImportError:  # pragma: no cover
+    logpath = None
+
 
 def _log_err(source: str, exc: Exception) -> None:
     """Log an exception through sources.log_err if available."""
@@ -66,6 +61,16 @@ def _log_err(source: str, exc: Exception) -> None:
             sources.log_err(source, exc)
         except Exception:
             pass
+
+
+def _under_test() -> bool:
+    """True inside pytest / test scripts (real clipboard must never be touched)."""
+    if logpath is None:
+        return False
+    try:
+        return bool(logpath.is_running_under_test())
+    except Exception:
+        return False
 
 
 TR_MONTHS_FULL = {
@@ -84,6 +89,11 @@ TR_DAYS_FULL = {
 }
 
 TR_DAYS_SHORT = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"]
+
+CAT_GOOGLE = "Google Takvim"
+CAT_TAX = "Vergi/ödeme"
+CAT_HOLIDAY = "Resmi tatil"
+CAT_CLAUDE = "Claude"
 
 # Turkish Public Holidays (2026-2027)
 TURKISH_HOLIDAYS_TABLE: Dict[dt.date, List[Tuple[str, bool]]] = {
@@ -126,6 +136,18 @@ TURKISH_HOLIDAYS_TABLE: Dict[dt.date, List[Tuple[str, bool]]] = {
     dt.date(2027, 10, 29): [("Cumhuriyet Bayramı", False)],
 }
 
+# Layout ölçüleri (kit dışında kalan takvime özel değerler)
+ROW_H = 32.0              # etkinlik satırı (3 x 28 px şerit + iki metin satırı)
+ROW_GAP = 6.0
+EMPTY_ROW_H = 24.0
+GRID_HEADER_H = 18.0
+GRID_ROW_H = 30.0         # gün hücresi yüksekliği (istenen: 30 px)
+TAX_CHIP_H = 38.0
+MONTH_CARD_OVER_H = 25.0  # draw_card üst başlık (15) + boşluk (10)
+TAX_KEYWORDS = ("kdv", "vergi", "sgk", "bağ-kur", "bag-kur")
+
+_AMOUNT_RE = re.compile(r"(?<![\d.,])(\d{1,3}(?:\.\d{3})*,\d{2})\s*TL\b", re.IGNORECASE)
+
 
 def clean_title(raw_title: Any) -> str:
     """Strip leading decorative emojis/symbols, keeping Turkish text and words intact."""
@@ -143,6 +165,27 @@ def clean_title(raw_title: Any) -> str:
     return s if s else "(Başlıksız)"
 
 
+def _amount_match(text: Any):
+    """Return the regex match for a Turkish amount followed by TL, else None."""
+    if text is None:
+        return None
+    return _AMOUNT_RE.search(str(text))
+
+
+def parse_turkish_amount(title: Any) -> Optional[str]:
+    """'791,00 TL' -> '791,00'; '6.432,80 TL' -> '6.432,80'; yoksa None."""
+    m = _amount_match(title)
+    return m.group(1) if m else None
+
+
+def is_tax_item(title: Any, category: Any = None) -> bool:
+    """Mevcut 'Vergi/ödeme' kategorisi veya KDV/Vergi/SGK/Bağ-Kur geçen başlık."""
+    if category == CAT_TAX:
+        return True
+    low = str(title or "").casefold()
+    return any(kw in low for kw in TAX_KEYWORDS)
+
+
 def get_holiday_events_for_date(d: dt.date) -> List[Dict[str, Any]]:
     """Return Turkish public holiday items for a specific date."""
     items = TURKISH_HOLIDAYS_TABLE.get(d)
@@ -156,7 +199,7 @@ def get_holiday_events_for_date(d: dt.date) -> List[Dict[str, Any]]:
             "end": d + dt.timedelta(days=1),
             "all_day": True,
             "link": "",
-            "category": "Resmi tatil",
+            "category": CAT_HOLIDAY,
             "sub": "Yarım gün" if is_half else "Tüm gün",
             "half_day": is_half,
         })
@@ -191,7 +234,7 @@ def get_claude_markers_for_month(
                         "end": dt.datetime.combine(cur_date, local_wr.time()).replace(tzinfo=local_tz),
                         "all_day": False,
                         "link": "",
-                        "category": "Claude",
+                        "category": CAT_CLAUDE,
                         "sub": time_str,
                     })
         except Exception as exc:
@@ -213,7 +256,7 @@ def get_claude_markers_for_month(
                 "end": ren_date + dt.timedelta(days=1),
                 "all_day": True,
                 "link": "",
-                "category": "Claude",
+                "category": CAT_CLAUDE,
                 "sub": "Tüm gün",
             })
         except Exception as exc:
@@ -235,8 +278,7 @@ def draw_calendar_icon(p: QPainter, rect: QRectF, day_num: int) -> None:
     # White card body
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(QColor(255, 255, 255))
-    path = QPainterPath()
-    path.addRoundedRect(box_r, 4.0, 4.0)
+    path = panel_style.rounded(box_r, 4.0)
     p.drawPath(path)
 
     # Blue top header band
@@ -260,15 +302,42 @@ def draw_calendar_icon(p: QPainter, rect: QRectF, day_num: int) -> None:
     p.restore()
 
 
-# ---------------------------------------------------------------------------
-# CalendarPanel Widget
-# ---------------------------------------------------------------------------
+def _category_color(category: str) -> QColor:
+    if category == CAT_HOLIDAY:
+        return panel_style.DANGER
+    if category == CAT_TAX:
+        return panel_style.WARN
+    if category == CAT_CLAUDE:
+        return panel_style.CLAUDE
+    return panel_style.ACCENT
+
+
+def _event_start_local(st: Any, local_tz: dt.tzinfo) -> Optional[dt.datetime]:
+    """Event start as timezone-aware local datetime (all-day -> 00:00)."""
+    if isinstance(st, dt.datetime):
+        return st.astimezone(local_tz) if st.tzinfo else st.replace(tzinfo=local_tz)
+    if isinstance(st, dt.date):
+        return dt.datetime.combine(st, dt.time.min).replace(tzinfo=local_tz)
+    return None
+
+
+def _write_clipboard(text: str) -> bool:
+    """Write to the real clipboard. Under tests this is a no-op (owner's clipboard safe)."""
+    if _under_test():
+        return False
+    try:
+        QGuiApplication.clipboard().setText(text)
+        return True
+    except Exception as exc:
+        _log_err("calendar_clipboard", exc)
+        return False
+
 
 class CalendarPanel(QWidget):
-    """Modern dark-mode card-layered calendar popover panel for Şerit dock (Direction C)."""
+    """Takvim paneli: 440 px geniş, çok sütunlu ay ızgarası + gündem + vergi kopyalama çipi."""
 
-    WIDTH: int = 440
-    HEIGHT: int = 490
+    WIDTH: int = int(panel_style.WIDTH["cal"])
+    HEIGHT: int = 660
     RADIUS: float = panel_style.R_PANEL
 
     refresh_requested = Signal()
@@ -276,9 +345,8 @@ class CalendarPanel(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
 
-        # Frameless opaque window flags
         self.setWindowFlags(
-            Qt.WindowType.Tool
+            Qt.WindowType.Window
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.NoDropShadowWindowHint
         )
@@ -287,59 +355,67 @@ class CalendarPanel(QWidget):
         self.setMouseTracking(True)
 
         # Internal state
+        self._anchor_global: Optional[QRectF] = None
         self._anchor_rect_global: Optional[QRectF] = None
         self._month_data: Dict[str, Any] = {}
         self._claude_data: Dict[str, Any] = {}
 
         local_tz = getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))
         now_local = dt.datetime.now(local_tz)
+        self._now_override: Optional[dt.datetime] = None
         self.today: dt.date = now_local.date()
         self.selected_date: dt.date = self.today
         self.view_year: int = self.today.year
         self.view_month: int = self.today.month
 
-        # Focus / bounce tracking
+        # Focus / close tracking
         self._last_close_time: float = 0.0
         self._is_closing: bool = False
         self._anchor_timer = QTimer(self)
         self._anchor_timer.setSingleShot(True)
         self._anchor_timer.timeout.connect(self._on_anchor_timeout)
 
-        # Animations (180ms OutCubic open, 150ms InQuad close)
-        self._anim_progress: float = 1.0
-        self._anim_opacity: float = 1.0
-        self._anim_offset_y: float = 0.0
-        self._anim_scale: float = 1.0
-
-        self._anim = QVariantAnimation(self)
-        self._anim.valueChanged.connect(self._on_anim_value_changed)
-        self._anim.finished.connect(self._on_anim_finished)
-
-        # Interactive states & hit regions
+        # Hover states
         self._hover_close: bool = False
         self._hover_prev: bool = False
+        self._hover_today: bool = False
         self._hover_next: bool = False
+        self._hover_tax: bool = False
+        self._hover_footer: bool = False
         self._hover_cell_idx: int = -1
+        self._hover_selected_idx: int = -1
         self._hover_upcoming_idx: int = -1
 
-        # Fixed Hit Rects
-        self._rect_close = QRectF(self.WIDTH - 14.0 - 26.0, 10.0, 26.0, 26.0)
-        self._rect_btn_prev = QRectF(self.WIDTH - 14.0 - 58.0, 216.0, 22.0, 22.0)
-        self._rect_btn_next = QRectF(self.WIDTH - 14.0 - 30.0, 216.0, 22.0, 22.0)
-        self._rect_btn_refresh = QRectF(self.WIDTH - 14.0 - 150.0, self.HEIGHT - 32.0, 150.0, 24.0)
+        # Fixed hit rects (layout bunları her rebuild'de tazeler)
+        self._rect_close = QRectF()
+        self._rect_btn_prev = QRectF()
+        self._rect_btn_today = QRectF()
+        self._rect_btn_next = QRectF()
+        self._rect_btn_refresh = QRectF()
+        self._tax_chip_rect = QRectF()
 
-        # Layout Cache
+        # Layout / data caches
+        self._layout: Dict[str, Any] = {}
         self._cached_cells: List[Dict[str, Any]] = []
+        self._cached_selected_events: List[Dict[str, Any]] = []
         self._cached_selected_cards: List[Dict[str, Any]] = []
         self._cached_upcoming: List[Dict[str, Any]] = []
         self._cached_month_event_count: int = 0
         self._cached_selected_header_text: str = ""
-        self._cached_footer_sync_text: str = ""
+        self._cached_footer_source: str = "Google Takvim · —"
+        self._tax_chip: Optional[Dict[str, Any]] = None
+        self._tax_copied: bool = False
+
+        self._tax_copy_timer = QTimer(self)
+        self._tax_copy_timer.setSingleShot(True)
+        self._tax_copy_timer.timeout.connect(self._reset_tax_copied)
 
         self.resize(self.WIDTH, self.HEIGHT)
         self._rebuild_cache()
 
+    # ------------------------------------------------------------------
     # Public API
+    # ------------------------------------------------------------------
     def is_open(self) -> bool:
         """Return True if panel is visible and not in close transition."""
         return bool(self.isVisible() and not self._is_closing)
@@ -356,58 +432,51 @@ class CalendarPanel(QWidget):
         anchor_global: Optional[Union[QRectF, Any]] = None,
         month_data: Optional[Dict[str, Any]] = None,
         claude_data: Optional[Dict[str, Any]] = None,
+        switch_from_x: Optional[int] = None,
     ) -> None:
-        """Position centered above anchor, apply physical round region, and animate in."""
+        """Position centered above anchor, apply rounded region, and animate in."""
         try:
-            self._anchor_rect_global = QRectF(anchor_global) if anchor_global is not None else None
+            self._anchor_global = QRectF(anchor_global) if anchor_global is not None else None
+            self._anchor_rect_global = self._anchor_global
             self._month_data = month_data if isinstance(month_data, dict) else {}
             self._claude_data = claude_data if isinstance(claude_data, dict) else {}
 
-            local_tz = getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))
-            now_local = dt.datetime.now(local_tz)
-            self.today = now_local.date()
             if not hasattr(self, "selected_date") or self.selected_date is None:
-                self.selected_date = self.today
+                local_tz = getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))
+                self.selected_date = dt.datetime.now(local_tz).date()
 
             self._rebuild_cache()
 
             # Positioning above anchor (8px gap), clamped inside screen geometry
             dpr = 1.0
-            if self._anchor_rect_global is not None:
-                anchor_cx = self._anchor_rect_global.center().x()
+            target = QPoint(int(self.x()), int(self.y()))
+            if self._anchor_global is not None:
+                anchor_cx = self._anchor_global.center().x()
                 target_x = int(anchor_cx - self.width() / 2.0)
-                target_y = int(self._anchor_rect_global.top() - self.height() - panel_style.ANCHOR_GAP)
+                target_y = int(self._anchor_global.top() - self.height() - panel_style.ANCHOR_GAP)
 
-                center_pt = self._anchor_rect_global.center().toPoint()
-                screen = QGuiApplication.screenAt(center_pt)
-                if screen is None:
-                    screen = QGuiApplication.primaryScreen()
-
+                center_pt = self._anchor_global.center().toPoint()
+                screen = QGuiApplication.screenAt(center_pt) or QGuiApplication.primaryScreen()
                 if screen is not None:
                     geom = screen.availableGeometry()
                     dpr = screen.devicePixelRatio()
                     margin = 8
                     min_x = geom.left() + margin
                     max_x = geom.right() - self.width() - margin
-                    if max_x >= min_x:
-                        target_x = max(min_x, min(max_x, target_x))
-                    else:
-                        target_x = min_x
+                    target_x = max(min_x, min(max_x, target_x)) if max_x >= min_x else min_x
 
                     min_y = geom.top() + margin
                     max_y = geom.bottom() - self.height() - margin
                     if target_y < min_y:
-                        below_y = int(self._anchor_rect_global.bottom() + panel_style.ANCHOR_GAP)
+                        below_y = int(self._anchor_global.bottom() + panel_style.ANCHOR_GAP)
                         if below_y + self.height() <= geom.bottom() - margin:
                             target_y = below_y
                         else:
                             target_y = min_y
                     elif target_y > max_y:
                         target_y = max_y
+                target = QPoint(int(target_x), int(target_y))
 
-                self.move(target_x, target_y)
-
-            # Apply Windows physical rounded region without acrylic (opaque panel)
             hwnd = int(self.winId())
             if winapi and hasattr(winapi, "set_round_region"):
                 try:
@@ -415,42 +484,30 @@ class CalendarPanel(QWidget):
                 except Exception:
                     pass
 
-            # Open animation: 180 ms OutCubic
             self._is_closing = False
-            self._anim.stop()
-            self._anim.setDuration(180)
-            self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-            self._anim.setStartValue(0.0)
-            self._anim.setEndValue(1.0)
-
-            self._anim_progress = 0.0
-            self._anim_opacity = 0.0
-            self._anim_offset_y = 8.0
-            self._anim_scale = 0.96
-
-            self.show()
+            panel_style.animate_in(self, target, switch_from_x=switch_from_x)
             self.activateWindow()
-            self._anim.start()
+            self.setFocus()
         except Exception as exc:
             _log_err("calendar_show_for", exc)
 
     def hide_animated(self) -> None:
-        """Trigger close transition: fade 1->0, slide 6px in 150ms InQuad, then hide."""
+        """Trigger the shared close animation, then hide."""
         if not self.isVisible() or self._is_closing:
             return
-
         self._is_closing = True
         self._last_close_time = time.monotonic()
+        panel_style.animate_out(self, on_done=self._on_closed)
 
-        self._anim.stop()
-        start_val = self._anim_progress
-        duration = max(40, int(150 * start_val))
+    def hide_instant(self) -> None:
+        """Close without animation (e.g. switching to another capsule panel)."""
+        if self.isVisible():
+            self._last_close_time = time.monotonic()
+        self._is_closing = False
+        panel_style.animate_out(self, instant=True)
 
-        self._anim.setDuration(duration)
-        self._anim.setEasingCurve(QEasingCurve.Type.InQuad)
-        self._anim.setStartValue(start_val)
-        self._anim.setEndValue(0.0)
-        self._anim.start()
+    def _on_closed(self) -> None:
+        self._is_closing = False
 
     def select_date(self, target_date: dt.date) -> None:
         """Change selected date and synchronize visible month if needed."""
@@ -484,7 +541,11 @@ class CalendarPanel(QWidget):
     def go_today(self) -> None:
         """Jump view to current month and select today."""
         local_tz = getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))
-        now_local = dt.datetime.now(local_tz)
+        now_local = self._now_override or dt.datetime.now(local_tz)
+        if now_local.tzinfo is None:
+            now_local = now_local.replace(tzinfo=local_tz)
+        else:
+            now_local = now_local.astimezone(local_tz)
         self.today = now_local.date()
         self.selected_date = self.today
         self.view_year = self.today.year
@@ -500,10 +561,23 @@ class CalendarPanel(QWidget):
             _log_err("calendar_refresh_emit", exc)
         self.update()
 
+    def copy_tax_amount(self) -> None:
+        """Copy the tax amount exactly as written (skipped under tests)."""
+        if not self._tax_chip:
+            return
+        _write_clipboard(str(self._tax_chip.get("amount") or ""))
+        self._tax_copied = True
+        self._tax_copy_timer.start(1500)
+        self.update()
+
+    def _reset_tax_copied(self) -> None:
+        self._tax_copied = False
+        self.update()
+
     def render_to_image(self, dpr: float = 2.0) -> QImage:
         """Render current calendar panel offscreen to a high-DPI ARGB32 QImage."""
-        w_phys = int(self.width() * dpr)
-        h_phys = int(self.height() * dpr)
+        w_phys = max(1, int(self.width() * dpr))
+        h_phys = max(1, int(self.height() * dpr))
         img = QImage(w_phys, h_phys, QImage.Format.Format_ARGB32_Premultiplied)
         img.setDevicePixelRatio(dpr)
         img.fill(Qt.GlobalColor.transparent)
@@ -511,74 +585,44 @@ class CalendarPanel(QWidget):
         p = QPainter(img)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-
-        saved_op = self._anim_opacity
-        saved_off = self._anim_offset_y
-        saved_scale = self._anim_scale
-        self._anim_opacity = 1.0
-        self._anim_offset_y = 0.0
-        self._anim_scale = 1.0
-
         self._paint_panel(p)
-
-        self._anim_opacity = saved_op
-        self._anim_offset_y = saved_off
-        self._anim_scale = saved_scale
-
         p.end()
         return img
 
-    # Animation Callbacks
-    def _on_anim_value_changed(self, val: float) -> None:
-        self._anim_progress = float(val)
-        self._anim_opacity = max(0.0, min(1.0, float(val)))
-        if self._is_closing:
-            self._anim_offset_y = 6.0 * (1.0 - self._anim_opacity)
-            self._anim_scale = 0.96 + 0.04 * self._anim_opacity
-        else:
-            self._anim_offset_y = 8.0 * (1.0 - self._anim_opacity)
-            self._anim_scale = 0.96 + 0.04 * self._anim_opacity
-        self.update()
-
-    def _on_anim_finished(self) -> None:
-        if self._is_closing:
-            self.hide()
-            self._is_closing = False
-            self._anim_opacity = 0.0
-            self.update()
-
+    # ------------------------------------------------------------------
+    # Events
+    # ------------------------------------------------------------------
     def _on_anchor_timeout(self) -> None:
         if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
             self.hide_animated()
 
-    # Event Handlers
     def keyPressEvent(self, event) -> None:
         key = event.key()
         if key == Qt.Key.Key_Escape:
             self.hide_animated()
             event.accept()
             return
-        elif key == Qt.Key.Key_Left:
+        if key == Qt.Key.Key_Left:
             self.select_date(self.selected_date - dt.timedelta(days=1))
             event.accept()
             return
-        elif key == Qt.Key.Key_Right:
+        if key == Qt.Key.Key_Right:
             self.select_date(self.selected_date + dt.timedelta(days=1))
             event.accept()
             return
-        elif key == Qt.Key.Key_Up:
+        if key == Qt.Key.Key_Up:
             self.select_date(self.selected_date - dt.timedelta(days=7))
             event.accept()
             return
-        elif key == Qt.Key.Key_Down:
+        if key == Qt.Key.Key_Down:
             self.select_date(self.selected_date + dt.timedelta(days=7))
             event.accept()
             return
-        elif key == Qt.Key.Key_PageUp:
+        if key == Qt.Key.Key_PageUp:
             self.prev_month()
             event.accept()
             return
-        elif key == Qt.Key.Key_PageDown:
+        if key == Qt.Key.Key_PageDown:
             self.next_month()
             event.accept()
             return
@@ -588,12 +632,11 @@ class CalendarPanel(QWidget):
         if event.type() == QEvent.Type.ActivationChange:
             if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
                 cursor_pos = QCursor.pos()
-                if self._anchor_rect_global is not None:
-                    if self._anchor_rect_global.contains(QPointF(cursor_pos)):
-                        self._last_close_time = time.monotonic()
-                        self._anchor_timer.start(300)
-                        super().changeEvent(event)
-                        return
+                if self._anchor_global is not None and self._anchor_global.contains(QPointF(cursor_pos)):
+                    self._last_close_time = time.monotonic()
+                    self._anchor_timer.start(300)
+                    super().changeEvent(event)
+                    return
                 self.hide_animated()
         super().changeEvent(event)
 
@@ -602,115 +645,343 @@ class CalendarPanel(QWidget):
         self._last_close_time = time.monotonic()
         super().hideEvent(event)
 
-    def mouseMoveEvent(self, event) -> None:
-        pos = event.position()
-        old_close = self._hover_close
-        old_prev = self._hover_prev
-        old_next = self._hover_next
-        old_cell = self._hover_cell_idx
-        old_up = self._hover_upcoming_idx
-
-        self._hover_close = self._rect_close.contains(pos)
-        self._hover_prev = self._rect_btn_prev.contains(pos)
-        self._hover_next = self._rect_btn_next.contains(pos)
-
-        # Check cell hits
-        self._hover_cell_idx = -1
+    def _hit(self, pos: QPointF) -> Optional[str]:
+        if self._rect_close.contains(pos):
+            return "close"
+        if self._tax_chip_rect.contains(pos) and self._tax_chip:
+            return "tax"
+        if self._rect_btn_prev.contains(pos):
+            return "prev"
+        if self._rect_btn_today.contains(pos):
+            return "today"
+        if self._rect_btn_next.contains(pos):
+            return "next"
+        for idx, item in enumerate(self._cached_selected_events):
+            if item["rect"].contains(pos):
+                return f"selected:{idx}"
+        for idx, item in enumerate(self._cached_upcoming):
+            if item["rect"].contains(pos):
+                return f"upcoming:{idx}"
         for idx, cell in enumerate(self._cached_cells):
             if cell["rect"].contains(pos):
-                self._hover_cell_idx = idx
+                return f"cell:{idx}"
+        if self._rect_btn_refresh.contains(pos):
+            return "footer"
+        return None
+
+    def mouseMoveEvent(self, event) -> None:
+        pos = event.position()
+        close = self._rect_close.contains(pos)
+        tax = bool(self._tax_chip) and self._tax_chip_rect.contains(pos)
+        prev = self._rect_btn_prev.contains(pos)
+        today = self._rect_btn_today.contains(pos)
+        nxt = self._rect_btn_next.contains(pos)
+        footer = self._rect_btn_refresh.contains(pos)
+
+        sel_idx = -1
+        for idx, item in enumerate(self._cached_selected_events):
+            if item["rect"].contains(pos):
+                sel_idx = idx
+                break
+        up_idx = -1
+        for idx, item in enumerate(self._cached_upcoming):
+            if item["rect"].contains(pos):
+                up_idx = idx
+                break
+        cell_idx = -1
+        for idx, cell in enumerate(self._cached_cells):
+            if cell["rect"].contains(pos):
+                cell_idx = idx
                 break
 
-        # Check upcoming / card hits
-        self._hover_upcoming_idx = -1
-        for idx, up in enumerate(self._cached_upcoming):
-            if up["rect"].contains(pos):
-                self._hover_upcoming_idx = idx
-                break
-
-        if (
-            self._hover_close != old_close
-            or self._hover_prev != old_prev
-            or self._hover_next != old_next
-            or self._hover_cell_idx != old_cell
-            or self._hover_upcoming_idx != old_up
+        if (close, tax, prev, today, nxt, footer, sel_idx, up_idx, cell_idx) != (
+            self._hover_close, self._hover_tax, self._hover_prev, self._hover_today,
+            self._hover_next, self._hover_footer, self._hover_selected_idx,
+            self._hover_upcoming_idx, self._hover_cell_idx,
         ):
+            self._hover_close = close
+            self._hover_tax = tax
+            self._hover_prev = prev
+            self._hover_today = today
+            self._hover_next = nxt
+            self._hover_footer = footer
+            self._hover_selected_idx = sel_idx
+            self._hover_upcoming_idx = up_idx
+            self._hover_cell_idx = cell_idx
             self.update()
 
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            pos = event.position()
-
-            if self._rect_close.contains(pos):
+            hit = self._hit(event.position())
+            if hit == "close":
                 self.hide_animated()
                 event.accept()
                 return
-
-            if self._rect_btn_prev.contains(pos):
+            if hit == "tax":
+                self.copy_tax_amount()
+                event.accept()
+                return
+            if hit == "prev":
                 self.prev_month()
                 event.accept()
                 return
-
-            if self._rect_btn_next.contains(pos):
+            if hit == "today":
+                self.go_today()
+                event.accept()
+                return
+            if hit == "next":
                 self.next_month()
                 event.accept()
                 return
-
-            # Click on day cell
-            for cell in self._cached_cells:
-                if cell["rect"].contains(pos):
-                    self.select_date(cell["date"])
-                    event.accept()
-                    return
-
-            # Click on upcoming item (if it has a link open it, else select its date)
-            for up in self._cached_upcoming:
-                if up["rect"].contains(pos):
-                    link = up.get("link")
-                    if link and isinstance(link, str) and link.startswith("http"):
-                        try:
-                            QDesktopServices.openUrl(QUrl(link))
-                        except Exception as exc:
-                            _log_err("calendar_open_url", exc)
-                    target = up.get("target_date")
-                    if target:
-                        self.select_date(target)
-                    event.accept()
-                    return
-
-            # Also check selected cards for link click
-            for card in self._cached_selected_cards:
-                if card["rect"].contains(pos):
-                    link = card.get("link")
-                    if link and isinstance(link, str) and link.startswith("http"):
-                        try:
-                            QDesktopServices.openUrl(QUrl(link))
-                        except Exception as exc:
-                            _log_err("calendar_open_url", exc)
-                    event.accept()
-                    return
-
+            if hit == "footer":
+                self.trigger_refresh()
+                event.accept()
+                return
+            if hit and hit.startswith("cell:"):
+                idx = int(hit.split(":", 1)[1])
+                self.select_date(self._cached_cells[idx]["date"])
+                event.accept()
+                return
+            if hit and hit.startswith("selected:"):
+                idx = int(hit.split(":", 1)[1])
+                self._open_event_link(self._cached_selected_events[idx])
+                event.accept()
+                return
+            if hit and hit.startswith("upcoming:"):
+                idx = int(hit.split(":", 1)[1])
+                item = self._cached_upcoming[idx]
+                self._open_event_link(item)
+                target = item.get("target_date")
+                if isinstance(target, dt.date):
+                    self.select_date(target)
+                event.accept()
+                return
         super().mousePressEvent(event)
+
+    def _open_event_link(self, item: Dict[str, Any]) -> None:
+        link = item.get("link")
+        if isinstance(link, str) and link.startswith("http"):
+            try:
+                QDesktopServices.openUrl(QUrl(link))
+            except Exception as exc:
+                _log_err("calendar_open_url", exc)
 
     def leaveEvent(self, event) -> None:
         self._hover_close = False
         self._hover_prev = False
+        self._hover_today = False
         self._hover_next = False
+        self._hover_tax = False
+        self._hover_footer = False
         self._hover_cell_idx = -1
+        self._hover_selected_idx = -1
         self._hover_upcoming_idx = -1
         self.update()
         super().leaveEvent(event)
 
-    # Cache Builder
-    def _rebuild_cache(self) -> None:
-        """Compute month grid, upcoming events, and hit rects for fast painting."""
+    # ------------------------------------------------------------------
+    # Cache / layout
+    # ------------------------------------------------------------------
+    def _now(self) -> dt.datetime:
         local_tz = getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))
-        now_local = dt.datetime.now(local_tz)
+        if isinstance(self._now_override, dt.datetime):
+            now = self._now_override
+            return now.astimezone(local_tz) if now.tzinfo else now.replace(tzinfo=local_tz)
+        return dt.datetime.now(local_tz)
+
+    def _selected_header(self) -> str:
+        if self.selected_date == self.today:
+            prefix = "Bugün · "
+        elif self.selected_date == (self.today + dt.timedelta(days=1)):
+            prefix = "Yarın · "
+        else:
+            prefix = ""
+        dow = TR_DAYS_FULL.get(self.selected_date.weekday(), "")
+        month = TR_MONTHS_FULL.get(self.selected_date.month, "")
+        return f"{prefix}{dow}, {self.selected_date.day} {month}"
+
+    def _date_label(self, d: dt.date) -> str:
+        return f"{d.day} {TR_MONTHS_SHORT.get(d.month, '')} {TR_DAYS_SHORT[d.weekday()]}"
+
+    def _event_time_label(self, ev: Dict[str, Any]) -> str:
+        sub = ev.get("sub")
+        if isinstance(sub, str) and sub:
+            return sub
+        st = ev.get("start")
+        if isinstance(st, dt.datetime):
+            local_tz = getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))
+            local_st = st.astimezone(local_tz) if st.tzinfo else st.replace(tzinfo=local_tz)
+            return local_st.strftime("%H:%M")
+        return "Tüm gün"
+
+    def _display_row(self, ev: Dict[str, Any], target_date: dt.date, date_label: str) -> Dict[str, Any]:
+        title = clean_title(ev.get("title", ""))
+        category = str(ev.get("category") or CAT_GOOGLE)
+        m = _amount_match(title)
+        amount = m.group(0).strip() if m else ""
+        return {
+            "title": title,
+            "category": category,
+            "start": ev.get("start"),
+            "all_day": bool(ev.get("all_day", False)),
+            "link": ev.get("link", ""),
+            "target_date": target_date,
+            "date_label": date_label,
+            "amount": amount,
+            "dot_color": _category_color(category),
+            "strip_color": _category_color(category),
+            "sub": f"{self._event_time_label(ev)} · {category}",
+            "rect": QRectF(),
+        }
+
+    def _find_tax_chip(self, events: List[Dict[str, Any]], now_local: dt.datetime) -> Optional[Dict[str, Any]]:
+        """First tax event within the next 48 h whose title carries a Turkish TL amount."""
+        candidates: List[Tuple[dt.datetime, Dict[str, Any], str, str]] = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            title = clean_title(ev.get("title", ""))
+            if not is_tax_item(title, ev.get("category")):
+                continue
+            m = _amount_match(title)
+            if not m:
+                continue
+            start = _event_start_local(ev.get("start"), now_local.tzinfo or dt.timezone.utc)
+            if start is None:
+                continue
+            delta = (start - now_local).total_seconds()
+            if delta < 0.0 or delta > 48.0 * 3600.0:
+                continue
+            candidates.append((start, ev, m.group(1), m.group(0).strip()))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda c: c[0])
+        start, _ev, amount, _amount_text = candidates[0]
+
+        # Chip metni: emoji ve "Vergi:" ön eki atılır, tutar sonda tek kez kalır.
+        title = re.sub(r"^\s*vergi\s*:\s*", "", clean_title(_ev.get("title", "")), flags=re.IGNORECASE)
+        m = _amount_match(title)
+        base = title
+        if m:
+            base = re.sub(r"\s{2,}", " ", (title[:m.start()] + title[m.end():])).strip(" -–—·:,")
+        label = f"{base} · {amount} TL" if base else f"{amount} TL"
+        return {
+            "label": label,
+            "amount": amount,
+            "start": start,
+            "event": _ev,
+        }
+
+    def _compute_layout(self) -> Dict[str, Any]:
+        cw = float(self.WIDTH) - 2.0 * panel_style.PAD
+        y = panel_style.PAD + panel_style.HEADER_H + panel_style.GAP
+
+        tax_rect: Optional[QRectF] = None
+        if self._tax_chip:
+            tax_rect = QRectF(panel_style.PAD, y, cw, TAX_CHIP_H)
+            y += TAX_CHIP_H + panel_style.GAP
+
+        n_sel = len(self._cached_selected_events)
+        sel_rows_h = (n_sel * ROW_H + max(0, n_sel - 1) * ROW_GAP) if n_sel else EMPTY_ROW_H
+        sel_card_h = 2.0 * panel_style.CARD_PAD + MONTH_CARD_OVER_H + sel_rows_h
+        sel_rect = QRectF(panel_style.PAD, y, cw, sel_card_h)
+        y += sel_card_h + panel_style.GAP
+
+        n_up = len(self._cached_upcoming)
+        up_rows_h = (n_up * ROW_H + max(0, n_up - 1) * ROW_GAP) if n_up else EMPTY_ROW_H
+        up_card_h = 2.0 * panel_style.CARD_PAD + MONTH_CARD_OVER_H + up_rows_h
+        up_rect = QRectF(panel_style.PAD, y, cw, up_card_h)
+        y += up_card_h + panel_style.GAP
+
+        month_card_h = (2.0 * panel_style.CARD_PAD + MONTH_CARD_OVER_H
+                        + GRID_HEADER_H + 6.0 * GRID_ROW_H)
+        month_rect = QRectF(panel_style.PAD, y, cw, month_card_h)
+        y += month_card_h + panel_style.GAP
+
+        footer_rect = QRectF(panel_style.PAD, y, cw, panel_style.FOOTER_H)
+        total = y + panel_style.FOOTER_H + panel_style.PAD * 0.5
+
+        row_x = panel_style.PAD + panel_style.CARD_PAD
+        row_w = cw - 2.0 * panel_style.CARD_PAD
+        sel_content_top = sel_rect.top() + panel_style.CARD_PAD + MONTH_CARD_OVER_H
+        up_content_top = up_rect.top() + panel_style.CARD_PAD + MONTH_CARD_OVER_H
+        sel_rows = [QRectF(row_x, sel_content_top + i * (ROW_H + ROW_GAP), row_w, ROW_H)
+                    for i in range(n_sel)]
+        up_rows = [QRectF(row_x, up_content_top + i * (ROW_H + ROW_GAP), row_w, ROW_H)
+                   for i in range(n_up)]
+
+        grid_y = month_rect.top() + panel_style.CARD_PAD + MONTH_CARD_OVER_H + GRID_HEADER_H
+        col_w = row_w / 7.0
+
+        layout = {
+            "tax": tax_rect,
+            "selected_card": sel_rect,
+            "upcoming_card": up_rect,
+            "month_card": month_rect,
+            "footer": footer_rect,
+            "selected_rows": sel_rows,
+            "upcoming_rows": up_rows,
+            "grid_y": grid_y,
+            "grid_x": row_x,
+            "col_w": col_w,
+            "total": total,
+        }
+
+        # Header close (draw_header ile aynı hesap)
+        close_sz = min(panel_style.CLOSE_SZ, panel_style.HEADER_H)
+        self._rect_close = QRectF(
+            self.WIDTH - panel_style.PAD - close_sz,
+            panel_style.PAD + (panel_style.HEADER_H - close_sz) / 2.0,
+            close_sz, close_sz,
+        )
+        self._tax_chip_rect = QRectF(tax_rect) if tax_rect is not None else QRectF()
+        self._rect_btn_prev, self._rect_btn_today, self._rect_btn_next = self._nav_rects(month_rect)
+        self._rect_btn_refresh = self._footer_button_rect(footer_rect)
+        return layout
+
+    def _nav_rects(self, month_rect: QRectF) -> Tuple[QRectF, QRectF, QRectF]:
+        f = panel_style.font(10.5, QFont.Weight.DemiBold)
+        fm = QFontMetricsF(f)
+        over_top = month_rect.top() + panel_style.CARD_PAD
+        right = month_rect.right() - panel_style.CARD_PAD
+        nav = "‹  Bugün  ›"
+        x = right - fm.horizontalAdvance(nav)
+        w_prev = fm.horizontalAdvance("‹")
+        w_today = fm.horizontalAdvance("Bugün")
+        x_prev = x
+        x_today = x + fm.horizontalAdvance("‹  ")
+        x_next = x + fm.horizontalAdvance("‹  Bugün  ")
+        h = 15.0
+        pad_y = 5.0
+        return (
+            QRectF(x_prev - 3.0, over_top - pad_y, w_prev + 6.0, h + 2 * pad_y),
+            QRectF(x_today - 4.0, over_top - pad_y, w_today + 8.0, h + 2 * pad_y),
+            QRectF(x_next - 3.0, over_top - pad_y, fm.horizontalAdvance("›") + 6.0, h + 2 * pad_y),
+        )
+
+    def _footer_button_rect(self, footer_rect: QRectF) -> QRectF:
+        f = panel_style.font(11.5, QFont.Weight.Medium)
+        fm = QFontMetricsF(f)
+        tw = fm.horizontalAdvance("Senkronize")
+        content_h = max(0.0, footer_rect.height() - 3.0)
+        btn_w = min(tw + 20.0, max(28.0, footer_rect.width() * 0.55))
+        btn_h = min(24.0, content_h)
+        cy = footer_rect.top() + 3.0 + content_h / 2.0
+        return QRectF(footer_rect.right() - btn_w, cy - btn_h / 2.0, btn_w, btn_h)
+
+    def compute_height(self) -> int:
+        layout = self._compute_layout()
+        return int(math.ceil(layout["total"]))
+
+    def _rebuild_cache(self) -> None:
+        """Compute month grid, agenda rows, tax chip and hit rects for fast painting."""
+        now_local = self._now()
         self.today = now_local.date()
 
-        # 1. Collect all events (Google + Holidays + Claude)
+        # 1. All events: Google month events + holidays + Claude markers
         events_list: List[Dict[str, Any]] = []
         raw_events = self._month_data.get("events")
         if isinstance(raw_events, list):
@@ -730,152 +1001,96 @@ class CalendarPanel(QWidget):
                 y += 1
             claude_markers.extend(get_claude_markers_for_month(self._claude_data, y, m))
 
-        # 2. Build 6x7 Month Grid (42 cells)
-        first_day = dt.date(self.view_year, self.view_month, 1)
-        start_dow = first_day.weekday()  # Monday = 0
-        grid_start_date = first_day - dt.timedelta(days=start_dow)
+        cat_prio = {CAT_HOLIDAY: 0, CAT_TAX: 1, CAT_CLAUDE: 2, CAT_GOOGLE: 3}
 
-        pad_x = 14.0
-        avail_w = self.WIDTH - 2 * pad_x
-        tile2_y = 204.0
-        grid_pad_x = 12.0
-        grid_x = pad_x + grid_pad_x
-        grid_y = tile2_y + 54.0
-        col_w = (avail_w - 2 * grid_pad_x) / 7.0
-        row_h = 26.0
+        # 2. Selected day agenda
+        sel_events = self._match_events_for_date(self.selected_date, events_list, claude_markers)
+        sel_events.sort(key=lambda ev: (cat_prio.get(str(ev.get("category") or CAT_GOOGLE), 9),
+                                        self._event_time_label(ev)))
+        sel_label = self._date_label(self.selected_date)
+        self._cached_selected_events = [
+            self._display_row(ev, self.selected_date, sel_label) for ev in sel_events[:4]
+        ]
 
-        cached_cells: List[Dict[str, Any]] = []
-        month_event_count: int = 0
-
-        for idx in range(42):
-            cell_date = grid_start_date + dt.timedelta(days=idx)
-            row = idx // 7
-            col = idx % 7
-            c_rect = QRectF(grid_x + col * col_w, grid_y + row * row_h, col_w, row_h)
-
-            is_current = (cell_date.month == self.view_month)
-            is_today = (cell_date == self.today)
-            is_selected = (cell_date == self.selected_date)
-
-            day_events = self._match_events_for_date(cell_date, events_list, claude_markers)
-            if is_current:
-                month_event_count += len(day_events)
-
-            cat_order = ["Vergi/ödeme", "Resmi tatil", "Claude", "Google Takvim"]
-            cats_present: Set[str] = {ev.get("category", "Google Takvim") for ev in day_events}
-            ordered_cats = [c for c in cat_order if c in cats_present]
-            dots = ordered_cats[:3]
-
-            cached_cells.append({
-                "date": cell_date,
-                "rect": c_rect,
-                "day_num": str(cell_date.day),
-                "is_current": is_current,
-                "is_today": is_today,
-                "is_selected": is_selected,
-                "dots": dots,
-            })
-
-        self._cached_cells = cached_cells
-        self._cached_month_event_count = month_event_count
-
-        # 3. Selected Day Header text
-        if self.selected_date == self.today:
-            hdr_prefix = "Bugün · "
-        elif self.selected_date == (self.today + dt.timedelta(days=1)):
-            hdr_prefix = "Yarın · "
-        else:
-            hdr_prefix = ""
-        dow_name = TR_DAYS_FULL.get(self.selected_date.weekday(), "")
-        m_name = TR_MONTHS_FULL.get(self.selected_date.month, "")
-        self._cached_selected_header_text = f"{hdr_prefix}{dow_name}, {self.selected_date.day} {m_name}"
-
-        # 4. Hero Card Left: Events for selected day
-        sel_day_events = self._match_events_for_date(self.selected_date, events_list, claude_markers)
-
-        # 5. Hero Card Right: Upcoming Events
-        # Collect distinct days >= today (or selected_date)
+        # 3. Upcoming events (distinct days from today / selected date, max 4)
         ref_start_date = min(self.today, self.selected_date)
-        all_future_days = [ref_start_date + dt.timedelta(days=i) for i in range(45)]
         upcoming_items: List[Dict[str, Any]] = []
-
-        cat_prio = {"Resmi tatil": 0, "Vergi/ödeme": 1, "Google Takvim": 2, "Claude": 3}
-        for f_date in all_future_days:
-            # Skip today if today has no events
-            if f_date == self.today and not sel_day_events and f_date != self.selected_date:
-                pass
+        for i in range(45):
+            f_date = ref_start_date + dt.timedelta(days=i)
             matches = self._match_events_for_date(f_date, events_list, claude_markers)
-            matches.sort(key=lambda ev: cat_prio.get(ev.get("category", "Google Takvim"), 9))
+            matches.sort(key=lambda ev: cat_prio.get(str(ev.get("category") or CAT_GOOGLE), 9))
             for ev in matches:
-                cat = ev.get("category", "Google Takvim")
-                if cat == "Resmi tatil":
-                    dot_color = panel_style.DANGER  # #FF453A
-                elif cat == "Vergi/ödeme":
-                    dot_color = panel_style.WARN    # #FF9F0A
-                elif cat == "Claude":
-                    dot_color = panel_style.CLAUDE  # #D97757
-                else:
-                    dot_color = panel_style.ACCENT  # #0A84FF
-
-                t_clean = clean_title(ev.get("title", ""))
-                # Detect amount in title (e.g. 791,00 TL)
-                amount_match = re.search(r"(\d+(?:\.\d+)?,\d{2}\s*TL)", t_clean)
-                amount_str = amount_match.group(1) if amount_match else ""
-
-                upcoming_items.append({
-                    "title": t_clean,
-                    "target_date": f_date,
-                    "date_label": f"{f_date.day} {TR_MONTHS_SHORT.get(f_date.month, '')}",
-                    "dot_color": dot_color,
-                    "category": cat,
-                    "link": ev.get("link", ""),
-                    "amount": amount_str,
-                })
+                upcoming_items.append(
+                    self._display_row(ev, f_date, self._date_label(f_date))
+                )
                 if len(upcoming_items) >= 4:
                     break
             if len(upcoming_items) >= 4:
                 break
+        self._cached_upcoming = upcoming_items
 
-        # Calculate coordinates for 4 upcoming rows inside right column of Hero Tile
-        tile1_y = 54.0
-        tile1_x = pad_x
-        right_col_x = tile1_x + 130.0
-        right_col_w = avail_w - 130.0 - 12.0
-        row_start_y = tile1_y + 30.0
-        row_gap_y = 23.0
+        # 4. Tax copy chip (next 48 h, tax/payment with a Turkish TL amount)
+        self._tax_chip = self._find_tax_chip(events_list, now_local)
+        if not self._tax_chip:
+            self._tax_copied = False
 
-        cached_upcoming: List[Dict[str, Any]] = []
-        cached_cards: List[Dict[str, Any]] = []
+        # 5. Layout + row hit rects
+        self._cached_selected_header_text = self._selected_header()
+        self._layout = self._compute_layout()
+        for item, rect in zip(self._cached_selected_events, self._layout["selected_rows"]):
+            item["rect"] = QRectF(rect)
+        for item, rect in zip(self._cached_upcoming, self._layout["upcoming_rows"]):
+            item["rect"] = QRectF(rect)
+        self._cached_selected_cards = self._cached_selected_events
 
-        for idx, up in enumerate(upcoming_items[:4]):
-            r_rect = QRectF(right_col_x, row_start_y + idx * row_gap_y, right_col_w, 20.0)
-            up_item = dict(up)
-            up_item["rect"] = r_rect
-            cached_upcoming.append(up_item)
+        # 6. Month grid (6x7 cells) + month event count
+        first_day = dt.date(self.view_year, self.view_month, 1)
+        grid_start_date = first_day - dt.timedelta(days=first_day.weekday())
+        grid_x = self._layout["grid_x"]
+        grid_y = self._layout["grid_y"]
+        col_w = self._layout["col_w"]
 
-            if up["target_date"] == self.selected_date:
-                cached_cards.append(up_item)
+        cells: List[Dict[str, Any]] = []
+        month_event_count = 0
+        cat_order = [CAT_TAX, CAT_HOLIDAY, CAT_CLAUDE, CAT_GOOGLE]
+        for idx in range(42):
+            cell_date = grid_start_date + dt.timedelta(days=idx)
+            row = idx // 7
+            col = idx % 7
+            c_rect = QRectF(grid_x + col * col_w, grid_y + row * GRID_ROW_H, col_w, GRID_ROW_H)
+            day_events = self._match_events_for_date(cell_date, events_list, claude_markers)
+            if cell_date.month == self.view_month:
+                month_event_count += len(day_events)
+            cats_present: Set[str] = {str(ev.get("category") or CAT_GOOGLE) for ev in day_events}
+            dots = [c for c in cat_order if c in cats_present][:3]
+            cells.append({
+                "date": cell_date,
+                "rect": c_rect,
+                "day_num": str(cell_date.day),
+                "is_current": cell_date.month == self.view_month,
+                "is_today": cell_date == self.today,
+                "is_selected": cell_date == self.selected_date,
+                "dots": dots,
+            })
+        self._cached_cells = cells
+        self._cached_month_event_count = month_event_count
 
-        # Fallback card rect for selected cards test if empty
-        if not cached_cards and sel_day_events:
-            for idx, ev in enumerate(sel_day_events[:4]):
-                c_rect = QRectF(right_col_x, row_start_y + idx * row_gap_y, right_col_w, 20.0)
-                cached_cards.append({
-                    "title": clean_title(ev.get("title", "")),
-                    "rect": c_rect,
-                    "link": ev.get("link", ""),
-                    "category": ev.get("category", "Google Takvim"),
-                    "target_date": self.selected_date,
-                    "dot_color": panel_style.ACCENT,
-                    "date_label": f"{self.selected_date.day} {TR_MONTHS_SHORT.get(self.selected_date.month, '')}",
-                    "amount": "",
-                })
+        # 7. Footer source ("Google Takvim · HH:MM")
+        updated = self._month_data.get("updated")
+        stamp = "—"
+        if isinstance(updated, str) and updated.strip():
+            stamp = updated.strip()
+            if "T" in stamp:
+                try:
+                    stamp = dt.datetime.fromisoformat(stamp).strftime("%H:%M")
+                except (ValueError, TypeError):
+                    stamp = "—"
+        self._cached_footer_source = f"Google Takvim · {stamp}"
 
-        self._cached_upcoming = cached_upcoming
-        self._cached_selected_cards = cached_cards if cached_cards else cached_upcoming[:1]
-
-        # 6. Footer sync text
-        self._cached_footer_sync_text = f"{self._cached_month_event_count} etkinlik · Senkronize"
+        # 8. Keep the window tightly sized to its content
+        new_h = int(math.ceil(self._layout["total"]))
+        if self.height() != new_h:
+            self.resize(self.WIDTH, new_h)
 
     def _match_events_for_date(
         self,
@@ -886,7 +1101,6 @@ class CalendarPanel(QWidget):
         """Return all events covering target date d."""
         matched: List[Dict[str, Any]] = []
 
-        # 1. Google / JSON events
         for ev in events:
             if not isinstance(ev, dict):
                 continue
@@ -904,21 +1118,17 @@ class CalendarPanel(QWidget):
                 if en_date and en_date > st_date:
                     if st_date <= d < en_date:
                         matched.append(ev)
-                else:
-                    if d == st_date:
-                        matched.append(ev)
+                elif d == st_date:
+                    matched.append(ev)
             else:
                 if en_date and en_date > st_date:
                     if st_date <= d <= en_date:
                         matched.append(ev)
-                else:
-                    if d == st_date:
-                        matched.append(ev)
+                elif d == st_date:
+                    matched.append(ev)
 
-        # 2. Turkish Holidays
         matched.extend(get_holiday_events_for_date(d))
 
-        # 3. Claude markers
         for cm in claude_markers:
             c_st = cm.get("start")
             c_date = c_st.date() if isinstance(c_st, dt.datetime) else c_st if isinstance(c_st, dt.date) else None
@@ -927,27 +1137,15 @@ class CalendarPanel(QWidget):
 
         return matched
 
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Painting
-    # -----------------------------------------------------------------------
-
+    # ------------------------------------------------------------------
     def paintEvent(self, _event) -> None:
-        if self._anim_opacity <= 0.001:
-            return
-
         try:
             p = QPainter(self)
             try:
                 p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                 p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-                p.setOpacity(self._anim_opacity)
-
-                cx = self.width() / 2.0
-                cy = self.height() / 2.0
-                p.translate(cx, cy + self._anim_offset_y)
-                p.scale(self._anim_scale, self._anim_scale)
-                p.translate(-cx, -cy)
-
                 self._paint_panel(p)
             finally:
                 p.end()
@@ -957,309 +1155,271 @@ class CalendarPanel(QWidget):
     def _paint_panel(self, p: QPainter) -> None:
         w = float(self.width())
         h = float(self.height())
-        r_full = QRectF(0.0, 0.0, w, h)
+        panel_style.draw_panel_shell(p, QRectF(0.0, 0.0, w, h))
 
-        # 1. Base Opaque Shell (Direction C Dark Obsidian)
-        panel_style.draw_panel_shell(p, r_full)
+        # Header: icon + "Takvim" + one chip (event count) + ×
+        chip = (f"{self._cached_month_event_count} etkinlik"
+                if self._cached_month_event_count else "Etkinlik yok")
+        panel_style.draw_header(
+            p,
+            QRectF(panel_style.PAD, panel_style.PAD,
+                   w - 2.0 * panel_style.PAD, panel_style.HEADER_H),
+            "Takvim",
+            icon=self._header_icon,
+            chip=chip,
+            close_hover=self._hover_close,
+        )
 
-        # 2. Header: Vector Calendar Icon + Title ('Takvim') + Badge ('N etkinlik') + Close ('✕')
-        cal_icon_r = QRectF(16.0, 14.0, 18.0, 18.0)
-        draw_calendar_icon(p, cal_icon_r, self.today.day)
+        self._paint_tax_chip(p)
+        self._paint_selected_card(p)
+        self._paint_upcoming_card(p)
+        self._paint_month_card(p)
+        self._paint_footer(p)
 
-        title = "Takvim"
-        f_title = panel_style.f_title()
-        p.setFont(f_title)
-        p.setPen(panel_style.TEXT)
-        fm_t = QFontMetricsF(f_title)
-        title_w = fm_t.horizontalAdvance(title)
-        p.drawText(QRectF(42.0, 12.0, title_w + 4.0, 22.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
-
-        # Badge: e.g. "20 etkinlik"
-        badge_text = f"{self._cached_month_event_count} etkinlik"
-        f_badge = panel_style.font(11.0, QFont.Weight.Medium)
-        p.setFont(f_badge)
-        fm_b = QFontMetricsF(f_badge)
-        badge_w = fm_b.horizontalAdvance(badge_text) + 16.0
-        badge_r = QRectF(42.0 + title_w + 10.0, 14.5, badge_w, 18.0)
-
+    def _header_icon(self, p: QPainter, r: QRectF) -> None:
         p.save()
-        p.setPen(QPen(QColor(255, 255, 255, 15), 1))
-        p.setBrush(QColor(255, 255, 255, 20))
-        p.drawPath(panel_style.rounded(badge_r, 9.0))
-        p.setPen(QColor(255, 255, 255, 200))
-        p.drawText(badge_r, Qt.AlignmentFlag.AlignCenter, badge_text)
-        p.restore()
-
-        # Close button ('✕')
-        self._rect_close = QRectF(w - 14.0 - 26.0, 10.0, 26.0, 26.0)
-        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(panel_style.BUTTON_HOVER if self._hover_close else panel_style.BUTTON_BG)
-        p.drawPath(panel_style.rounded(self._rect_close, panel_style.R_BUTTON))
-        p.setPen(QPen(panel_style.TEXT if self._hover_close else panel_style.TEXT_MUTED, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        cx_c = self._rect_close.center().x()
-        cy_c = self._rect_close.center().y()
-        p.drawLine(QPointF(cx_c - 4.0, cy_c - 4.0), QPointF(cx_c + 4.0, cy_c + 4.0))
-        p.drawLine(QPointF(cx_c + 4.0, cy_c - 4.0), QPointF(cx_c - 4.0, cy_c + 4.0))
+        p.setBrush(QColor(10, 132, 255, 38))
+        p.drawPath(panel_style.rounded(r, panel_style.R_ICON_BOX))
+        draw_calendar_icon(p, r.adjusted(2.0, 2.0, -2.0, -2.0), self.today.day)
         p.restore()
 
-        # Separator line under header
-        p.setPen(QPen(QColor(255, 255, 255, 10), 1))
-        p.drawLine(QPointF(0.0, 46.0), QPointF(w, 46.0))
-
-        # 3. Upper Tile (Hero Card: Today & Upcoming Split)
-        pad_x = 14.0
-        avail_w = w - 2 * pad_x
-        tile1_y = 54.0
-        tile1_h = 138.0
-        tile1_r = QRectF(pad_x, tile1_y, avail_w, tile1_h)
-        panel_style.draw_tile(p, tile1_r, hover=False)
-
-        # Left Column (Date Hero: 27 / Salı / Ekim 2026 / Bugün boş)
-        left_col_w = 115.0
-        display_day = self.selected_date.day
-        display_dow = TR_DAYS_FULL.get(self.selected_date.weekday(), "")
-        display_my = f"{TR_MONTHS_FULL.get(self.selected_date.month, '')} {self.selected_date.year}"
-
-        # Big Day number (42px bold)
-        p.setFont(panel_style.font(42.0, QFont.Weight.ExtraBold, tabular=True))
-        p.setPen(panel_style.TEXT)
-        p.drawText(QRectF(pad_x + 10.0, tile1_y + 10.0, left_col_w, 44.0), Qt.AlignmentFlag.AlignCenter, str(display_day))
-
-        # Weekday in Blue (#0A84FF)
-        p.setFont(panel_style.font(15.0, QFont.Weight.Bold))
-        p.setPen(panel_style.ACCENT)
-        p.drawText(QRectF(pad_x + 10.0, tile1_y + 54.0, left_col_w, 20.0), Qt.AlignmentFlag.AlignCenter, display_dow)
-
-        # Month & Year
-        p.setFont(panel_style.font(11.0, QFont.Weight.Normal))
-        p.setPen(panel_style.TEXT_MUTED)
-        p.drawText(QRectF(pad_x + 10.0, tile1_y + 75.0, left_col_w, 16.0), Qt.AlignmentFlag.AlignCenter, display_my)
-
-        # Status Pill: "Bugün boş" or "N etkinlik"
-        sel_count = len(self._match_events_for_date(self.selected_date, self._cached_upcoming, []))
-        if sel_count == 0:
-            chip_text = "Bugün boş" if self.selected_date == self.today else "Boş gün"
-        else:
-            chip_text = f"{sel_count} etkinlik"
-
-        f_chip = panel_style.font(10.0, QFont.Weight.Medium)
-        p.setFont(f_chip)
-        fm_cp = QFontMetricsF(f_chip)
-        chip_w = fm_cp.horizontalAdvance(chip_text) + 16.0
-        chip_r = QRectF(pad_x + 10.0 + (left_col_w - chip_w) / 2.0, tile1_y + 98.0, chip_w, 20.0)
+    def _paint_tax_chip(self, p: QPainter) -> None:
+        chip = self._tax_chip
+        if not chip:
+            return
+        r = self._layout.get("tax")
+        if not isinstance(r, QRectF):
+            return
 
         p.save()
-        p.setPen(QPen(QColor(255, 255, 255, 12), 1))
-        p.setBrush(QColor(255, 255, 255, 14))
-        p.drawPath(panel_style.rounded(chip_r, 6.0))
-        p.setPen(panel_style.TEXT_MUTED)
-        p.drawText(chip_r, Qt.AlignmentFlag.AlignCenter, chip_text)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        bg = QColor(255, 159, 10, 44 if self._hover_tax else 28)
+        border = QColor(255, 159, 10, 115 if self._hover_tax else 80)
+        p.setPen(QPen(border, 1.0))
+        p.setBrush(bg)
+        p.drawPath(panel_style.rounded(r.adjusted(0.5, 0.5, -0.5, -0.5), 10.0))
+
+        # Sol kehribar işaret
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(panel_style.WARN)
+        p.drawPath(panel_style.rounded(
+            QRectF(r.left() + 12.0, r.center().y() - 8.0, 3.0, 16.0), 1.5))
+
+        # Sağ eylem: Kopyala / Kopyalandı ✓
+        f_right = panel_style.font(11.5, QFont.Weight.DemiBold)
+        fm_r = QFontMetricsF(f_right)
+        right_text = "Kopyalandı ✓" if self._tax_copied else "Kopyala"
+        right_w = fm_r.horizontalAdvance(right_text)
+        right_rect = QRectF(r.right() - 12.0 - right_w, r.top(), right_w, r.height())
+        p.setFont(f_right)
+        p.setPen(panel_style.OK if self._tax_copied else panel_style.WARN)
+        p.drawText(right_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, right_text)
+
+        # Sol metin: başlık · tutar TL
+        f_left = panel_style.font(11.5, QFont.Weight.Medium)
+        fm_l = QFontMetricsF(f_left)
+        left_x = r.left() + 23.0
+        avail = max(10.0, right_rect.left() - 10.0 - left_x)
+        p.setFont(f_left)
+        p.setPen(panel_style.TEXT if self._hover_tax else panel_style.TEXT_BODY)
+        p.drawText(
+            QRectF(left_x, r.top(), avail, r.height()),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            fm_l.elidedText(str(chip.get("label") or "—"), Qt.TextElideMode.ElideRight, avail),
+        )
         p.restore()
 
-        # Vertical Divider
-        div_x = pad_x + 130.0
-        p.setPen(QPen(QColor(255, 255, 255, 12), 1))
-        p.drawLine(QPointF(div_x, tile1_y + 12.0), QPointF(div_x, tile1_y + tile1_h - 12.0))
-
-        # Right Column: Upcoming Events List
-        right_x = div_x + 14.0
-        p.setFont(panel_style.font(10.5, QFont.Weight.Bold))
-        p.setPen(panel_style.TEXT_LABEL)
-        p.drawText(QRectF(right_x, tile1_y + 11.0, avail_w - 150.0, 16.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "YAKLAŞAN ETKİNLİKLER")
-
-        # Upcoming Event Rows
-        for idx, up in enumerate(self._cached_upcoming):
-            u_r: QRectF = up["rect"]
-            is_hover = (self._hover_upcoming_idx == idx)
-
-            # Dot indicator (6x6)
-            dot_cx = u_r.left() + 4.0
-            dot_cy = u_r.center().y()
+    def _paint_selected_card(self, p: QPainter) -> None:
+        rect = self._layout.get("selected_card")
+        if not isinstance(rect, QRectF):
+            return
+        count = len(self._cached_selected_events)
+        status = f"{count} etkinlik" if count else "Boş"
+        inner = panel_style.draw_card(p, rect, self._cached_selected_header_text, status)
+        if not self._cached_selected_events:
             p.save()
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(up["dot_color"])
-            p.drawEllipse(QPointF(dot_cx, dot_cy), 3.0, 3.0)
-            p.restore()
-
-            # Date Label (e.g. "28 Eki")
-            p.setFont(panel_style.font(11.5, QFont.Weight.DemiBold))
+            p.setFont(panel_style.f_body())
             p.setPen(panel_style.TEXT_MUTED)
-            date_r = QRectF(u_r.left() + 14.0, u_r.top(), 48.0, u_r.height())
-            p.drawText(date_r, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, up["date_label"])
-
-            # Title & Amount
-            title_x = u_r.left() + 66.0
-            title_avail_w = u_r.right() - title_x
-
-            amount = up.get("amount", "")
-            raw_title = up["title"]
-
-            f_body = panel_style.font(11.5, QFont.Weight.Normal)
-            p.setFont(f_body)
-
-            if amount:
-                # Split prefix and amount, keeping connector
-                idx_amt = raw_title.find(amount)
-                if idx_amt > 0:
-                    prefix_display = raw_title[:idx_amt]
-                else:
-                    prefix_display = "Vergi / ödeme: "
-                fm_p = QFontMetricsF(f_body)
-                p_w = fm_p.horizontalAdvance(prefix_display)
-
-                p.setPen(panel_style.TEXT if is_hover else panel_style.TEXT_BODY)
-                p.drawText(QRectF(title_x, u_r.top(), p_w, u_r.height()), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, prefix_display)
-
-                # Bold amber amount
-                f_amt = panel_style.font(11.5, QFont.Weight.Bold)
-                p.setFont(f_amt)
-                p.setPen(panel_style.WARN)
-                p.drawText(QRectF(title_x + p_w, u_r.top(), title_avail_w - p_w, u_r.height()), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, amount)
-            else:
-                p.setPen(panel_style.TEXT if is_hover else panel_style.TEXT_BODY)
-                fm_t = QFontMetricsF(f_body)
-                elided_title = fm_t.elidedText(raw_title, Qt.TextElideMode.ElideRight, title_avail_w)
-                p.drawText(QRectF(title_x, u_r.top(), title_avail_w, u_r.height()), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_title)
-
-        # 4. Lower Tile (Month Calendar Grid Tile)
-        tile2_y = tile1_y + tile1_h + 12.0
-        tile2_h = 236.0
-        tile2_r = QRectF(pad_x, tile2_y, avail_w, tile2_h)
-        panel_style.draw_tile(p, tile2_r, hover=False)
-
-        # Month & Year title: "Ekim 2026"
-        p.setFont(panel_style.font(13.0, QFont.Weight.Bold))
-        p.setPen(panel_style.TEXT)
-        month_str = f"{TR_MONTHS_FULL.get(self.view_month, '')} {self.view_year}"
-        p.drawText(QRectF(pad_x + 14.0, tile2_y + 11.0, 160.0, 22.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, month_str)
-
-        # Navigation Buttons: < and >
-        self._rect_btn_prev = QRectF(tile2_r.right() - 56.0, tile2_y + 11.0, 22.0, 22.0)
-        self._rect_btn_next = QRectF(tile2_r.right() - 28.0, tile2_y + 11.0, 22.0, 22.0)
-
-        for btn_r, is_h, label in [
-            (self._rect_btn_prev, self._hover_prev, "<"),
-            (self._rect_btn_next, self._hover_next, ">"),
-        ]:
-            p.save()
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(panel_style.BUTTON_HOVER if is_h else panel_style.BUTTON_BG)
-            p.drawPath(panel_style.rounded(btn_r, 6.0))
-            p.setFont(panel_style.font(11.0, QFont.Weight.Bold))
-            p.setPen(panel_style.TEXT if is_h else panel_style.TEXT_MUTED)
-            p.drawText(btn_r, Qt.AlignmentFlag.AlignCenter, label)
+            text = "Bugün boş" if self.selected_date == self.today else "Etkinlik yok"
+            p.drawText(inner, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
             p.restore()
+            return
+        for idx, item in enumerate(self._cached_selected_events):
+            self._paint_event_row(p, item["rect"], item, self._hover_selected_idx == idx)
 
-        # Weekday Headers: Pzt Sal Çar Per Cum Cmt Paz
-        grid_pad_x = 12.0
-        grid_x = pad_x + grid_pad_x
-        col_w = (avail_w - 2 * grid_pad_x) / 7.0
-        hdr_y = tile2_y + 36.0
+    def _paint_upcoming_card(self, p: QPainter) -> None:
+        rect = self._layout.get("upcoming_card")
+        if not isinstance(rect, QRectF):
+            return
+        count = len(self._cached_upcoming)
+        inner = panel_style.draw_card(
+            p, rect, "Yaklaşan etkinlikler", f"{count} etkinlik" if count else None)
+        if not self._cached_upcoming:
+            p.save()
+            p.setFont(panel_style.f_body())
+            p.setPen(panel_style.TEXT_MUTED)
+            p.drawText(inner, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                       "Yaklaşan etkinlik yok")
+            p.restore()
+            return
+        for idx, item in enumerate(self._cached_upcoming):
+            self._paint_event_row(p, item["rect"], item, self._hover_upcoming_idx == idx)
 
-        p.setFont(panel_style.font(10.5, QFont.Weight.DemiBold))
+    def _paint_event_row(self, p: QPainter, rect: QRectF, item: Dict[str, Any], hover: bool) -> None:
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if hover:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 12))
+            p.drawPath(panel_style.rounded(rect.adjusted(0.0, 1.0, 0.0, -1.0), 8.0))
+
+        # 3 x 28 px renkli sol şerit
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(item.get("strip_color") or panel_style.ACCENT)
+        p.drawPath(panel_style.rounded(
+            QRectF(rect.left() + 2.0, rect.center().y() - 14.0, 3.0, 28.0), 1.5))
+
+        text_x = rect.left() + 12.0
+        text_w = max(10.0, rect.right() - text_x)
+        title = str(item.get("title") or "(Başlıksız)")
+        amount = str(item.get("amount") or "")
+
+        f_title = panel_style.font(12.0, QFont.Weight.Medium)
+        fm_t = QFontMetricsF(f_title)
+        title_rect = QRectF(text_x, rect.top() + 3.0, text_w, 16.0)
+        p.setFont(f_title)
+
+        idx_amt = title.find(amount) if amount else -1
+        if amount and idx_amt > 0:
+            prefix = title[:idx_amt]
+            f_amt = panel_style.font(12.0, QFont.Weight.Bold)
+            fm_amt = QFontMetricsF(f_amt)
+            amt_w = fm_amt.horizontalAdvance(amount)
+            prefix = fm_t.elidedText(prefix, Qt.TextElideMode.ElideRight, max(10.0, text_w - amt_w))
+            p.setPen(panel_style.TEXT_BODY)
+            p.drawText(title_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, prefix)
+            prefix_w = fm_t.horizontalAdvance(prefix)
+            p.setFont(f_amt)
+            p.setPen(panel_style.WARN)
+            p.drawText(QRectF(text_x + prefix_w, title_rect.top(), amt_w + 2.0, title_rect.height()),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, amount)
+        else:
+            p.setPen(panel_style.TEXT_BODY)
+            p.drawText(title_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                       fm_t.elidedText(title, Qt.TextElideMode.ElideRight, text_w))
+
+        f_sub = panel_style.font(10.5, QFont.Weight.Normal)
+        fm_s = QFontMetricsF(f_sub)
+        p.setFont(f_sub)
         p.setPen(panel_style.TEXT_MUTED)
-        for c_idx, dow_str in enumerate(TR_DAYS_SHORT):
-            cx_cell = grid_x + c_idx * col_w
-            p.drawText(QRectF(cx_cell, hdr_y, col_w, 16.0), Qt.AlignmentFlag.AlignCenter, dow_str)
+        p.drawText(QRectF(text_x, rect.top() + 17.0, text_w, 12.0),
+                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                   fm_s.elidedText(str(item.get("sub") or "—"), Qt.TextElideMode.ElideRight, text_w))
+        p.restore()
 
-        # 6x7 Month Grid Cells
+    def _paint_month_card(self, p: QPainter) -> None:
+        rect = self._layout.get("month_card")
+        if not isinstance(rect, QRectF):
+            return
+        month_name = f"{TR_MONTHS_FULL.get(self.view_month, '')} {self.view_year}"
+        inner = panel_style.draw_card(
+            p, rect, f"Aylık takvim · {month_name}", "‹  Bugün  ›")
+
+        # Gezinme hover göstergesi (draw_card metni zaten çizdi)
+        over_top = rect.top() + panel_style.CARD_PAD
+        for hovered, nav_rect in (
+            (self._hover_prev, self._rect_btn_prev),
+            (self._hover_today, self._rect_btn_today),
+            (self._hover_next, self._rect_btn_next),
+        ):
+            if hovered:
+                p.save()
+                p.setPen(QPen(panel_style.ACCENT, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.drawLine(QPointF(nav_rect.left() + 3.0, over_top + 14.0),
+                           QPointF(nav_rect.right() - 3.0, over_top + 14.0))
+                p.restore()
+
+        # Hafta günleri
+        weekday_y = inner.top()
+        f_wd = panel_style.font(10.0, QFont.Weight.DemiBold)
+        p.setFont(f_wd)
+        for c_idx, dow_str in enumerate(TR_DAYS_SHORT):
+            is_current_dow = (
+                self.view_year == self.today.year
+                and self.view_month == self.today.month
+                and c_idx == self.today.weekday()
+            )
+            p.setPen(panel_style.ACCENT if is_current_dow else panel_style.TEXT_LABEL)
+            p.drawText(QRectF(inner.left() + c_idx * self._layout["col_w"], weekday_y,
+                              self._layout["col_w"], GRID_HEADER_H),
+                       Qt.AlignmentFlag.AlignCenter, dow_str)
+
+        # 6 x 7 gün hücreleri
         for idx, cell in enumerate(self._cached_cells):
             c_rect: QRectF = cell["rect"]
-            is_cur = cell["is_current"]
-            is_tod = cell["is_today"]
-            is_sel = cell["is_selected"]
-            day_text = cell["day_num"]
-            dots = cell["dots"]
+            is_cur = bool(cell["is_current"])
+            is_tod = bool(cell["is_today"])
+            is_sel = bool(cell["is_selected"])
+            hovered = self._hover_cell_idx == idx
+            dots = cell.get("dots") or []
 
-            cx_c = c_rect.center().x()
-            cy_c = c_rect.center().y() - 1.0
-
-            # Today filled bright blue circle (#0A84FF)
             if is_tod:
-                circle_r = QRectF(cx_c - 11.5, cy_c - 11.0, 23.0, 23.0)
                 p.save()
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(panel_style.ACCENT)
-                p.drawEllipse(circle_r)
-                p.setFont(panel_style.font(11.5, QFont.Weight.Bold, tabular=True))
-                p.setPen(QColor(255, 255, 255))
-                p.drawText(circle_r, Qt.AlignmentFlag.AlignCenter, day_text)
+                p.drawPath(panel_style.rounded(
+                    QRectF(c_rect.left() + 2.0, c_rect.top() + 1.0,
+                           c_rect.width() - 4.0, c_rect.height() - 2.0), 7.0))
                 p.restore()
+            elif is_sel:
+                p.save()
+                p.setPen(QPen(panel_style.ACCENT, 1.2))
+                p.setBrush(QColor(10, 132, 255, 38))
+                p.drawPath(panel_style.rounded(
+                    QRectF(c_rect.left() + 2.0, c_rect.top() + 1.0,
+                           c_rect.width() - 4.0, c_rect.height() - 2.0), 7.0))
+                p.restore()
+            elif hovered:
+                p.save()
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(255, 255, 255, 12))
+                p.drawPath(panel_style.rounded(
+                    QRectF(c_rect.left() + 2.0, c_rect.top() + 1.0,
+                           c_rect.width() - 4.0, c_rect.height() - 2.0), 7.0))
+                p.restore()
+
+            if is_tod:
+                p.setPen(QColor(255, 255, 255))
+            elif is_cur:
+                p.setPen(panel_style.TEXT)
             else:
-                # Selected Day subtle ring if not today
-                if is_sel:
-                    circle_r = QRectF(cx_c - 11.5, cy_c - 11.0, 23.0, 23.0)
-                    p.save()
-                    p.setBrush(Qt.BrushStyle.NoBrush)
-                    p.setPen(QPen(panel_style.ACCENT, 1.5))
-                    p.drawEllipse(circle_r)
-                    p.restore()
+                p.setPen(QColor(255, 255, 255, 76))
+            p.setFont(panel_style.font(11.5, QFont.Weight.Bold if is_tod else QFont.Weight.Medium,
+                                       tabular=True))
+            p.drawText(QRectF(c_rect.left(), c_rect.top() + 4.0, c_rect.width(), 14.0),
+                       Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, cell["day_num"])
 
-                p.setFont(panel_style.font(11.5, QFont.Weight.Medium, tabular=True))
-                if is_cur:
-                    p.setPen(panel_style.TEXT)
-                else:
-                    p.setPen(QColor(255, 255, 255, 80))  # dimmed opacity 0.35
-                p.drawText(QRectF(c_rect.left(), c_rect.top() + 1.0, c_rect.width(), 16.0), Qt.AlignmentFlag.AlignCenter, day_text)
-
-            # Micro category dots underneath date number
-            if dots and not is_tod:
-                n_dots = len(dots)
-                dot_size = 3.5
-                dot_gap = 2.5
-                total_dots_w = n_dots * dot_size + (n_dots - 1) * dot_gap
-                start_dot_x = cx_c - total_dots_w / 2.0
-                dot_y = c_rect.bottom() - 3.5
-
+            if dots:
+                dot_size = 4.0
+                dot_gap = 2.0
+                total_w = len(dots) * dot_size + (len(dots) - 1) * dot_gap
+                start_x = c_rect.center().x() - total_w / 2.0
+                dot_y = c_rect.bottom() - 3.0 - dot_size
                 for d_i, cat_name in enumerate(dots):
-                    d_x = start_dot_x + d_i * (dot_size + dot_gap)
-                    if cat_name == "Resmi tatil":
-                        d_col = panel_style.DANGER  # #FF453A
-                    elif cat_name == "Vergi/ödeme":
-                        d_col = panel_style.WARN    # #FF9F0A
-                    elif cat_name == "Claude":
-                        d_col = panel_style.CLAUDE  # #D97757
-                    else:
-                        d_col = panel_style.ACCENT  # #0A84FF
-
+                    dot_col = QColor(255, 255, 255) if is_tod else _category_color(cat_name)
                     p.save()
                     p.setPen(Qt.PenStyle.NoPen)
-                    p.setBrush(d_col)
-                    p.drawEllipse(QRectF(d_x, dot_y, dot_size, dot_size))
+                    p.setBrush(dot_col)
+                    p.drawEllipse(QRectF(start_x + d_i * (dot_size + dot_gap), dot_y,
+                                         dot_size, dot_size))
                     p.restore()
 
-        # 5. Footer: Category Legend + Sync Status
-        y_footer = tile2_y + tile2_h + 10.0
-        p.setPen(QPen(QColor(255, 255, 255, 10), 1))
-        p.drawLine(QPointF(0.0, y_footer - 2.0), QPointF(w, y_footer - 2.0))
-
-        # Left Legend: Google, Vergi, Tatil
-        legend_items = [
-            (panel_style.ACCENT, "Google"),
-            (panel_style.WARN, "Vergi"),
-            (panel_style.DANGER, "Tatil"),
-        ]
-        f_leg = panel_style.font(10.0, QFont.Weight.Normal)
-        p.setFont(f_leg)
-        leg_x = pad_x + 2.0
-        leg_y = y_footer + 5.0
-
-        for col, name in legend_items:
-            p.save()
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(col)
-            p.drawEllipse(QRectF(leg_x, leg_y + 4.5, 5.0, 5.0))
-            p.restore()
-            p.setPen(panel_style.TEXT_MUTED)
-            fm_leg = QFontMetricsF(f_leg)
-            text_w = fm_leg.horizontalAdvance(name)
-            p.drawText(QRectF(leg_x + 9.0, leg_y, text_w + 4.0, 16.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name)
-            leg_x += text_w + 18.0
-
-        # Right Status: "20 etkinlik · Senkronize"
-        p.setFont(panel_style.font(10.5, QFont.Weight.Normal))
-        p.setPen(panel_style.TEXT_MUTED)
-        sync_text = self._cached_footer_sync_text
-        self._rect_btn_refresh = QRectF(w - pad_x - 170.0, y_footer + 5.0, 170.0, 16.0)
-        p.drawText(self._rect_btn_refresh, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, sync_text)
+    def _paint_footer(self, p: QPainter) -> None:
+        rect = self._layout.get("footer")
+        if not isinstance(rect, QRectF):
+            return
+        btn = panel_style.draw_footer(
+            p, rect, self._cached_footer_source, "Senkronize", button_hover=self._hover_footer)
+        self._rect_btn_refresh = QRectF(btn) if btn is not None else QRectF()
