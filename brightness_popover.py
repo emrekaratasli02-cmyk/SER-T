@@ -1,8 +1,8 @@
-"""Modern acrylic glass screen brightness popover panel for Serit dock.
+"""Modern dark-mode card-layered screen brightness popover panel for Şerit dock (Direction C).
 
-Displays one slider row per detected monitor (internal panel via WMI, external
-monitors via DDC/CI) with fluent animations, mouse wheel / click / drag adjustment,
-error indication for unavailable displays, and coalesced level_requested signal emission.
+Displays one vertical capsule slider per detected monitor (internal panel via WMI,
+external monitors via DDC/CI) with fluent animations, mouse wheel / click / drag adjustment,
+error indication for unavailable displays, quick presets, and coalesced level_requested signal emission.
 """
 
 from __future__ import annotations
@@ -33,25 +33,23 @@ from PySide6.QtGui import (
     QImage,
     QLinearGradient,
     QPainter,
-    QPainterPath,
     QPen,
 )
 from PySide6.QtWidgets import QWidget
 
 # Safe imports from serit package
+serit_dir = str(Path(__file__).resolve().parent)
+if serit_dir not in sys.path:
+    sys.path.insert(0, serit_dir)
+
 try:
+    import panel_style
     import sources
     import winapi
 except ImportError:
-    serit_dir = str(Path(__file__).resolve().parent)
-    if serit_dir not in sys.path:
-        sys.path.insert(0, serit_dir)
-    try:
-        import sources
-        import winapi
-    except Exception:
-        sources = None
-        winapi = None
+    import panel_style  # type: ignore
+    sources = None
+    winapi = None
 
 
 def _log_err(source: str, exc: Exception) -> None:
@@ -64,85 +62,100 @@ def _log_err(source: str, exc: Exception) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Visual Styling Tokens (Lumabar Deep Obsidian Matte & Sun Amber Accent)
+# Visual Vector Marks
 # ---------------------------------------------------------------------------
 
-WIDTH: int = 300
-CORNER_RADIUS: float = 14.0
-
-COLOR_BG: QColor = QColor(20, 21, 25, 248)
-COLOR_TEXT_PRIMARY: QColor = QColor(255, 255, 255, 255)
-COLOR_TEXT_SECONDARY: QColor = QColor(225, 228, 235, 240)
-COLOR_TEXT_MUTED: QColor = QColor(148, 154, 166, 220)
-COLOR_HAIRLINE: QColor = QColor(255, 255, 255, 22)
-
-COLOR_SUN_AMBER: QColor = QColor(255, 196, 92)
-COLOR_TRACK_BG: QColor = QColor(255, 255, 255, 26)
-COLOR_TRACK_BORDER: QColor = QColor(255, 255, 255, 18)
-COLOR_TRACK_DISABLED: QColor = QColor(255, 255, 255, 12)
-COLOR_ALERT_WARN: QColor = QColor("#FFC45C")
-COLOR_ALERT_ERR: QColor = QColor("#FCA5A5")
-
-
-def make_font(
-    size_px: int,
-    weight: QFont.Weight = QFont.Weight.Normal,
-    tabular: bool = False,
-    letter_spacing: Optional[float] = None,
-) -> QFont:
-    """Create a high-DPI Segoe UI Variable font instance."""
-    f = QFont("Segoe UI Variable Text")
-    f.setFamilies(["Segoe UI Variable Text", "Segoe UI", "Inter", "sans-serif"])
-    f.setPixelSize(size_px)
-    f.setWeight(weight)
-    f.setStyleStrategy(QFont.PreferAntialias)
-    if tabular:
-        try:
-            f.setFeature(QFont.Tag.fromString("tnum"), 1)
-        except Exception:
-            pass
-    if letter_spacing is not None:
-        try:
-            f.setLetterSpacing(QFont.AbsoluteSpacing, letter_spacing)
-        except Exception:
-            pass
-    return f
-
-
-def rounded_path(rect: QRectF, radius: float) -> QPainterPath:
-    """Construct a rounded rectangle QPainterPath."""
-    path = QPainterPath()
-    path.addRoundedRect(rect, radius, radius)
-    return path
-
-
-def draw_sun_icon(p: QPainter, rect: QRectF) -> None:
-    """Draw high-DPI vector sun mark in warm amber (no emoji)."""
+def draw_sun_icon(p: QPainter, rect: QRectF, color: Optional[QColor] = None) -> None:
+    """Draw high-DPI vector sun mark with central circle and 8 radial rays."""
     p.save()
-    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     cx = rect.center().x()
     cy = rect.center().y()
     size = min(rect.width(), rect.height())
-    r_core = size * 0.22
+    c = color if color is not None else panel_style.BRIGHT
 
-    # Sun core
-    p.setPen(Qt.NoPen)
-    p.setBrush(COLOR_SUN_AMBER)
+    pen = QPen(c, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+
+    r_core = size * 0.22
     p.drawEllipse(QPointF(cx, cy), r_core, r_core)
 
-    # Sun rays (8 rays)
-    pen = QPen(COLOR_SUN_AMBER, 1.4, Qt.SolidLine, Qt.RoundCap)
-    p.setPen(pen)
-    r_inner = size * 0.34
-    r_outer = size * 0.46
+    r_in = size * 0.36
+    r_out = size * 0.48
     for i in range(8):
-        angle = i * (math.pi / 4.0)
-        cos_a = math.cos(angle)
-        sin_a = math.sin(angle)
+        ang = i * (math.pi / 4.0)
+        cos_a = math.cos(ang)
+        sin_a = math.sin(ang)
         p.drawLine(
-            QPointF(cx + r_inner * cos_a, cy + r_inner * sin_a),
-            QPointF(cx + r_outer * cos_a, cy + r_outer * sin_a),
+            QPointF(cx + r_in * cos_a, cy + r_in * sin_a),
+            QPointF(cx + r_out * cos_a, cy + r_out * sin_a),
         )
+    p.restore()
+
+
+def draw_laptop_icon(p: QPainter, rect: QRectF, color: QColor) -> None:
+    """Draw clean laptop device outline."""
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(color, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+
+    cx = rect.center().x()
+    cy = rect.center().y()
+    w = 15.0
+    h = 10.0
+    # Screen
+    screen_r = QRectF(cx - w / 2.0, cy - h / 2.0 - 1.5, w, h)
+    p.drawRoundedRect(screen_r, 1.8, 1.8)
+    # Base
+    base_y = cy + h / 2.0 + 1.5
+    p.drawLine(QPointF(cx - w / 2.0 - 2.0, base_y), QPointF(cx + w / 2.0 + 2.0, base_y))
+    p.restore()
+
+
+def draw_monitor_icon(p: QPainter, rect: QRectF, color: QColor) -> None:
+    """Draw clean external monitor outline."""
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(color, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+
+    cx = rect.center().x()
+    cy = rect.center().y()
+    w = 15.0
+    h = 10.5
+    # Screen
+    screen_r = QRectF(cx - w / 2.0, cy - h / 2.0 - 2.5, w, h)
+    p.drawRoundedRect(screen_r, 1.8, 1.8)
+    # Stand stem
+    stem_y1 = screen_r.bottom()
+    stem_y2 = stem_y1 + 3.5
+    p.drawLine(QPointF(cx, stem_y1), QPointF(cx, stem_y2))
+    # Stand foot
+    p.drawLine(QPointF(cx - 3.5, stem_y2), QPointF(cx + 3.5, stem_y2))
+    p.restore()
+
+
+def draw_sync_icon(p: QPainter, rect: QRectF, color: QColor) -> None:
+    """Draw circular sync arrows icon."""
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(color, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+
+    cx = rect.center().x()
+    cy = rect.center().y()
+    r = min(rect.width(), rect.height()) * 0.38
+    arc_box = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+
+    # Top arc
+    p.drawArc(arc_box, int(30 * 16), int(120 * 16))
+    # Bottom arc
+    p.drawArc(arc_box, int(210 * 16), int(120 * 16))
     p.restore()
 
 
@@ -161,8 +174,13 @@ def _sanitize_monitor_item(raw: Any, idx: int) -> Dict[str, Any]:
         }
 
     mid = str(raw.get("id") or f"mon_{idx}")
-    name = str(raw.get("name") or ("Dizüstü ekranı" if raw.get("kind") == "wmi" else f"Ekran {idx + 1}"))
     kind = str(raw.get("kind") or "ddc")
+    raw_name = raw.get("name")
+    if raw_name:
+        name = str(raw_name)
+    else:
+        name = "Dizüstü" if kind == "wmi" else f"Ekran {idx + 1}"
+
     err = str(raw.get("err")) if raw.get("err") is not None else None
 
     # Parse and clamp level
@@ -245,31 +263,42 @@ class BrightnessCoalescer(QObject):
 # ---------------------------------------------------------------------------
 
 class BrightnessPopover(QWidget):
-    """Sectioned acrylic glass flyout panel for monitor brightness control."""
+    """Sectioned opaque card-layered flyout panel for monitor brightness control (Direction C)."""
 
-    WIDTH: int = WIDTH
-    RADIUS: float = CORNER_RADIUS
+    WIDTH: int = 360
+    RADIUS: float = panel_style.R_PANEL
 
     level_requested = Signal(str, int)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
 
-        # Frameless translucent window configuration
+        # Frameless opaque window configuration
         self.setWindowFlags(
-            Qt.Window
-            | Qt.FramelessWindowHint
-            | Qt.NoDropShadowWindowHint
+            Qt.WindowType.Window
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint
         )
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
 
         # Monitor state
         self._monitors: List[Dict[str, Any]] = []
         self._anchor_global: Optional[QRectF] = None
         self._dragging_id: Optional[str] = None
-        self._row_layout_cache: List[Dict[str, Any]] = []
+        self._active_preset: Optional[int] = 75
+
+        # Layout Cache
+        self._slider_layout_cache: List[Dict[str, Any]] = []
+        self._preset_buttons_cache: List[Dict[str, Any]] = []
+        self._btn_close_rect = QRectF(self.WIDTH - 14.0 - 26.0, 10.0, 26.0, 26.0)
+        self._btn_sync_rect = QRectF(self.WIDTH - 14.0 - 78.0, 345.0, 78.0, 26.0)
+
+        # Interactive hover states
+        self._hover_close: bool = False
+        self._hover_sync: bool = False
+        self._hover_preset_idx: int = -1
 
         # Rate-limiting coalescer
         self._coalescer = BrightnessCoalescer(self, interval_ms=60)
@@ -282,7 +311,7 @@ class BrightnessPopover(QWidget):
         self._anchor_timer.setSingleShot(True)
         self._anchor_timer.timeout.connect(self._on_anchor_timeout)
 
-        # Animations
+        # Animations (180ms OutCubic open, 150ms InQuad close)
         self._anim_progress: float = 1.0
         self._anim_opacity: float = 1.0
         self._anim_offset_y: float = 0.0
@@ -292,13 +321,7 @@ class BrightnessPopover(QWidget):
         self._anim.valueChanged.connect(self._on_anim_value_changed)
         self._anim.finished.connect(self._on_anim_finished)
 
-        # Typography
-        self.f_title = make_font(13, QFont.Weight.DemiBold)
-        self.f_label = make_font(12, QFont.Weight.Normal)
-        self.f_val = make_font(12, QFont.Weight.DemiBold, tabular=True)
-        self.f_sub = make_font(10, QFont.Weight.Normal)
-
-        self.resize(self.WIDTH, 140)
+        self.resize(self.WIDTH, 380)
 
     # -----------------------------------------------------------------------
     # Public API
@@ -317,18 +340,12 @@ class BrightnessPopover(QWidget):
 
     def compute_height(self) -> int:
         """Compute card height dynamically based on monitor count."""
-        # Top padding (14) + Header (18) + Header bottom gap (12) = 44
-        h = 44.0
         if not self._monitors:
-            h += 46.0  # Empty state banner
-        else:
-            for _ in self._monitors:
-                h += 52.0  # Row height
-            h += 6.0  # Bottom padding
-        return max(110, int(math.ceil(h)))
+            return 140
+        return 380
 
     def show_for(self, anchor_global: Optional[QRectF], monitors: List[Any]) -> None:
-        """Position centered above anchor, enable acrylic, and animate in."""
+        """Position centered above anchor, apply round region, and animate in."""
         self._anchor_global = QRectF(anchor_global) if anchor_global is not None else None
 
         raw_list = monitors if isinstance(monitors, list) else []
@@ -338,12 +355,12 @@ class BrightnessPopover(QWidget):
         h = self.compute_height()
         self.resize(self.WIDTH, h)
 
-        # Position widget above anchor
+        # Position widget above anchor with 8px gap
         dpr = 1.0
         if self._anchor_global is not None:
             anchor_cx = self._anchor_global.center().x()
             target_x = int(anchor_cx - self.width() / 2.0)
-            target_y = int(self._anchor_global.top() - self.height() - 10)
+            target_y = int(self._anchor_global.top() - self.height() - panel_style.ANCHOR_GAP)
 
             center_pt = self._anchor_global.center().toPoint()
             screen = QGuiApplication.screenAt(center_pt)
@@ -353,7 +370,7 @@ class BrightnessPopover(QWidget):
             if screen is not None:
                 geom = screen.availableGeometry()
                 dpr = screen.devicePixelRatio()
-                margin = 10
+                margin = 8
                 min_x = geom.left() + margin
                 max_x = geom.right() - self.width() - margin
                 if max_x >= min_x:
@@ -364,7 +381,7 @@ class BrightnessPopover(QWidget):
                 min_y = geom.top() + margin
                 max_y = geom.bottom() - self.height() - margin
                 if target_y < min_y:
-                    below_y = int(self._anchor_global.bottom() + 10)
+                    below_y = int(self._anchor_global.bottom() + panel_style.ANCHOR_GAP)
                     if below_y + self.height() <= geom.bottom() - margin:
                         target_y = below_y
                     else:
@@ -374,19 +391,18 @@ class BrightnessPopover(QWidget):
 
             self.move(target_x, target_y)
 
-        # Apply Windows acrylic composition & physical rounded region
+        # Apply Windows physical rounded region without acrylic (opaque panel)
         hwnd = int(self.winId())
-        if winapi and hasattr(winapi, "enable_acrylic"):
+        if winapi and hasattr(winapi, "set_round_region"):
             try:
-                winapi.enable_acrylic(hwnd, 0x50181612)
-                winapi.set_round_region(hwnd, self.width(), self.height(), int(self.RADIUS), dpr)
+                winapi.set_round_region(hwnd, self.width(), self.height(), int(panel_style.R_PANEL), dpr)
             except Exception:
                 pass
 
-        # Trigger open transition: fade 0->1, slide 8px, scale 0.96->1 in 200ms OutCubic
+        # Trigger open transition: fade 0->1, slide 8px, scale 0.96->1 in 180ms OutCubic
         self._is_closing = False
         self._anim.stop()
-        self._anim.setDuration(200)
+        self._anim.setDuration(180)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim.setStartValue(0.0)
         self._anim.setEndValue(1.0)
@@ -435,6 +451,7 @@ class BrightnessPopover(QWidget):
                 existing["ok"] = upd["ok"]
                 existing["err"] = upd["err"]
                 existing["name"] = upd["name"]
+                existing["kind"] = upd["kind"]
 
         # If monitor list count changed, re-sync and recalculate height
         if len(self._monitors) != len(new_sanitized):
@@ -466,13 +483,13 @@ class BrightnessPopover(QWidget):
         """Render current popover view offscreen to a high-DPI ARGB32 QImage."""
         w_phys = max(1, int(self.width() * dpr))
         h_phys = max(1, int(self.height() * dpr))
-        img = QImage(w_phys, h_phys, QImage.Format_ARGB32_Premultiplied)
+        img = QImage(w_phys, h_phys, QImage.Format.Format_ARGB32_Premultiplied)
         img.setDevicePixelRatio(dpr)
-        img.fill(Qt.transparent)
+        img.fill(Qt.GlobalColor.transparent)
 
         p = QPainter(img)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setRenderHint(QPainter.TextAntialiasing)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
         saved_op = self._anim_opacity
         saved_off = self._anim_offset_y
@@ -521,14 +538,14 @@ class BrightnessPopover(QWidget):
     # -----------------------------------------------------------------------
 
     def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key_Escape:
+        if event.key() == Qt.Key.Key_Escape:
             self.hide_animated()
             event.accept()
             return
         super().keyPressEvent(event)
 
     def changeEvent(self, event: QEvent) -> None:
-        if event.type() == QEvent.ActivationChange:
+        if event.type() == QEvent.Type.ActivationChange:
             if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
                 cursor_pos = QCursor.pos()
                 if self._anchor_global is not None and self._anchor_global.contains(QPointF(cursor_pos)):
@@ -545,51 +562,103 @@ class BrightnessPopover(QWidget):
         super().hideEvent(event)
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton:
             pos = event.position()
+
             # Top-right close button
-            close_r = QRectF(self.width() - 32.0, 12.0, 22.0, 22.0)
-            if close_r.contains(pos):
+            if self._btn_close_rect.contains(pos):
                 self.hide_animated()
                 event.accept()
                 return
 
-            # Sliders
-            for item in self._row_layout_cache:
+            # Presets pills (%25, %50, %75, %100)
+            for pb in self._preset_buttons_cache:
+                if pb["rect"].contains(pos):
+                    target_lvl = pb["level"]
+                    self._active_preset = target_lvl
+                    for m in self._monitors:
+                        if m.get("ok"):
+                            m["level"] = target_lvl
+                            self._coalescer.request(m["id"], target_lvl, force=True)
+                    self.update()
+                    event.accept()
+                    return
+
+            # Equalize button
+            if self._btn_sync_rect.contains(pos):
+                # Equalize all monitors to first ok monitor level
+                ok_lvls = [m.get("level") for m in self._monitors if m.get("ok") and m.get("level") is not None]
+                if ok_lvls:
+                    target_lvl = ok_lvls[0]
+                    self._active_preset = target_lvl
+                    for m in self._monitors:
+                        if m.get("ok"):
+                            m["level"] = target_lvl
+                            self._coalescer.request(m["id"], target_lvl, force=True)
+                    self.update()
+                    event.accept()
+                    return
+
+            # Sliders click & drag
+            for item in self._slider_layout_cache:
                 m = item["monitor"]
                 if not m.get("ok"):
                     continue
                 hit_r = item["hit_rect"]
-                track_r = item["track_rect"]
+                trough_r = item["trough_rect"]
                 if hit_r.contains(pos):
                     mid = m["id"]
                     self._dragging_id = mid
-                    pct = max(0, min(100, int(round((pos.x() - track_r.left()) / track_r.width() * 100.0))))
+                    pct = max(0, min(100, int(round((trough_r.bottom() - pos.y()) / trough_r.height() * 100.0))))
                     m["level"] = pct
+                    self._active_preset = None
                     self._coalescer.request(mid, pct, force=False)
                     self.update()
                     event.accept()
                     return
+
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        pos = event.position()
+        old_close = self._hover_close
+        old_sync = self._hover_sync
+        old_p_idx = self._hover_preset_idx
+
+        self._hover_close = self._btn_close_rect.contains(pos)
+        self._hover_sync = self._btn_sync_rect.contains(pos)
+
+        self._hover_preset_idx = -1
+        for idx, pb in enumerate(self._preset_buttons_cache):
+            if pb["rect"].contains(pos):
+                self._hover_preset_idx = idx
+                break
+
         if self._dragging_id:
-            pos = event.position()
-            for item in self._row_layout_cache:
+            for item in self._slider_layout_cache:
                 m = item["monitor"]
                 if m.get("id") == self._dragging_id:
-                    track_r = item["track_rect"]
-                    pct = max(0, min(100, int(round((pos.x() - track_r.left()) / track_r.width() * 100.0))))
+                    trough_r = item["trough_rect"]
+                    pct = max(0, min(100, int(round((trough_r.bottom() - pos.y()) / trough_r.height() * 100.0))))
                     m["level"] = pct
+                    self._active_preset = None
                     self._coalescer.request(self._dragging_id, pct, force=False)
                     self.update()
                     event.accept()
                     return
+
+        if (
+            self._hover_close != old_close
+            or self._hover_sync != old_sync
+            or self._hover_preset_idx != old_p_idx
+        ):
+            self.update()
+
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton and self._dragging_id:
-            for item in self._row_layout_cache:
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging_id:
+            for item in self._slider_layout_cache:
                 m = item["monitor"]
                 if m.get("id") == self._dragging_id:
                     lvl = m.get("level", 50)
@@ -603,16 +672,17 @@ class BrightnessPopover(QWidget):
 
     def wheelEvent(self, event) -> None:
         pos = event.position()
-        for item in self._row_layout_cache:
+        for item in self._slider_layout_cache:
             m = item["monitor"]
             if not m.get("ok"):
                 continue
-            row_r = item["row_rect"]
-            if row_r.contains(pos):
+            card_r = item["card_rect"]
+            if card_r.contains(pos):
                 delta = 5 if event.angleDelta().y() > 0 else -5
                 cur_lvl = m.get("level") if m.get("level") is not None else 50
                 new_lvl = max(0, min(100, cur_lvl + delta))
                 m["level"] = new_lvl
+                self._active_preset = None
                 self._coalescer.request(m["id"], new_lvl, force=False)
                 self.update()
                 event.accept()
@@ -630,8 +700,8 @@ class BrightnessPopover(QWidget):
         try:
             p = QPainter(self)
             try:
-                p.setRenderHint(QPainter.Antialiasing)
-                p.setRenderHint(QPainter.TextAntialiasing)
+                p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
                 p.setOpacity(self._anim_opacity)
 
                 cx = self.width() / 2.0
@@ -649,155 +719,257 @@ class BrightnessPopover(QWidget):
     def _paint_card(self, p: QPainter) -> None:
         w = float(self.width())
         h = float(self.height())
-        r = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
-        path = rounded_path(r, self.RADIUS)
+        r_full = QRectF(0.0, 0.0, w, h)
 
-        # 1. Base dark acrylic glass
-        p.fillPath(path, COLOR_BG)
+        # 1. Base Shell (Direction C Opaque Dark Obsidian)
+        panel_style.draw_panel_shell(p, r_full)
 
-        # 2. Specular top sheen
-        p.save()
-        p.setClipPath(path)
-        hl = QLinearGradient(0, 0, 0, 5)
-        hl.setColorAt(0.0, QColor(255, 255, 255, 55))
-        hl.setColorAt(1.0, QColor(255, 255, 255, 0))
-        p.fillRect(QRectF(1, 1, w - 2, 5), hl)
-        p.restore()
-
-        # 3. Specular rim & border
-        p.setPen(QPen(QColor(0, 0, 0, 95), 1))
-        p.drawPath(path)
-
-        inner_r = r.adjusted(0.75, 0.75, -0.75, -0.75)
-        inner_path = rounded_path(inner_r, self.RADIUS - 0.75)
-        rim_grad = QLinearGradient(0, 0, 0, h)
-        rim_grad.setColorAt(0.0, QColor(255, 255, 255, 95))
-        rim_grad.setColorAt(0.20, QColor(255, 255, 255, 38))
-        rim_grad.setColorAt(0.80, QColor(255, 255, 255, 10))
-        rim_grad.setColorAt(1.0, QColor(255, 255, 255, 25))
-        p.setPen(QPen(rim_grad, 1))
-        p.drawPath(inner_path)
-
-        # 4. Header: Sun Icon + Title ('Parlaklık') + Close ('✕')
-        icon_r = QRectF(16.0, 14.0, 18.0, 18.0)
-        draw_sun_icon(p, icon_r)
+        # 2. Header: Amber Sun Icon + Title ('Parlaklık') + Badge ('N ekran') + Close Button ('✕')
+        sun_r = QRectF(16.0, 14.0, 18.0, 18.0)
+        draw_sun_icon(p, sun_r, panel_style.BRIGHT)
 
         title = "Parlaklık"
-        p.setFont(self.f_title)
-        p.setPen(COLOR_TEXT_PRIMARY)
-        fm_t = QFontMetricsF(self.f_title)
+        f_title = panel_style.f_title()
+        p.setFont(f_title)
+        p.setPen(panel_style.TEXT)
+        fm_t = QFontMetricsF(f_title)
         title_w = fm_t.horizontalAdvance(title)
-        p.drawText(QRectF(40.0, 14.0, title_w + 4.0, 18.0), Qt.AlignLeft | Qt.AlignVCenter, title)
+        p.drawText(QRectF(40.0, 12.0, title_w + 4.0, 22.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
 
-        # Close mark
+        # Badge: e.g. "2 ekran"
+        badge_text = f"{len(self._monitors)} ekran" if self._monitors else "Ekran yok"
+        f_badge = panel_style.font(11.0, QFont.Weight.Medium)
+        p.setFont(f_badge)
+        fm_b = QFontMetricsF(f_badge)
+        badge_w = fm_b.horizontalAdvance(badge_text) + 16.0
+        badge_r = QRectF(40.0 + title_w + 10.0, 14.5, badge_w, 18.0)
+
         p.save()
-        p.setPen(QPen(COLOR_TEXT_MUTED, 1.3, Qt.SolidLine, Qt.RoundCap))
-        cx_close = w - 21.0
-        cy_close = 23.0
-        p.drawLine(QPointF(cx_close - 3.5, cy_close - 3.5), QPointF(cx_close + 3.5, cy_close + 3.5))
-        p.drawLine(QPointF(cx_close + 3.5, cy_close - 3.5), QPointF(cx_close - 3.5, cy_close + 3.5))
+        p.setPen(QPen(QColor(255, 255, 255, 15), 1))
+        p.setBrush(QColor(255, 255, 255, 20))
+        p.drawPath(panel_style.rounded(badge_r, 9.0))
+        p.setPen(QColor(255, 255, 255, 200))
+        p.drawText(badge_r, Qt.AlignmentFlag.AlignCenter, badge_text)
         p.restore()
 
-        # Hairline separator below header
-        p.setPen(QPen(COLOR_HAIRLINE, 1))
-        p.drawLine(16, 40, int(w - 16), 40)
+        # Close button ('✕')
+        self._btn_close_rect = QRectF(w - 14.0 - 26.0, 10.0, 26.0, 26.0)
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(panel_style.BUTTON_HOVER if self._hover_close else panel_style.BUTTON_BG)
+        p.drawPath(panel_style.rounded(self._btn_close_rect, panel_style.R_BUTTON))
+        p.setPen(QPen(panel_style.TEXT if self._hover_close else panel_style.TEXT_MUTED, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        cx_c = self._btn_close_rect.center().x()
+        cy_c = self._btn_close_rect.center().y()
+        p.drawLine(QPointF(cx_c - 4.0, cy_c - 4.0), QPointF(cx_c + 4.0, cy_c + 4.0))
+        p.drawLine(QPointF(cx_c + 4.0, cy_c - 4.0), QPointF(cx_c - 4.0, cy_c + 4.0))
+        p.restore()
 
-        # 5. Monitor Rows
-        self._row_layout_cache = []
-        y_curr = 48.0
+        # Separator line under header
+        p.setPen(QPen(QColor(255, 255, 255, 10), 1))
+        p.drawLine(QPointF(0.0, 46.0), QPointF(w, 46.0))
+
+        # 3. Monitor Tiles (Side-by-Side)
+        self._slider_layout_cache = []
+        pad_x = 14.0
+        y_tiles = 54.0
 
         if not self._monitors:
-            p.setFont(self.f_sub)
-            p.setPen(COLOR_TEXT_MUTED)
-            p.drawText(QRectF(16.0, y_curr + 8.0, w - 32.0, 20.0), Qt.AlignCenter, "Monitör bulunamadı")
+            p.setFont(panel_style.f_body())
+            p.setPen(panel_style.TEXT_MUTED)
+            p.drawText(QRectF(pad_x, y_tiles + 20.0, w - 2 * pad_x, 30.0), Qt.AlignmentFlag.AlignCenter, "Monitör bulunamadı")
             return
 
-        for m in self._monitors:
-            row_h = 52.0
-            row_r = QRectF(0.0, y_curr, w, row_h)
+        n_mon = len(self._monitors)
+        gap = 12.0
+        avail_w = w - 2 * pad_x
+        if n_mon == 1:
+            tile_w = avail_w
+        elif n_mon == 2:
+            tile_w = (avail_w - gap) / 2.0
+        else:
+            tile_w = max(110.0, (avail_w - (n_mon - 1) * gap) / float(n_mon))
+
+        tile_h = 196.0
+
+        for i, m in enumerate(self._monitors):
+            tile_x = pad_x + i * (tile_w + gap)
+            card_r = QRectF(tile_x, y_tiles, tile_w, tile_h)
             is_ok = bool(m.get("ok"))
-            name = str(m.get("name", "Ekran"))
             lvl = m.get("level")
+            name = str(m.get("name", "Ekran"))
+            kind = str(m.get("kind", "ddc"))
 
-            # Name label
-            p.setFont(self.f_label)
-            p.setPen(COLOR_TEXT_PRIMARY if is_ok else COLOR_TEXT_MUTED)
-            fm_label = QFontMetricsF(self.f_label)
-            elided_name = fm_label.elidedText(name, Qt.TextElideMode.ElideRight, w - 90.0)
-            p.drawText(QRectF(16.0, y_curr, w - 90.0, 18.0), Qt.AlignLeft | Qt.AlignVCenter, elided_name)
+            # Clean display name
+            display_name = "Dizüstü" if (kind == "wmi" or "dizüstü" in name.lower() or "laptop" in name.lower()) else name
 
-            # Tabular percentage / status
-            p.setFont(self.f_val)
-            val_r = QRectF(w - 16.0 - 54.0, y_curr, 54.0, 18.0)
+            # Draw elevated tile
+            panel_style.draw_tile(p, card_r, hover=False)
+
+            # Monitor Header: Device Icon + Name
+            cx_card = card_r.center().x()
+            icon_r = QRectF(tile_x + 12.0, y_tiles + 12.0, 16.0, 16.0)
+            f_name = panel_style.font(11.5, QFont.Weight.DemiBold)
+            p.setFont(f_name)
+            p.setPen(panel_style.TEXT_BODY if is_ok else panel_style.TEXT_MUTED)
+
+            if kind == "wmi" or "dizüstü" in name.lower():
+                draw_laptop_icon(p, icon_r, panel_style.TEXT_BODY if is_ok else panel_style.TEXT_MUTED)
+            else:
+                draw_monitor_icon(p, icon_r, panel_style.TEXT_BODY if is_ok else panel_style.TEXT_MUTED)
+
+            fm_n = QFontMetricsF(f_name)
+            elided_name = fm_n.elidedText(display_name, Qt.TextElideMode.ElideRight, tile_w - 38.0)
+            p.drawText(QRectF(tile_x + 32.0, y_tiles + 11.0, tile_w - 40.0, 18.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_name)
+
+            # Hero percentage: large amber %82 or —
+            p.setFont(panel_style.font(28.0, QFont.Weight.ExtraBold, tabular=True))
             if is_ok and lvl is not None:
                 val_str = f"%{lvl}"
-                p.setPen(COLOR_TEXT_PRIMARY)
-                p.drawText(val_r, Qt.AlignRight | Qt.AlignVCenter, val_str)
+                p.setPen(panel_style.BRIGHT)
             else:
-                p.setPen(COLOR_TEXT_MUTED)
-                p.drawText(val_r, Qt.AlignRight | Qt.AlignVCenter, "--")
+                val_str = "—"
+                p.setPen(panel_style.TEXT_MUTED)
+            p.drawText(QRectF(tile_x, y_tiles + 33.0, tile_w, 32.0), Qt.AlignmentFlag.AlignCenter, val_str)
 
-            # Slider Track & Thumb
-            track_r = QRectF(16.0, y_curr + 26.0, w - 32.0, 6.0)
-            hit_r = QRectF(16.0, y_curr + 18.0, w - 32.0, 22.0)
-            self._row_layout_cache.append({
+            # Vertical Capsule Slider Trough
+            trough_w = 48.0
+            trough_h = 96.0
+            trough_x = cx_card - trough_w / 2.0
+            trough_y = y_tiles + 68.0
+            trough_r = QRectF(trough_x, trough_y, trough_w, trough_h)
+            hit_r = QRectF(trough_x - 6.0, trough_y - 4.0, trough_w + 12.0, trough_h + 8.0)
+
+            self._slider_layout_cache.append({
                 "monitor": m,
-                "row_rect": row_r,
-                "track_rect": track_r,
+                "card_rect": card_r,
+                "trough_rect": trough_r,
                 "hit_rect": hit_r,
             })
 
-            if is_ok and lvl is not None:
-                # Active slider track background
-                track_path = rounded_path(track_r, 3.0)
-                p.fillPath(track_path, COLOR_TRACK_BG)
-                p.setPen(QPen(COLOR_TRACK_BORDER, 1))
-                p.drawPath(track_path)
+            # Trough path (capsule radius 12)
+            trough_path = panel_style.rounded(trough_r, 12.0)
 
-                # Filled progress portion
-                fill_w = max(0.0, min(track_r.width(), track_r.width() * (lvl / 100.0)))
-                if fill_w > 0:
-                    fill_r = QRectF(track_r.left(), track_r.top(), fill_w, track_r.height())
-                    fill_path = rounded_path(fill_r, 3.0)
-                    fill_grad = QLinearGradient(track_r.left(), 0, track_r.right(), 0)
-                    fill_grad.setColorAt(0.0, QColor(255, 180, 60))
-                    fill_grad.setColorAt(1.0, QColor(255, 210, 110))
-                    p.fillPath(fill_path, fill_grad)
+            p.save()
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-                # Thumb handle
-                cx_thumb = track_r.left() + fill_w
-                cy_thumb = track_r.center().y()
-                r_thumb = 6.5
-                thumb_r = QRectF(cx_thumb - r_thumb, cy_thumb - r_thumb, r_thumb * 2.0, r_thumb * 2.0)
+            # Trough background & border
+            p.fillPath(trough_path, QColor(255, 255, 255, 15) if is_ok else QColor(255, 255, 255, 8))
+            p.setPen(QPen(QColor(255, 255, 255, 20) if is_ok else QColor(255, 255, 255, 10), 1))
+            p.drawPath(trough_path)
 
-                # Thumb drop shadow
-                p.setPen(Qt.NoPen)
-                p.setBrush(QColor(0, 0, 0, 80))
-                p.drawEllipse(thumb_r.adjusted(0, 0.5, 0, 0.5))
+            if is_ok and lvl is not None and lvl > 0:
+                # Bottom-up fill
+                fill_h = max(0.0, min(trough_h, trough_h * (lvl / 100.0)))
+                fill_r = QRectF(trough_x, trough_y + trough_h - fill_h, trough_w, fill_h)
 
-                # Thumb core
-                p.setBrush(QColor(255, 255, 255))
-                p.setPen(QPen(QColor(20, 21, 25, 200), 1))
-                p.drawEllipse(thumb_r)
+                # Clip fill to capsule
+                p.setClipPath(trough_path)
 
-                # Thumb center amber pip
-                p.setPen(Qt.NoPen)
-                p.setBrush(COLOR_SUN_AMBER)
-                p.drawEllipse(QRectF(cx_thumb - 2.0, cy_thumb - 2.0, 4.0, 4.0))
+                fill_grad = QLinearGradient(0.0, trough_y, 0.0, trough_y + trough_h)
+                fill_grad.setColorAt(0.0, QColor(0xFF, 0xB0, 0x20))
+                fill_grad.setColorAt(1.0, QColor(0xFF, 0x95, 0x00))
+                p.fillPath(panel_style.rounded(fill_r, 0.0), fill_grad)
 
-            else:
-                # Dimmed/disabled track
-                track_path = rounded_path(track_r, 3.0)
-                p.fillPath(track_path, COLOR_TRACK_DISABLED)
-                p.setPen(QPen(QColor(255, 255, 255, 10), 1))
-                p.drawPath(track_path)
+            # Embedded sun icon centered in the slider capsule
+            sun_inner_r = QRectF(cx_card - 9.0, trough_y + trough_h / 2.0 - 9.0, 18.0, 18.0)
+            draw_sun_icon(p, sun_inner_r, panel_style.BRIGHT if is_ok else QColor(255, 255, 255, 40))
+            p.restore()
 
-                # Dimmed reason message
+            # Sublabel / caption below slider
+            f_caption = panel_style.font(10.5, QFont.Weight.Normal)
+            p.setFont(f_caption)
+            if not is_ok:
                 err_text = m.get("err") or "Kullanılamıyor"
-                p.setFont(self.f_sub)
-                p.setPen(COLOR_ALERT_WARN)
-                fm_sub = QFontMetricsF(self.f_sub)
-                elided_sub = fm_sub.elidedText(err_text, Qt.TextElideMode.ElideRight, w - 32.0)
-                p.drawText(QRectF(16.0, y_curr + 34.0, w - 32.0, 16.0), Qt.AlignLeft | Qt.AlignVCenter, elided_sub)
+                fm_c = QFontMetricsF(f_caption)
+                elided_err = fm_c.elidedText(err_text, Qt.TextElideMode.ElideRight, tile_w - 16.0)
+                p.setPen(panel_style.WARN)
+                p.drawText(QRectF(tile_x + 8.0, y_tiles + 170.0, tile_w - 16.0, 16.0), Qt.AlignmentFlag.AlignCenter, elided_err)
+            else:
+                caption = "Dahili ekran" if kind == "wmi" or "dizüstü" in name.lower() else "Harici monitör"
+                p.setPen(panel_style.TEXT_MUTED)
+                p.drawText(QRectF(tile_x + 8.0, y_tiles + 170.0, tile_w - 16.0, 16.0), Qt.AlignmentFlag.AlignCenter, caption)
 
-            y_curr += row_h
+        # 4. Quick Presets Card ('HIZLI ÖNAYARLAR')
+        y_presets = y_tiles + tile_h + 12.0
+        presets_h = 68.0
+        presets_r = QRectF(pad_x, y_presets, avail_w, presets_h)
+        panel_style.draw_tile(p, presets_r, hover=False)
+
+        # Section Label
+        p.setFont(panel_style.f_label())
+        p.setPen(panel_style.TEXT_LABEL)
+        p.drawText(QRectF(pad_x + 12.0, y_presets + 9.0, avail_w - 24.0, 16.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "HIZLI ÖNAYARLAR")
+
+        # 4 Preset Pills: %25, %50, %75, %100
+        pill_lvls = [25, 50, 75, 100]
+        self._preset_buttons_cache = []
+        pill_gap = 8.0
+        pills_pad_x = 12.0
+        pill_w = (avail_w - 2 * pills_pad_x - 3 * pill_gap) / 4.0
+        pill_h = 28.0
+        pill_y = y_presets + 29.0
+
+        for idx, plvl in enumerate(pill_lvls):
+            px = pad_x + pills_pad_x + idx * (pill_w + pill_gap)
+            pill_r = QRectF(px, pill_y, pill_w, pill_h)
+            self._preset_buttons_cache.append({
+                "level": plvl,
+                "rect": pill_r,
+            })
+
+            # Active if matches active_preset or all ok monitors match this level
+            is_active = (self._active_preset == plvl)
+            if not is_active and self._monitors:
+                ok_lvls = [m.get("level") for m in self._monitors if m.get("ok") and m.get("level") is not None]
+                if ok_lvls and all(lvl == plvl for lvl in ok_lvls):
+                    is_active = True
+
+            is_hover = (self._hover_preset_idx == idx)
+
+            p.save()
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            pill_path = panel_style.rounded(pill_r, panel_style.R_BUTTON)
+
+            if is_active:
+                p.fillPath(pill_path, QColor(10, 132, 255, 50))  # rgba(10, 132, 255, 0.20)
+                p.setPen(QPen(QColor(10, 132, 255, 130), 1))
+                p.drawPath(pill_path)
+                p.setPen(panel_style.CPU)  # #64D2FF
+            else:
+                p.fillPath(pill_path, panel_style.BUTTON_HOVER if is_hover else panel_style.BUTTON_BG)
+                p.setPen(QPen(QColor(255, 255, 255, 15), 1))
+                p.drawPath(pill_path)
+                p.setPen(panel_style.TEXT if is_hover else panel_style.TEXT_BODY)
+
+            p.setFont(panel_style.font(11.5, QFont.Weight.DemiBold))
+            p.drawText(pill_r, Qt.AlignmentFlag.AlignCenter, f"%{plvl}")
+            p.restore()
+
+        # 5. Footer: Connection Info + Equalize Button
+        y_footer = y_presets + presets_h + 10.0
+        p.setPen(QPen(QColor(255, 255, 255, 10), 1))
+        p.drawLine(QPointF(0.0, y_footer - 2.0), QPointF(w, y_footer - 2.0))
+
+        # Footer Left Label
+        p.setFont(panel_style.font(11.0, QFont.Weight.Normal))
+        p.setPen(panel_style.TEXT_MUTED)
+        p.drawText(QRectF(pad_x + 2.0, y_footer + 4.0, 180.0, 26.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "Ekranlara doğrudan uygulanır")
+
+        # Footer Right Button: Eşitle
+        self._btn_sync_rect = QRectF(w - pad_x - 76.0, y_footer + 4.0, 76.0, 26.0)
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        sync_path = panel_style.rounded(self._btn_sync_rect, panel_style.R_BUTTON)
+        p.fillPath(sync_path, panel_style.BUTTON_HOVER if self._hover_sync else panel_style.BUTTON_BG)
+        p.setPen(QPen(QColor(255, 255, 255, 18), 1))
+        p.drawPath(sync_path)
+
+        # Sync icon + text
+        sync_icon_r = QRectF(self._btn_sync_rect.left() + 7.0, self._btn_sync_rect.top() + 5.0, 15.0, 15.0)
+        draw_sync_icon(p, sync_icon_r, panel_style.TEXT if self._hover_sync else panel_style.TEXT_BODY)
+
+        p.setFont(panel_style.font(11.0, QFont.Weight.Medium))
+        p.setPen(panel_style.TEXT if self._hover_sync else panel_style.TEXT_BODY)
+        p.drawText(QRectF(self._btn_sync_rect.left() + 24.0, self._btn_sync_rect.top(), 48.0, 26.0), Qt.AlignmentFlag.AlignCenter, "Eşitle")
+        p.restore()

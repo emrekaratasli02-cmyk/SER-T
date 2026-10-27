@@ -42,6 +42,7 @@ from PySide6.QtWidgets import QWidget
 
 # Safe imports from serit package
 try:
+    import panel_style
     import sources
     import theme
     import winapi
@@ -49,6 +50,7 @@ except ImportError:
     serit_dir = str(Path(__file__).resolve().parent)
     if serit_dir not in sys.path:
         sys.path.insert(0, serit_dir)
+    import panel_style
     import sources
     import theme
     import winapi
@@ -203,49 +205,97 @@ def top_processes(n: int = 3) -> List[Dict[str, Any]]:
 
 # Vector Icon Drawing Primitives
 def draw_claude_icon(p: QPainter, rect: QRectF) -> None:
-    """Draw Lumabar-style Anthropic Claude terracotta squircle with starburst mark."""
+    """Draw Direction C Anthropic Claude terracotta squircle with asterisk mark."""
     p.save()
-    p.setRenderHint(QPainter.Antialiasing)
-    # Terracotta squircle background (#D97757)
+    p.setRenderHint(QPainter.Antialiasing, True)
     p.setPen(Qt.NoPen)
     p.setBrush(QColor("#D97757"))
-    p.drawRoundedRect(rect, 4.5, 4.5)
+    p.drawRoundedRect(rect, 5.0, 5.0)
 
     cx, cy = rect.center().x(), rect.center().y()
-    r = min(rect.width(), rect.height()) * 0.30
-    pen = QPen(QColor("#141519"), 1.35, Qt.SolidLine, Qt.RoundCap)
+    r = min(rect.width(), rect.height()) * 0.35
+    d = r * 0.7071
+    pen = QPen(QColor("#FFFFFF"), 1.8, Qt.SolidLine, Qt.RoundCap)
     p.setPen(pen)
-    for i in range(6):
-        ang = i * math.pi / 6.0
-        dx = r * math.cos(ang)
-        dy = r * math.sin(ang)
-        p.drawLine(QPointF(cx - dx, cy - dy), QPointF(cx + dx, cy + dy))
+    p.drawLine(QPointF(cx, cy - r), QPointF(cx, cy + r))
+    p.drawLine(QPointF(cx - r, cy), QPointF(cx + r, cy))
+    p.drawLine(QPointF(cx - d, cy - d), QPointF(cx + d, cy + d))
+    p.drawLine(QPointF(cx - d, cy + d), QPointF(cx + d, cy - d))
     p.restore()
 
 
 def draw_sys_icon(p: QPainter, rect: QRectF) -> None:
-    """Draw system chip icon in Cyan accent."""
+    """Draw Direction C desktop monitor icon in Cyan accent (#64D2FF)."""
     p.save()
-    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.Antialiasing, True)
     cx, cy = rect.center().x(), rect.center().y()
-    r = min(rect.width(), rect.height()) * 0.42
+    scale = min(rect.width(), rect.height()) / 24.0
 
-    chip_r = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-    p.setPen(QPen(COLOR_CPU, 1.2))
-    p.setBrush(QColor(96, 181, 255, 30))
-    p.drawRoundedRect(chip_r, 2.5, 2.5)
+    pen = QPen(QColor("#64D2FF"), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
 
-    # Core indicator
+    sx = cx - 12.0 * scale
+    sy = cy - 12.0 * scale
+    screen_rect = QRectF(sx + 2.0 * scale, sy + 3.0 * scale, 20.0 * scale, 14.0 * scale)
+    p.drawRoundedRect(screen_rect, 2.0 * scale, 2.0 * scale)
+
+    # Stand vertical:
+    p.drawLine(QPointF(cx, sy + 17.0 * scale), QPointF(cx, sy + 21.0 * scale))
+    # Stand base:
+    p.drawLine(QPointF(cx - 4.0 * scale, sy + 21.0 * scale), QPointF(cx + 4.0 * scale, sy + 21.0 * scale))
+    p.restore()
+
+
+def draw_close_button(p: QPainter, rect: QRectF, hovered: bool = False) -> None:
+    """Draw Direction C header close button with 8px radius and '✕' glyph."""
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing, True)
+    bg = QColor(255, 255, 255, 26) if hovered else QColor(255, 255, 255, 12)
     p.setPen(Qt.NoPen)
-    p.setBrush(COLOR_CPU)
-    p.drawRoundedRect(QRectF(cx - r * 0.45, cy - r * 0.45, r * 0.9, r * 0.9), 1.5, 1.5)
+    p.setBrush(bg)
+    p.drawRoundedRect(rect, 8.0, 8.0)
 
-    # Pins
-    p.setPen(QPen(COLOR_CPU, 1.0))
-    p.drawLine(QPointF(cx - r * 0.5, cy - r - 2), QPointF(cx - r * 0.5, cy - r))
-    p.drawLine(QPointF(cx + r * 0.5, cy - r - 2), QPointF(cx + r * 0.5, cy - r))
-    p.drawLine(QPointF(cx - r * 0.5, cy + r), QPointF(cx - r * 0.5, cy + r + 2))
-    p.drawLine(QPointF(cx + r * 0.5, cy + r), QPointF(cx + r * 0.5, cy + r + 2))
+    cx, cy = rect.center().x(), rect.center().y()
+    pen = QPen(panel_style.TEXT if hovered else panel_style.TEXT_LABEL, 1.4, Qt.SolidLine, Qt.RoundCap)
+    p.setPen(pen)
+    sz = 3.5
+    p.drawLine(QPointF(cx - sz, cy - sz), QPointF(cx + sz, cy + sz))
+    p.drawLine(QPointF(cx + sz, cy - sz), QPointF(cx - sz, cy + sz))
+    p.restore()
+
+
+def draw_c_refresh_button(
+    p: QPainter,
+    rect: QRectF,
+    hovered: bool = False,
+    pressed: bool = False,
+    spin_angle: float = 0.0,
+) -> None:
+    """Draw Direction C footer 'Yenile' button."""
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing, True)
+    bg = panel_style.BUTTON_HOVER if (hovered or pressed) else panel_style.BUTTON_BG
+    p.setPen(QPen(QColor(255, 255, 255, 16), 1.0))
+    p.setBrush(bg)
+    p.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), panel_style.R_BUTTON, panel_style.R_BUTTON)
+
+    icon_sz = 12.0
+    gap = 6.0
+    f_btn = panel_style.font(11.5, QFont.Weight.Medium)
+    fm = QFontMetricsF(f_btn)
+    txt = "Yenile"
+    txt_w = fm.horizontalAdvance(txt)
+    total_w = icon_sz + gap + txt_w
+    start_x = rect.center().x() - total_w / 2.0
+    icon_rect = QRectF(start_x, rect.center().y() - icon_sz / 2.0, icon_sz, icon_sz)
+
+    draw_refresh_icon(p, icon_rect, angle=spin_angle)
+
+    p.setFont(f_btn)
+    p.setPen(panel_style.TEXT)
+    txt_rect = QRectF(start_x + icon_sz + gap, rect.top(), txt_w + 4.0, rect.height())
+    p.drawText(txt_rect, Qt.AlignLeft | Qt.AlignVCenter, txt)
     p.restore()
 
 
@@ -468,6 +518,14 @@ def build_claude_content(data: dict) -> dict:
         "badge": "Hata" if err else (plan if plan else None),
         "badge_bg": COLOR_BADGE_ERR_BG if err else COLOR_BADGE_CLAUDE_BG,
         "badge_color": COLOR_BADGE_ERR_TXT if err else COLOR_BADGE_CLAUDE_TXT,
+        "plan": plan,
+        "session": s_num,
+        "week": w_num,
+        "session_reset": s_reset,
+        "week_reset": w_reset,
+        "subscribed_at": data.get("subscribed_at"),
+        "extra_usage": bool(data.get("extra_usage", False)),
+        "sub_rows": sub_rows,
         "stale": stale,
         "error": str(err) if err else None,
         "sections": sections,
@@ -556,6 +614,12 @@ def build_sys_content(data: dict) -> dict:
         "badge": "Hata" if err else ("Canlı" if not stale else None),
         "badge_bg": COLOR_BADGE_ERR_BG if err else COLOR_BADGE_LIVE_BG,
         "badge_color": COLOR_BADGE_ERR_TXT if err else COLOR_BADGE_LIVE_TXT,
+        "cpu": cpu_num,
+        "ram": ram_num,
+        "ram_used_gb": ram_used,
+        "ram_total_gb": ram_total,
+        "disk_c": disk_num,
+        "top": data.get("top") or [],
         "stale": stale,
         "error": str(err) if err else None,
         "sections": sections,
@@ -880,6 +944,7 @@ class PopoverV2(QWidget):
         self._refresh_rect: QRectF = QRectF(self.WIDTH - 16.0 - 66.0, 150.0, 66.0, 22.0)
         self._refresh_hovered: bool = False
         self._refresh_pressed: bool = False
+        self._close_hovered: bool = False
         self._refresh_spinning: bool = False
         self._spin_angle: float = 0.0
 
@@ -952,6 +1017,23 @@ class PopoverV2(QWidget):
 
     def compute_height(self, content: dict) -> int:
         """Calculate dynamic popover height based on content sections and error banner."""
+        kind = content.get("kind", self._kind)
+        if kind == "claude":
+            # Header: 48, Body pads: 16 top, 16 bottom, gap: 12, Footer: 40
+            # Tile 1: 176, Tile 2: 148
+            h = 48.0 + 16.0 + 176.0 + 12.0 + 148.0 + 16.0 + 40.0
+            if content.get("error"):
+                h += 54.0
+            return int(h)
+
+        if kind == "sys":
+            # Header: 48, Body pads: 16 top, 16 bottom, gap: 12, Footer: 40
+            # Tile 1: 160, Tile 2: 132
+            h = 48.0 + 16.0 + 160.0 + 12.0 + 132.0 + 16.0 + 40.0
+            if content.get("error"):
+                h += 54.0
+            return int(h)
+
         # Top padding (14) + Header height (18) + Gap (10) = 42
         h = 42.0
 
@@ -1004,16 +1086,31 @@ class PopoverV2(QWidget):
         )
         self._content = build_content(kind, content_dict, **kwargs)
 
+        if kind == "claude":
+            panel_w = 360
+        elif kind == "sys":
+            panel_w = 400
+        else:
+            panel_w = self.WIDTH
+
         h = self.compute_height(self._content)
-        self.resize(self.WIDTH, h)
-        self._refresh_rect = QRectF(self.WIDTH - 16.0 - 66.0, float(h - 28), 66.0, 22.0)
+        self.resize(panel_w, h)
+
+        if kind in ("claude", "sys"):
+            btn_w = 74.0
+            btn_h = 26.0
+            btn_y = float(h - 40.0 + (40.0 - btn_h) / 2.0)
+            self._refresh_rect = QRectF(panel_w - 16.0 - btn_w, btn_y, btn_w, btn_h)
+        else:
+            self._refresh_rect = QRectF(self.WIDTH - 16.0 - 66.0, float(h - 28), 66.0, 22.0)
 
         # Coordinate positioning
         dpr = 1.25
         if self._anchor_rect_global is not None:
             anchor_cx = self._anchor_rect_global.center().x()
             target_x = int(anchor_cx - self.width() / 2.0)
-            target_y = int(self._anchor_rect_global.top() - self.height() - 10)
+            gap = panel_style.ANCHOR_GAP if kind in ("claude", "sys") else 10.0
+            target_y = int(self._anchor_rect_global.top() - self.height() - gap)
 
             center_pt = self._anchor_rect_global.center().toPoint()
             screen = QGuiApplication.screenAt(center_pt)
@@ -1023,7 +1120,7 @@ class PopoverV2(QWidget):
             if screen is not None:
                 geom = screen.availableGeometry()
                 dpr = screen.devicePixelRatio()
-                margin = 10
+                margin = 8
                 min_x = geom.left() + margin
                 max_x = geom.right() - self.width() - margin
                 if max_x >= min_x:
@@ -1034,7 +1131,7 @@ class PopoverV2(QWidget):
                 min_y = geom.top() + margin
                 max_y = geom.bottom() - self.height() - margin
                 if target_y < min_y:
-                    below_y = int(self._anchor_rect_global.bottom() + 10)
+                    below_y = int(self._anchor_rect_global.bottom() + gap)
                     if below_y + self.height() <= geom.bottom() - margin:
                         target_y = below_y
                     else:
@@ -1047,8 +1144,10 @@ class PopoverV2(QWidget):
         # Apply Windows acrylic composition & physical rounded region
         hwnd = int(self.winId())
         try:
-            winapi.enable_acrylic(hwnd, 0x50181612)
-            winapi.set_round_region(hwnd, self.width(), self.height(), int(self.RADIUS), dpr)
+            if kind not in ("claude", "sys"):
+                winapi.enable_acrylic(hwnd, 0x50181612)
+            round_r = int(panel_style.R_PANEL if kind in ("claude", "sys") else self.RADIUS)
+            winapi.set_round_region(hwnd, self.width(), self.height(), round_r, dpr)
         except Exception:
             pass
 
@@ -1181,20 +1280,41 @@ class PopoverV2(QWidget):
 
     def mouseMoveEvent(self, event) -> None:
         pos = event.position()
-        is_hit = self._refresh_rect.contains(pos)
-        if is_hit != self._refresh_hovered:
-            self._refresh_hovered = is_hit
-            if is_hit:
-                self.setCursor(Qt.PointingHandCursor)
-            else:
-                self.unsetCursor()
+        cur_kind = self._content.get("kind", self._kind)
+        if cur_kind in ("claude", "sys"):
+            close_rect = QRectF(self.width() - 44.0, 11.0, 26.0, 26.0)
+        else:
+            close_rect = QRectF(self.width() - 32.0, 12.0, 22.0, 22.0)
+
+        is_refresh = self._refresh_rect.contains(pos)
+        is_close = close_rect.contains(pos)
+
+        need_update = False
+        if is_refresh != self._refresh_hovered:
+            self._refresh_hovered = is_refresh
+            need_update = True
+        if is_close != self._close_hovered:
+            self._close_hovered = is_close
+            need_update = True
+
+        if is_refresh or is_close:
+            self.setCursor(Qt.PointingHandCursor)
+        else:
+            self.unsetCursor()
+
+        if need_update:
             self.update()
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             pos = event.position()
-            close_rect = QRectF(self.width() - 32.0, 12.0, 22.0, 22.0)
+            cur_kind = self._content.get("kind", self._kind)
+            if cur_kind in ("claude", "sys"):
+                close_rect = QRectF(self.width() - 44.0, 11.0, 26.0, 26.0)
+            else:
+                close_rect = QRectF(self.width() - 32.0, 12.0, 22.0, 22.0)
+
             if close_rect.contains(pos):
                 self.hide_animated()
                 event.accept()
@@ -1218,9 +1338,10 @@ class PopoverV2(QWidget):
         super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event) -> None:
-        if self._refresh_hovered or self._refresh_pressed:
+        if self._refresh_hovered or self._refresh_pressed or self._close_hovered:
             self._refresh_hovered = False
             self._refresh_pressed = False
+            self._close_hovered = False
             self.unsetCursor()
             self.update()
         super().leaveEvent(event)
@@ -1249,7 +1370,410 @@ class PopoverV2(QWidget):
             _log(f"paintEvent error: {e}")
 
     # Painting Internal Implementation
+    def _paint_claude_panel(self, p: QPainter, w: float, h: float) -> None:
+        # 1. Opak shell
+        r = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
+        panel_style.draw_panel_shell(p, r)
+
+        # 2. Header
+        p.setPen(QPen(QColor(255, 255, 255, 10), 1.0))
+        p.drawLine(0, 48, int(w), 48)
+
+        draw_claude_icon(p, QRectF(18, 14, 20, 20))
+
+        title_font = panel_style.f_title()
+        p.setFont(title_font)
+        p.setPen(panel_style.TEXT)
+        fm_t = QFontMetricsF(title_font)
+        tw = fm_t.horizontalAdvance("Claude")
+        p.drawText(QRectF(46, 14, tw + 4, 20), Qt.AlignLeft | Qt.AlignVCenter, "Claude")
+
+        cur_x = 46.0 + tw + 8.0
+        err_msg = self._content.get("error")
+        if err_msg:
+            f_b = panel_style.font(11.0, QFont.Weight.Medium)
+            fm_b = QFontMetricsF(f_b)
+            bw = fm_b.horizontalAdvance("Hata") + 18.0
+            badge_r = QRectF(cur_x, 14.5, bw, 19.0)
+            p.setPen(QPen(QColor(239, 68, 68, 80), 1.0))
+            p.setBrush(QColor(239, 68, 68, 30))
+            p.drawRoundedRect(badge_r, 9.5, 9.5)
+            p.setFont(f_b)
+            p.setPen(QColor("#FCA5A5"))
+            p.drawText(badge_r, Qt.AlignCenter, "Hata")
+        else:
+            plan = (self._content.get("plan") or "").strip()
+            if plan:
+                f_b = panel_style.font(11.0, QFont.Weight.Medium)
+                fm_b = QFontMetricsF(f_b)
+                bw = fm_b.horizontalAdvance(plan) + 18.0
+                badge_r = QRectF(cur_x, 14.5, bw, 19.0)
+                p.setPen(QPen(QColor(255, 255, 255, 15), 1.0))
+                p.setBrush(QColor(255, 255, 255, 20))
+                p.drawRoundedRect(badge_r, 9.5, 9.5)
+                p.setFont(f_b)
+                p.setPen(QColor(255, 255, 255, 204))
+                p.drawText(badge_r, Qt.AlignCenter, plan)
+
+        # Close button
+        close_r = QRectF(w - 18.0 - 26.0, 11.0, 26.0, 26.0)
+        draw_close_button(p, close_r, self._close_hovered)
+
+        # Body
+        body_y = 48.0 + 16.0
+        tile_w = w - 32.0
+
+        if err_msg:
+            err_box = QRectF(16.0, body_y, tile_w, 42.0)
+            p.setPen(QPen(QColor(239, 68, 68, 80), 1.0))
+            p.setBrush(QColor(239, 68, 68, 25))
+            p.drawRoundedRect(err_box, 8.0, 8.0)
+            p.setFont(panel_style.font(11.0, QFont.Weight.Medium))
+            p.setPen(QColor("#FCA5A5"))
+            p.drawText(err_box.adjusted(12, 0, -12, 0), Qt.AlignLeft | Qt.AlignVCenter, str(err_msg))
+            body_y += 54.0
+
+        # Tile 1: Kullanım Göstergeleri
+        tile1_h = 176.0
+        tile1_r = QRectF(16.0, body_y, tile_w, tile1_h)
+        panel_style.draw_tile(p, tile1_r)
+
+        p.setFont(panel_style.f_label())
+        p.setPen(panel_style.TEXT_LABEL)
+        p.drawText(QRectF(tile1_r.left() + 14.0, tile1_r.top() + 12.0, tile1_r.width() - 28.0, 16.0), Qt.AlignLeft | Qt.AlignVCenter, "KULLANIM GÖSTERGELERİ")
+
+        left_cx = tile1_r.left() + tile1_r.width() * 0.25
+        right_cx = tile1_r.left() + tile1_r.width() * 0.75
+        ring_cy = tile1_r.top() + 76.0
+        ring_sz = 82.0
+        stroke = 7.0
+
+        div_x = tile1_r.left() + tile1_r.width() * 0.5
+        p.setPen(QPen(QColor(255, 255, 255, 15), 1.0))
+        p.drawLine(QPointF(div_x, tile1_r.top() + 42.0), QPointF(div_x, tile1_r.top() + 146.0))
+
+        # Oturum
+        s_num = self._content.get("session")
+        panel_style.draw_ring(p, left_cx, ring_cy, ring_sz, stroke, s_num, panel_style.CLAUDE)
+        p.setFont(panel_style.font(18.0, QFont.Weight.Bold, tabular=True))
+        p.setPen(panel_style.TEXT)
+        p.drawText(QRectF(left_cx - 41.0, ring_cy - 41.0, 82.0, 82.0), Qt.AlignCenter, panel_style.pct(s_num))
+
+        p.setFont(panel_style.font(12.5, QFont.Weight.DemiBold))
+        p.setPen(panel_style.TEXT)
+        p.drawText(QRectF(left_cx - 65.0, ring_cy + 41.0 + 6.0, 130.0, 18.0), Qt.AlignCenter, "Oturum")
+
+        s_reset = self._content.get("session_reset", "")
+        s_meta = _format_reset_inline(s_reset, short_day=False) if s_reset else "—"
+        p.setFont(panel_style.font(10.5, QFont.Weight.Normal))
+        p.setPen(panel_style.TEXT_LABEL)
+        p.drawText(QRectF(left_cx - 75.0, ring_cy + 41.0 + 24.0, 150.0, 16.0), Qt.AlignCenter, s_meta)
+
+        # Haftalık
+        w_num = self._content.get("week")
+        panel_style.draw_ring(p, right_cx, ring_cy, ring_sz, stroke, w_num, panel_style.CLAUDE)
+        p.setFont(panel_style.font(18.0, QFont.Weight.Bold, tabular=True))
+        p.setPen(panel_style.TEXT)
+        p.drawText(QRectF(right_cx - 41.0, ring_cy - 41.0, 82.0, 82.0), Qt.AlignCenter, panel_style.pct(w_num))
+
+        p.setFont(panel_style.font(12.5, QFont.Weight.DemiBold))
+        p.setPen(panel_style.TEXT)
+        p.drawText(QRectF(right_cx - 65.0, ring_cy + 41.0 + 6.0, 130.0, 18.0), Qt.AlignCenter, "Haftalık")
+
+        w_reset = self._content.get("week_reset", "")
+        w_meta = _format_reset_inline(w_reset, short_day=True) if w_reset else "—"
+        p.setFont(panel_style.font(10.5, QFont.Weight.Normal))
+        p.setPen(panel_style.TEXT_LABEL)
+        p.drawText(QRectF(right_cx - 75.0, ring_cy + 41.0 + 24.0, 150.0, 16.0), Qt.AlignCenter, w_meta)
+
+        # Tile 2: Abonelik Detayları
+        tile2_y = tile1_r.bottom() + 12.0
+        tile2_h = 148.0
+        tile2_r = QRectF(16.0, tile2_y, tile_w, tile2_h)
+        panel_style.draw_tile(p, tile2_r)
+
+        p.setFont(panel_style.f_label())
+        p.setPen(panel_style.TEXT_LABEL)
+        p.drawText(QRectF(tile2_r.left() + 14.0, tile2_r.top() + 12.0, tile2_r.width() - 28.0, 16.0), Qt.AlignLeft | Qt.AlignVCenter, "ABONELİK DETAYLARI")
+
+        sub_rows = _build_subscription_rows(self._content.get("subscribed_at"), self._content.get("extra_usage", False))
+        if len(sub_rows) < 4:
+            sub_rows = [
+                {"label": "Başlangıç", "val": "—"},
+                {"label": "Son ödeme", "val": "—"},
+                {"label": "Sonraki ödeme", "val": "—"},
+                {"label": "Ek kullanım", "val": "Açık" if self._content.get("extra_usage", False) else "Kapalı"},
+            ]
+
+        row_y = tile2_r.top() + 34.0
+        for i, row in enumerate(sub_rows[:4]):
+            lbl = row.get("label", "")
+            val = str(row.get("val") or "—")
+            row_rect = QRectF(tile2_r.left() + 14.0, row_y, tile2_r.width() - 28.0, 22.0)
+
+            if i == 3:
+                p.setPen(QPen(QColor(255, 255, 255, 12), 1.0))
+                p.drawLine(QPointF(row_rect.left(), row_y - 3.0), QPointF(row_rect.right(), row_y - 3.0))
+
+            p.setFont(panel_style.font(12.0, QFont.Weight.Medium))
+            p.setPen(panel_style.TEXT_BODY)
+            p.drawText(row_rect, Qt.AlignLeft | Qt.AlignVCenter, lbl)
+
+            if i == 3:
+                is_on = (val == "Açık")
+                pill_txt = "Açık" if is_on else "Kapalı"
+                f_p = panel_style.font(11.0, QFont.Weight.Medium)
+                fm_p = QFontMetricsF(f_p)
+                pw = fm_p.horizontalAdvance(pill_txt) + 16.0
+                pill_r = QRectF(row_rect.right() - pw, row_y + 1.5, pw, 19.0)
+                p.setPen(QPen(QColor(255, 255, 255, 14), 1.0))
+                p.setBrush(QColor(255, 255, 255, 12))
+                p.drawRoundedRect(pill_r, 6.0, 6.0)
+                p.setFont(f_p)
+                p.setPen(panel_style.OK if is_on else panel_style.TEXT_LABEL)
+                p.drawText(pill_r, Qt.AlignCenter, pill_txt)
+            else:
+                if " · " in val:
+                    parts = val.split(" · ")
+                    main_part = parts[0]
+                    sub_part = " · " + parts[1]
+                    f_main = panel_style.font(12.0, QFont.Weight.Medium)
+                    f_sub = panel_style.font(11.0, QFont.Weight.Normal)
+                    fm_m = QFontMetricsF(f_main)
+                    fm_s = QFontMetricsF(f_sub)
+                    mw = fm_m.horizontalAdvance(main_part)
+                    sw = fm_s.horizontalAdvance(sub_part)
+
+                    p.setFont(f_sub)
+                    p.setPen(panel_style.TEXT_LABEL)
+                    p.drawText(QRectF(row_rect.right() - sw, row_y, sw, 22.0), Qt.AlignRight | Qt.AlignVCenter, sub_part)
+
+                    p.setFont(f_main)
+                    p.setPen(panel_style.TEXT)
+                    p.drawText(QRectF(row_rect.right() - sw - mw, row_y, mw, 22.0), Qt.AlignRight | Qt.AlignVCenter, main_part)
+                else:
+                    p.setFont(panel_style.font(12.0, QFont.Weight.Medium))
+                    p.setPen(panel_style.TEXT)
+                    p.drawText(row_rect, Qt.AlignRight | Qt.AlignVCenter, val)
+
+            row_y += 24.0
+
+        # Footer
+        footer_y = h - 40.0
+        p.setPen(QPen(QColor(255, 255, 255, 10), 1.0))
+        p.drawLine(0, int(footer_y), int(w), int(footer_y))
+
+        note_txt = self._content.get("footer_note", "Claude Code girişinden okunur")
+        p.setFont(panel_style.font(11.0, QFont.Weight.Normal))
+        p.setPen(panel_style.TEXT_LABEL)
+        p.drawText(QRectF(16.0, footer_y, w - 32.0 - 80.0, 40.0), Qt.AlignLeft | Qt.AlignVCenter, note_txt)
+
+        draw_c_refresh_button(p, self._refresh_rect, hovered=self._refresh_hovered, pressed=self._refresh_pressed, spin_angle=self._spin_angle)
+
+    def _paint_sys_panel(self, p: QPainter, w: float, h: float) -> None:
+        # 1. Opak shell
+        r = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
+        panel_style.draw_panel_shell(p, r)
+
+        # 2. Header
+        p.setPen(QPen(QColor(255, 255, 255, 10), 1.0))
+        p.drawLine(0, 48, int(w), 48)
+
+        draw_sys_icon(p, QRectF(18, 14, 20, 20))
+
+        title_font = panel_style.f_title()
+        p.setFont(title_font)
+        p.setPen(panel_style.TEXT)
+        fm_t = QFontMetricsF(title_font)
+        tw = fm_t.horizontalAdvance("Sistem")
+        p.drawText(QRectF(46, 14, tw + 4, 20), Qt.AlignLeft | Qt.AlignVCenter, "Sistem")
+
+        cur_x = 46.0 + tw + 8.0
+        err_msg = self._content.get("error")
+        if err_msg:
+            badge_txt = "Hata"
+            badge_col = QColor("#FCA5A5")
+            badge_bg = QColor(239, 68, 68, 30)
+            badge_border = QColor(239, 68, 68, 80)
+        else:
+            badge_txt = "Canlı" if not self._content.get("stale") else "Bayat"
+            badge_col = QColor(255, 255, 255, 204)
+            badge_bg = QColor(255, 255, 255, 20)
+            badge_border = QColor(255, 255, 255, 15)
+
+        f_b = panel_style.font(11.0, QFont.Weight.Medium)
+        fm_b = QFontMetricsF(f_b)
+        bw = fm_b.horizontalAdvance(badge_txt) + 18.0
+        badge_r = QRectF(cur_x, 14.5, bw, 19.0)
+        p.setPen(QPen(badge_border, 1.0))
+        p.setBrush(badge_bg)
+        p.drawRoundedRect(badge_r, 9.5, 9.5)
+        p.setFont(f_b)
+        p.setPen(badge_col)
+        p.drawText(badge_r, Qt.AlignCenter, badge_txt)
+
+        # Close button
+        close_r = QRectF(w - 18.0 - 26.0, 11.0, 26.0, 26.0)
+        draw_close_button(p, close_r, self._close_hovered)
+
+        # Body
+        body_y = 48.0 + 16.0
+        tile_w = w - 32.0
+
+        if err_msg:
+            err_box = QRectF(16.0, body_y, tile_w, 42.0)
+            p.setPen(QPen(QColor(239, 68, 68, 80), 1.0))
+            p.setBrush(QColor(239, 68, 68, 25))
+            p.drawRoundedRect(err_box, 8.0, 8.0)
+            p.setFont(panel_style.font(11.0, QFont.Weight.Medium))
+            p.setPen(QColor("#FCA5A5"))
+            p.drawText(err_box.adjusted(12, 0, -12, 0), Qt.AlignLeft | Qt.AlignVCenter, str(err_msg))
+            body_y += 54.0
+
+        # Tile 1: Donanım Kaynakları
+        tile1_h = 160.0
+        tile1_r = QRectF(16.0, body_y, tile_w, tile1_h)
+        panel_style.draw_tile(p, tile1_r)
+
+        p.setFont(panel_style.f_label())
+        p.setPen(panel_style.TEXT_LABEL)
+        p.drawText(QRectF(tile1_r.left() + 14.0, tile1_r.top() + 12.0, tile1_r.width() - 28.0, 16.0), Qt.AlignLeft | Qt.AlignVCenter, "DONANIM KAYNAKLARI")
+
+        inner_w = tile1_r.width() - 28.0
+        c1 = tile1_r.left() + 14.0 + inner_w * (1.0 / 6.0)
+        c2 = tile1_r.left() + 14.0 + inner_w * (3.0 / 6.0)
+        c3 = tile1_r.left() + 14.0 + inner_w * (5.0 / 6.0)
+        ring_cy = tile1_r.top() + 72.0
+        ring_sz = 76.0
+        stroke = 6.5
+
+        # CPU
+        cpu_val = self._content.get("cpu")
+        panel_style.draw_ring(p, c1, ring_cy, ring_sz, stroke, cpu_val, panel_style.CPU)
+        p.setFont(panel_style.font(16.0, QFont.Weight.Bold, tabular=True))
+        p.setPen(panel_style.TEXT)
+        p.drawText(QRectF(c1 - 38.0, ring_cy - 38.0, 76.0, 76.0), Qt.AlignCenter, panel_style.pct(cpu_val))
+
+        p.setFont(panel_style.font(12.0, QFont.Weight.DemiBold))
+        p.setPen(panel_style.TEXT)
+        p.drawText(QRectF(c1 - 50.0, ring_cy + 38.0 + 6.0, 100.0, 16.0), Qt.AlignCenter, "İşlemci")
+
+        p.setFont(panel_style.font(10.0, QFont.Weight.Medium))
+        p.setPen(panel_style.CPU if cpu_val is not None else panel_style.TEXT_LABEL)
+        cpu_sub = "Kullanım" if cpu_val is not None else "—"
+        p.drawText(QRectF(c1 - 50.0, ring_cy + 38.0 + 22.0, 100.0, 14.0), Qt.AlignCenter, cpu_sub)
+
+        # RAM
+        ram_val = self._content.get("ram")
+        panel_style.draw_ring(p, c2, ring_cy, ring_sz, stroke, ram_val, panel_style.RAM)
+        p.setFont(panel_style.font(16.0, QFont.Weight.Bold, tabular=True))
+        p.setPen(panel_style.TEXT)
+        p.drawText(QRectF(c2 - 38.0, ring_cy - 38.0, 76.0, 76.0), Qt.AlignCenter, panel_style.pct(ram_val))
+
+        p.setFont(panel_style.font(12.0, QFont.Weight.DemiBold))
+        p.setPen(panel_style.TEXT)
+        p.drawText(QRectF(c2 - 50.0, ring_cy + 38.0 + 6.0, 100.0, 16.0), Qt.AlignCenter, "RAM")
+
+        ram_used = self._content.get("ram_used_gb")
+        ram_tot = self._content.get("ram_total_gb")
+        if ram_used is not None and ram_tot is not None and ram_tot > 0:
+            ram_sub = f"{sources.fmt_tr(ram_used, 1)} / {sources.fmt_tr(ram_tot, 1)} GB"
+        else:
+            ram_sub = "—"
+        p.setFont(panel_style.font(10.0, QFont.Weight.Normal))
+        p.setPen(panel_style.TEXT_LABEL)
+        p.drawText(QRectF(c2 - 60.0, ring_cy + 38.0 + 22.0, 120.0, 14.0), Qt.AlignCenter, ram_sub)
+
+        # Disk C:
+        disk_val = self._content.get("disk_c")
+        panel_style.draw_ring(p, c3, ring_cy, ring_sz, stroke, disk_val, panel_style.DISK)
+        p.setFont(panel_style.font(16.0, QFont.Weight.Bold, tabular=True))
+        p.setPen(panel_style.TEXT)
+        p.drawText(QRectF(c3 - 38.0, ring_cy - 38.0, 76.0, 76.0), Qt.AlignCenter, panel_style.pct(disk_val))
+
+        p.setFont(panel_style.font(12.0, QFont.Weight.DemiBold))
+        p.setPen(panel_style.TEXT)
+        p.drawText(QRectF(c3 - 50.0, ring_cy + 38.0 + 6.0, 100.0, 16.0), Qt.AlignCenter, "Disk C:")
+
+        p.setFont(panel_style.font(10.0, QFont.Weight.Medium))
+        p.setPen(panel_style.DISK if disk_val is not None else panel_style.TEXT_LABEL)
+        disk_sub = "Dolu" if disk_val is not None else "—"
+        p.drawText(QRectF(c3 - 50.0, ring_cy + 38.0 + 22.0, 100.0, 14.0), Qt.AlignCenter, disk_sub)
+
+        # Tile 2: En Çok Bellek Kullananlar
+        tile2_y = tile1_r.bottom() + 12.0
+        tile2_h = 132.0
+        tile2_r = QRectF(16.0, tile2_y, tile_w, tile2_h)
+        panel_style.draw_tile(p, tile2_r)
+
+        p.setFont(panel_style.f_label())
+        p.setPen(panel_style.TEXT_LABEL)
+        p.drawText(QRectF(tile2_r.left() + 14.0, tile2_r.top() + 12.0, tile2_r.width() - 28.0, 16.0), Qt.AlignLeft | Qt.AlignVCenter, "EN ÇOK BELLEK KULLANANLAR")
+
+        top_procs = self._content.get("top") or []
+        dot_colors = [panel_style.RAM, panel_style.CPU, QColor(255, 255, 255, 90)]
+
+        row_y = tile2_r.top() + 34.0
+        if top_procs:
+            for i, proc in enumerate(top_procs[:3]):
+                if i > 0:
+                    p.setPen(QPen(QColor(255, 255, 255, 10), 1.0))
+                    p.drawLine(QPointF(tile2_r.left() + 14.0, row_y - 3.0), QPointF(tile2_r.right() - 14.0, row_y - 3.0))
+
+                p_name = proc.get("name", "—")
+                p_mb = proc.get("mb")
+                mb_txt = f"{sources.fmt_tr(p_mb, 1)} MB" if p_mb is not None else "—"
+
+                # Dot
+                p.setPen(Qt.NoPen)
+                p.setBrush(dot_colors[i] if i < len(dot_colors) else dot_colors[-1])
+                p.drawEllipse(QRectF(tile2_r.left() + 14.0, row_y + 8.0, 6.0, 6.0))
+
+                # Process name
+                p.setFont(panel_style.font(12.0, QFont.Weight.Medium))
+                p.setPen(panel_style.TEXT)
+                p.drawText(QRectF(tile2_r.left() + 28.0, row_y, tile2_r.width() - 150.0, 22.0), Qt.AlignLeft | Qt.AlignVCenter, p_name)
+
+                # Memory MB
+                p.setFont(panel_style.font(12.0, QFont.Weight.DemiBold, tabular=True))
+                p.setPen(panel_style.TEXT_BODY)
+                p.drawText(QRectF(tile2_r.right() - 120.0, row_y, 106.0, 22.0), Qt.AlignRight | Qt.AlignVCenter, mb_txt)
+
+                row_y += 26.0
+        else:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, 60))
+            p.drawEllipse(QRectF(tile2_r.left() + 14.0, row_y + 8.0, 6.0, 6.0))
+
+            p.setFont(panel_style.font(12.0, QFont.Weight.Medium))
+            p.setPen(panel_style.TEXT_LABEL)
+            p.drawText(QRectF(tile2_r.left() + 28.0, row_y, tile2_r.width() - 150.0, 22.0), Qt.AlignLeft | Qt.AlignVCenter, "—")
+
+            p.setFont(panel_style.font(12.0, QFont.Weight.DemiBold, tabular=True))
+            p.setPen(panel_style.TEXT_LABEL)
+            p.drawText(QRectF(tile2_r.right() - 120.0, row_y, 106.0, 22.0), Qt.AlignRight | Qt.AlignVCenter, "—")
+
+        # Footer
+        footer_y = h - 40.0
+        p.setPen(QPen(QColor(255, 255, 255, 10), 1.0))
+        p.drawLine(0, int(footer_y), int(w), int(footer_y))
+
+        note_txt = self._content.get("footer_note", "Bu bilgisayar")
+        p.setFont(panel_style.font(11.0, QFont.Weight.Normal))
+        p.setPen(panel_style.TEXT_LABEL)
+        p.drawText(QRectF(16.0, footer_y, w - 32.0 - 80.0, 40.0), Qt.AlignLeft | Qt.AlignVCenter, note_txt)
+
+        draw_c_refresh_button(p, self._refresh_rect, hovered=self._refresh_hovered, pressed=self._refresh_pressed, spin_angle=self._spin_angle)
+
     def _paint_card(self, p: QPainter) -> None:
+        cur_kind = self._content.get("kind", self._kind)
+        if cur_kind == "claude":
+            self._paint_claude_panel(p, float(self.width()), float(self.height()))
+            return
+        if cur_kind == "sys":
+            self._paint_sys_panel(p, float(self.width()), float(self.height()))
+            return
+
         w = float(self.width())
         h = float(self.height())
         r = QRectF(0.5, 0.5, w - 1.0, h - 1.0)

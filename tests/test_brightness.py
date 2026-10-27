@@ -426,6 +426,52 @@ def test_live_hardware_read_only():
 
 
 # ===========================================================================
+# 8. Direction C Specifications Test
+# ===========================================================================
+
+def test_direction_c_styling():
+    """Verify Direction C ('Kart katmanlı') brightness popover specs."""
+    print("--- 10. Testing Direction C Brightness Specifications ---")
+    import panel_style
+    get_qapp()
+    pop = brightness_popover.BrightnessPopover()
+    assert pop.WIDTH == 360
+    assert pop.RADIUS == panel_style.R_PANEL
+
+    anchor = QRectF(500, 800, 120, 32)
+    monitors = [
+        {"id": "wmi:laptop", "name": "Dizüstü", "kind": "wmi", "level": 67, "ok": True},
+        {"id": "ddc:msi", "name": "MSI MP223", "kind": "ddc", "level": 82, "ok": True},
+    ]
+    pop.show_for(anchor, monitors)
+
+    # Offscreen image render populates caches and verifies layout
+    img = pop.render_to_image(dpr=2.0)
+    assert img.width() == 720
+    assert img.height() == 760
+
+    # Check slider caches
+    assert len(pop._slider_layout_cache) == 2
+    assert len(pop._preset_buttons_cache) == 4
+
+    # Test preset click simulation (%50)
+    p50_btn = pop._preset_buttons_cache[1]
+    assert p50_btn["level"] == 50
+
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtCore import QEvent
+    click_pt = p50_btn["rect"].center()
+    ev = QMouseEvent(QEvent.Type.MouseButtonPress, click_pt, click_pt, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    pop.mousePressEvent(ev)
+
+    assert pop._active_preset == 50
+    assert pop._monitors[0]["level"] == 50
+    assert pop._monitors[1]["level"] == 50
+
+    print("  [PASS] Direction C brightness specifications verified.")
+
+
+# ===========================================================================
 # Main Test Runner
 # ===========================================================================
 
@@ -447,6 +493,7 @@ def run_all_tests():
         test_bad_data_robustness_matrix()
         test_popover_lifecycle_and_events()
         test_live_hardware_read_only()
+        test_direction_c_styling()
     finally:
         hash_after = get_file_hash(SETTINGS_PATH)
         print(f"[INTEGRITY] settings.json sha256 after:  {hash_after}")

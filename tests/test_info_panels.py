@@ -399,7 +399,7 @@ def test_recently_closed_timing(qapp: QApplication) -> None:
     assert panel.recently_closed(threshold_ms=250.0) is True
 
     # Sleep past threshold
-    time.sleep(0.26)
+    time.sleep(0.32)
     assert panel.recently_closed(threshold_ms=250.0) is False
 
 
@@ -433,7 +433,7 @@ def test_common_public_api_contract(qapp: QApplication) -> None:
         assert hasattr(panel, "is_open")
         assert hasattr(panel, "recently_closed")
         assert hasattr(panel, "refresh_requested")
-        assert 320 <= panel.WIDTH <= 340
+        assert 320 <= panel.WIDTH <= 380
         assert panel.RADIUS == 16.0
 
         # Anchor positioning check

@@ -334,9 +334,108 @@ def render_all_snapshots():
     print("✓ All snapshots successfully rendered.")
 
 
+def test_direction_c_requirements():
+    """Verify Direction C specifics: widths, hidden plan badge on empty string, Turkish formatting, missing data."""
+    _app = get_qapp()
+    popover = PopoverV2()
+    anchor = QRect(400, 900, 100, 48)
+
+    # 1. Width verification
+    popover.show_for("claude", anchor, {"session": 10.0, "week": 20.0, "plan": "Max 5x"})
+    _app.processEvents()
+    assert popover.width() == 360, f"Claude width must be 360, got {popover.width()}"
+
+    popover.show_for("sys", anchor, {"cpu": 50.0, "ram": 60.0, "disk_c": 30.0})
+    _app.processEvents()
+    assert popover.width() == 400, f"Sistem width must be 400, got {popover.width()}"
+
+    # 2. Plan badge hidden when plan is ''
+    c_empty_plan = build_claude_content({"session": 10.0, "week": 20.0, "plan": ""})
+    assert c_empty_plan["plan"] == ""
+    assert c_empty_plan["badge"] is None
+
+    # 3. Missing data handling
+    sys_missing = build_sys_content({"cpu": None, "ram": None, "disk_c": None, "top": []})
+    assert sys_missing["cpu"] is None
+    assert sys_missing["ram"] is None
+    assert sys_missing["disk_c"] is None
+    assert sys_missing["top"] == []
+
+    # 4. Turkish number format in processes
+    import sources
+    assert sources.fmt_tr(3501.5, 1) == "3.501,5"
+    assert sources.fmt_tr(1509.5, 1) == "1.509,5"
+    assert sources.fmt_tr(939.5, 1) == "939,5"
+    assert sources.fmt_tr(None) == "—"
+
+    # 5. Render evidence into serit-v13
+    v13_dir = Path("C:/Users/Emre Karatasli/AppData/Local/hermes/cache/scratch/serit-v13")
+    v13_dir.mkdir(parents=True, exist_ok=True)
+
+    import datetime as dt
+    now = dt.datetime.now(sources.LOCAL_TZ)
+    s_reset = (now + dt.timedelta(hours=4, minutes=21)).isoformat()
+    days_until_sat = (5 - now.weekday()) % 7
+    if days_until_sat == 0:
+        days_until_sat = 7
+    sat_dt = now.replace(hour=8, minute=59, second=0, microsecond=0) + dt.timedelta(days=days_until_sat)
+    w_reset = sat_dt.isoformat()
+
+    claude_evidence = {
+        "session": 7.0,
+        "session_reset": s_reset,
+        "week": 25.0,
+        "week_reset": w_reset,
+        "plan": "Max 5x",
+        "subscribed_at": "2026-05-21T07:23:39.399643Z",
+        "extra_usage": False,
+        "fetched_at": (now.replace(hour=14, minute=55)).timestamp(),
+    }
+    popover.show_for("claude", anchor, claude_evidence)
+    _app.processEvents()
+    img_c = popover.render_to_image(dpr=2.0)
+    img_c.save(str(v13_dir / "claude.png"))
+
+    sys_evidence = {
+        "cpu": 52.0,
+        "ram": 75.0,
+        "ram_used_gb": 11.8,
+        "ram_total_gb": 15.7,
+        "disk_c": 27.0,
+        "top": [
+            {"name": "chrome.exe", "mb": 3501.5},
+            {"name": "Hermes.exe", "mb": 1509.5},
+            {"name": "MemCompression", "mb": 939.5},
+        ],
+        "fetched_at": (now.replace(hour=14, minute=58)).timestamp(),
+    }
+    popover.show_for("sys", anchor, sys_evidence)
+    _app.processEvents()
+    img_s = popover.render_to_image(dpr=2.0)
+    img_s.save(str(v13_dir / "sistem.png"))
+
+    sys_veriyok_evidence = {
+        "cpu": None,
+        "ram": None,
+        "ram_used_gb": None,
+        "ram_total_gb": None,
+        "disk_c": None,
+        "top": [],
+        "plan": "",
+        "fetched_at": (now.replace(hour=14, minute=58)).timestamp(),
+    }
+    popover.show_for("sys", anchor, sys_veriyok_evidence)
+    _app.processEvents()
+    img_sv = popover.render_to_image(dpr=2.0)
+    img_sv.save(str(v13_dir / "sistem_veriyok.png"))
+
+    print("✓ Direction C requirements test passed.")
+
+
 if __name__ == "__main__":
     test_top_processes()
     test_content_builders()
     test_refresh_button_and_callbacks()
     test_k4_logic()
+    test_direction_c_requirements()
     render_all_snapshots()

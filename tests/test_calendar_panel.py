@@ -427,9 +427,65 @@ def test_paint_benchmark_and_snapshots() -> None:
     img_error = panel.render_to_image(dpr=2.0)
     path_error = SCRATCH_DIR / "cal_error.png"
     img_error.save(str(path_error))
-    print(f"  [SAVED] {path_error} ({img_error.width()}x{img_error.height()})")
-
     print("  [PASS] All 5 high-DPI evidence snapshots successfully generated.")
+
+
+def test_direction_c_styling() -> None:
+    """Verify Direction C ('Kart katmanlı') calendar specs."""
+    print("--- 8. Testing Direction C Specifications ---")
+    import panel_style
+    panel = calendar_panel.CalendarPanel()
+    assert panel.WIDTH == 440
+    assert panel.RADIUS == panel_style.R_PANEL
+
+    # Setup realistic test data for 27 Oct 2026
+    events = [
+        {
+            "title": "Vergi: Eylül KDV son gün – 791,00 TL",
+            "start": dt.date(2026, 10, 28),
+            "end": dt.date(2026, 10, 29),
+            "all_day": True,
+            "category": "Vergi/ödeme",
+        },
+        {
+            "title": "Les Ateliers fiyat revizyonu",
+            "start": dt.date(2026, 10, 31),
+            "end": dt.date(2026, 11, 1),
+            "all_day": True,
+            "category": "Google Takvim",
+        },
+    ]
+    panel.show_for(QRectF(100, 600, 100, 40), {"events": events}, {})
+    panel.today = dt.date(2026, 10, 27)
+    panel.selected_date = dt.date(2026, 10, 27)
+    panel.view_year = 2026
+    panel.view_month = 10
+    panel._rebuild_cache()
+
+    # Upcoming items must have 4 rows: 28 Eki Arife (holiday red), 28 Eki Vergi (amber with amount), 29 Eki Bayram (holiday red), 31 Eki Les Ateliers (google blue)
+    up = panel._cached_upcoming
+    assert len(up) == 4, f"Expected 4 upcoming items, got {len(up)}"
+    assert up[0]["target_date"] == dt.date(2026, 10, 28)
+    assert "Cumhuriyet Bayramı Arifesi" in up[0]["title"]
+    assert up[0]["dot_color"] == panel_style.DANGER
+
+    assert up[1]["target_date"] == dt.date(2026, 10, 28)
+    assert "791,00 TL" in up[1]["amount"]
+    assert up[1]["dot_color"] == panel_style.WARN
+
+    assert up[2]["target_date"] == dt.date(2026, 10, 29)
+    assert "Cumhuriyet Bayramı" in up[2]["title"]
+    assert up[2]["dot_color"] == panel_style.DANGER
+
+    assert up[3]["target_date"] == dt.date(2026, 10, 31)
+    assert "Les Ateliers" in up[3]["title"]
+    assert up[3]["dot_color"] == panel_style.ACCENT
+
+    # Verify DPR 2.0 render produces image
+    img = panel.render_to_image(dpr=2.0)
+    assert img.width() == 880
+    assert img.height() == panel.HEIGHT * 2
+    print("  [PASS] Direction C calendar specifications verified.")
 
 
 if __name__ == "__main__":
@@ -443,6 +499,7 @@ if __name__ == "__main__":
     test_navigation_and_selection()
     test_link_click_mock()
     test_paint_benchmark_and_snapshots()
+    test_direction_c_styling()
     print("=" * 60)
     print("ALL CALENDAR PANEL TESTS COMPLETED SUCCESSFULLY!")
     print("=" * 60)
