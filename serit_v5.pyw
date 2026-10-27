@@ -3069,6 +3069,15 @@ def main() -> None:
     atexit.register(dock.cleanup)
     dock.start()
 
+    try:
+        import stall_monitor
+
+        _stall_monitor = stall_monitor.StallMonitor(dock)
+        _stall_monitor.start()
+        app.aboutToQuit.connect(_stall_monitor.stop)
+    except Exception as exc:
+        sources.log_err("ui_stall_start", exc)
+
     sys.exit(app.exec())
 
 

@@ -193,16 +193,52 @@ def rotate_log_if_needed() -> None:
 rotate_log_if_needed()
 
 
+_LOG_DEDUP_LOCK = threading.Lock()
+_LOG_DEDUP_WINDOW_S = 600.0
+_LOG_DEDUP_MAX_KEYS = 200
+_LOG_DEDUP: Dict[Tuple[str, str, str], List[Any]] = {}
+
+
+def _log_now() -> float:
+    """Monotonic clock used by log de-duplication (patchable in tests)."""
+    return time.monotonic()
+
+
+def _write_log_line(source: str, exc: Exception, suffix: str = "") -> None:
+    """Append one log line in the established serit.log format."""
+    rotate_log_if_needed()
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with LOG_PATH.open("a", encoding="utf-8") as f:
+        ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        f.write(f"{ts} [{source}] {type(exc).__name__}: {exc}{suffix}\n")
+
+
 def log_err(source: str, exc: Exception) -> None:
-    """Log network/source exception without sensitive tokens."""
-    try:
-        rotate_log_if_needed()
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with LOG_PATH.open("a", encoding="utf-8") as f:
-            ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"{ts} [{source}] {type(exc).__name__}: {exc}\n")
-    except OSError:
-        pass
+    """Log network/source exception without sensitive tokens.
+
+    Identical (source, exception type, message) triples are written once per
+    10 minutes. Suppressed repeats are counted and reported as " (×N tekrar)"
+    on the next write. The cache holds at most 200 keys; the oldest is dropped.
+    """
+    key = (str(source), type(exc).__name__, str(exc))
+    now = _log_now()
+    suffix = ""
+    with _LOG_DEDUP_LOCK:
+        entry = _LOG_DEDUP.get(key)
+        if entry is not None:
+            last_ts, repeats = entry
+            if now - last_ts < _LOG_DEDUP_WINDOW_S:
+                entry[1] = repeats + 1
+                return
+            if repeats:
+                suffix = f" (×{repeats} tekrar)"
+        _LOG_DEDUP[key] = [now, 0]
+        while len(_LOG_DEDUP) > _LOG_DEDUP_MAX_KEYS:
+            _LOG_DEDUP.pop(next(iter(_LOG_DEDUP)))
+        try:
+            _write_log_line(source, exc, suffix)
+        except OSError:
+            pass
 
 
 def tr_num(s: Any) -> float:
