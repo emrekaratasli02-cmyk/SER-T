@@ -103,7 +103,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "cal": True,
         "mail": True,
         "ag": True,
-        "sys": False,
+        "sys": True,
     },
 }
 
@@ -120,7 +120,7 @@ MEDIA_CARD_WIDTH_COMPACT: float = 240.0
 AG_CARD_WIDTH: float = 142.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
-SYS_CARD_WIDTH: float = 166.0
+SYS_CARD_WIDTH: float = 96.0
 MARKET_CARD_WIDTH: float = 160.0
 CLOCK_BLOCK_WIDTH: float = 70.0
 TRAY_COLUMN_WIDTH: float = 32.0
@@ -171,7 +171,7 @@ def load_settings() -> dict:
         except Exception as exc:
             sources.log_err("load_settings_bak_corrupt", exc)
     if isinstance(cfg.get("cards"), dict):
-        merged_cards = {"cal": True, "mail": True, "ag": True, "sys": False}
+        merged_cards = {"cal": True, "mail": True, "ag": True, "sys": True}
         merged_cards.update(cfg["cards"])
         cfg["cards"] = merged_cards
     return cfg
@@ -1327,7 +1327,7 @@ class SeritDock(QWidget):
         show_claude = cards_cfg.get("claude", True)
         show_mail = cards_cfg.get("mail", True)
         show_ag = cards_cfg.get("ag", True)
-        show_sys = cards_cfg.get("sys", False)
+        show_sys = cards_cfg.get("sys", True)
         show_cal = cards_cfg.get("cal", True)
 
         has_media = bool(self._now_playing_info and self._now_playing_info.get("title"))
@@ -1444,7 +1444,7 @@ class SeritDock(QWidget):
         show_claude = cards_cfg.get("claude", True)
         show_mail = cards_cfg.get("mail", True)
         show_ag = cards_cfg.get("ag", True)
-        show_sys = cards_cfg.get("sys", False)
+        show_sys = cards_cfg.get("sys", True)
         show_cal = cards_cfg.get("cal", True)
 
         has_media = bool(self._now_playing_info and self._now_playing_info.get("title"))
@@ -1479,11 +1479,26 @@ class SeritDock(QWidget):
             apps_x = round(sw / 2.0 - w_apps / 2.0) if w_apps > 0 else round(sw / 2.0)
 
             # Left wing: Claude, Mail, Antigravity, Sistem
+            eff_mail_w = w_mail
+            if show_mail:
+                needed_space = (
+                    (w_claude if show_claude else 0.0)
+                    + eff_mail_w
+                    + (w_ag if show_ag else 0.0)
+                    + (SYS_CARD_WIDTH if show_sys else 0.0)
+                    + max(0, (int(show_claude) + int(show_mail) + int(show_ag) + int(show_sys)) - 1) * GAP_MODULE
+                )
+                max_allowed_lw = apps_x - (GAP_MODULE if (w_apps > 0) else 0.0) - 10.0
+                if needed_space > max_allowed_lw:
+                    overflow = needed_space - max_allowed_lw
+                    can_shrink = max(0.0, eff_mail_w - dock_cards.MAIL_CARD_MIN_WIDTH)
+                    eff_mail_w -= min(overflow, can_shrink)
+
             lw_cards: List[Tuple[str, float]] = []
             if show_claude:
                 lw_cards.append(("claude", w_claude))
             if show_mail:
-                lw_cards.append(("mail", w_mail))
+                lw_cards.append(("mail", eff_mail_w))
             if show_ag:
                 lw_cards.append(("ag", w_ag))
             if show_sys:
@@ -1529,10 +1544,10 @@ class SeritDock(QWidget):
             if has_media and calc_clearance(shown_icons, media_w, cal_w, center_shift) < 12.0:
                 media_w = MEDIA_CARD_WIDTH_COMPACT
 
-            # (c) calendar card max width shrinks with eliding down to 110 px
+            # (c) calendar card max width shrinks with eliding down to 96 px
             if show_cal and calc_clearance(shown_icons, media_w, cal_w, center_shift) < 12.0:
                 needed = 12.0 - calc_clearance(shown_icons, media_w, cal_w, center_shift)
-                can_shrink = max(0.0, cal_w - 110.0)
+                can_shrink = max(0.0, cal_w - 96.0)
                 shrink_by = min(needed, can_shrink)
                 cal_w -= shrink_by
 
@@ -1561,7 +1576,18 @@ class SeritDock(QWidget):
                     dock_cards.draw_ag_card(p, r_card, ag_data, hover=is_hover, press_scale=press_scale)
                 elif card_key == "sys":
                     sys_entry = self.store.get("sys") or {}
-                    dock_cards.draw_sys_card(p, r_card, sys_entry, hover=is_hover, press_scale=press_scale)
+                    c_disp = None if self.preview_mode else self.anim_cpu.value
+                    r_disp = None if self.preview_mode else self.anim_ram.value
+                    dock_cards.draw_sys_card(
+                        p,
+                        r_card,
+                        sys_entry,
+                        hover=is_hover,
+                        press_scale=press_scale,
+                        cpu_disp=c_disp,
+                        ram_disp=r_disp,
+                        opacity=self.anim_sys_op.value,
+                    )
 
                 cur_lw_x += card_w + GAP_MODULE
 
@@ -1730,7 +1756,18 @@ class SeritDock(QWidget):
                 s_hover = (self._hover_key == "sys")
                 s_press = self.press_tween.scale if (self._pressed_key == "sys") else 1.0
                 sys_entry = self.store.get("sys") or {}
-                dock_cards.draw_sys_card(p, r_sys, sys_entry, hover=s_hover, press_scale=s_press)
+                c_disp = None if self.preview_mode else self.anim_cpu.value
+                r_disp = None if self.preview_mode else self.anim_ram.value
+                dock_cards.draw_sys_card(
+                    p,
+                    r_sys,
+                    sys_entry,
+                    hover=s_hover,
+                    press_scale=s_press,
+                    cpu_disp=c_disp,
+                    ram_disp=r_disp,
+                    opacity=self.anim_sys_op.value,
+                )
                 x += SYS_CARD_WIDTH + GAP_MODULE
 
             # Apps Group
@@ -2379,8 +2416,21 @@ class SeritDock(QWidget):
             return "\n".join(lines)
         elif key == "sys":
             s = self.store.get("sys") or {}
-            src = s.get("source", "Bu bilgisayar (psutil)")
-            return f"Sistem: {src} · Canlı"
+            c_val = safe_float(s.get("cpu"), None)
+            r_val = safe_float(s.get("ram"), None)
+            r_used = safe_float(s.get("ram_used_gb"), None)
+            r_tot = safe_float(s.get("ram_total_gb"), None)
+            if c_val is None and r_val is None:
+                return "Sistem: Veri yok · psutil"
+            c_str = f"%{int(round(c_val))}" if c_val is not None else "–"
+            r_str = f"%{int(round(r_val))}" if r_val is not None else "–"
+            tip = f"İşlemci {c_str} · Bellek {r_str}"
+            if r_used is not None and r_tot is not None and r_tot > 0:
+                u_str = f"{r_used:.1f}".replace(".", ",")
+                t_str = f"{r_tot:.1f}".replace(".", ",")
+                tip += f" · {u_str} / {t_str} GB"
+            tip += " · psutil"
+            return tip
         elif key == "vol":
             st = "Sessiz" if self._vol_muted else f"%{int(round(self._vol_level))}"
             return f"Ses Düzeyi: {st}"

@@ -71,6 +71,9 @@ MEDIA_CARD_WIDTH_COMPACT: float = 240.0
 AG_CARD_WIDTH: float = 142.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
+SYS_CARD_WIDTH: float = 96.0
+SYS_RING_SIZE: float = 34.0
+SYS_RING_STROKE: float = 3.5
 
 
 def get_progress_bar_color(pct: float) -> QColor:
@@ -707,8 +710,36 @@ def draw_ag_card(
 
 
 # ==============================================================================
-# 3. SYSTEM CARD (OPTIONAL)
+# 3. SYSTEM CARD (RING GAUGES)
 # ==============================================================================
+
+def get_sys_ring_color(val: float, base_col: QColor) -> QColor:
+    """Select base, amber, or red for sys ring gauge.
+
+    İşlemci: >=70 turuncu, >=90 kırmızı. Bellek: Emre'nin bilgisayarında normalde %74-77
+    olduğu için (27 Eki 2026 ölçümü) >=85 turuncu, >=93 kırmızı; yoksa mor halka hiç görünmezdi.
+    """
+    is_ram = base_col == COLOR_RAM_BAR
+    red_at, amber_at = (93.0, 85.0) if is_ram else (90.0, 70.0)
+    if val >= red_at:
+        return COLOR_BAR_RED
+    if val >= amber_at:
+        return COLOR_BAR_AMBER
+    return base_col
+
+
+def _parse_sys_metric(val: Any) -> Optional[float]:
+    """Safely coerce sys metric to float in [0, 100], returns None on invalid/missing/NaN/Inf."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return max(0.0, min(100.0, f))
+    except (TypeError, ValueError):
+        return None
+
 
 def draw_sys_card(
     p: QPainter,
@@ -716,59 +747,69 @@ def draw_sys_card(
     sys_data: Dict[str, Any],
     hover: bool = False,
     press_scale: float = 1.0,
+    cpu_disp: Optional[float] = None,
+    ram_disp: Optional[float] = None,
+    opacity: float = 1.0,
 ) -> None:
-    """Renders 166x52 System card with two 64px meters (İşlemci / Bellek)."""
+    """Renders 100x52 System card with two circular ring gauges (İşlemci / Bellek)."""
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.TextAntialiasing)
+
+    eff_op = max(0.0, min(1.0, opacity))
+    if eff_op < 1.0:
+        p.setOpacity(eff_op)
+
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
 
-    cpu_val = float(sys_data.get("cpu", 0.0) or 0.0)
-    ram_val = float(sys_data.get("ram", 0.0) or 0.0)
+    has_err = bool(sys_data.get("err"))
+    raw_cpu = None if has_err else sys_data.get("cpu")
+    raw_ram = None if has_err else sys_data.get("ram")
 
-    f_sub = theme.make_font(11.0, QFont.Weight.Normal)
-    f_lbl = theme.make_font(12.0, QFont.Weight.DemiBold, tabular=True)
+    c_metric = cpu_disp if (cpu_disp is not None and not has_err and raw_cpu is not None) else raw_cpu
+    r_metric = ram_disp if (ram_disp is not None and not has_err and raw_ram is not None) else raw_ram
 
-    pad_x = 12.0
-    gap = 12.0
-    meter_w = 64.0
-    by = rect.y() + 11.0
+    c_val = _parse_sys_metric(c_metric)
+    r_val = _parse_sys_metric(r_metric)
 
-    # Meter 1: CPU
-    m1_x = rect.x() + pad_x
-    p.save()
-    p.setFont(f_sub)
-    p.setPen(COLOR_TXT_MUTED)
-    p.drawText(QRectF(m1_x, by, meter_w, 14.0), Qt.AlignLeft | Qt.AlignVCenter, "İşlemci")
+    size = SYS_RING_SIZE
+    stroke = SYS_RING_STROKE
+    r = (size - stroke) / 2.0
+    cy = rect.y() + rect.height() / 2.0
 
-    p.setFont(f_lbl)
-    p.setPen(COLOR_TXT_PRIMARY)
-    p.drawText(QRectF(m1_x, by, meter_w, 14.0), Qt.AlignRight | Qt.AlignVCenter, f"%{int(round(cpu_val))}")
+    pad_x = 9.0
+    cx_cpu = rect.x() + pad_x + size / 2.0
+    cx_ram = rect.x() + rect.width() - pad_x - size / 2.0
 
-    # CPU bar
-    p.setPen(Qt.NoPen)
-    p.setBrush(COLOR_BAR_TRACK)
-    p.drawRoundedRect(QRectF(m1_x, by + 16.0, meter_w, 4.0), 2.0, 2.0)
-    c_fill = max(0.0, min(meter_w, meter_w * (cpu_val / 100.0)))
-    if c_fill > 0.0:
-        p.setBrush(COLOR_CPU_BAR)
-        p.drawRoundedRect(QRectF(m1_x, by + 16.0, c_fill, 4.0), 2.0, 2.0)
+    f_num = theme.make_font(11.0, QFont.Weight.DemiBold, tabular=True)
 
-    # Meter 2: RAM
-    m2_x = m1_x + meter_w + gap
-    p.setFont(f_sub)
-    p.setPen(COLOR_TXT_MUTED)
-    p.drawText(QRectF(m2_x, by, meter_w, 14.0), Qt.AlignLeft | Qt.AlignVCenter, "Bellek")
+    rings = [
+        (cx_cpu, c_val, COLOR_CPU_BAR),
+        (cx_ram, r_val, COLOR_RAM_BAR),
+    ]
 
-    p.setFont(f_lbl)
-    p.setPen(COLOR_TXT_PRIMARY)
-    p.drawText(QRectF(m2_x, by, meter_w, 14.0), Qt.AlignRight | Qt.AlignVCenter, f"%{int(round(ram_val))}")
+    for cx, val, base_col in rings:
+        arc_rect = QRectF(cx - r, cy - r, 2.0 * r, 2.0 * r)
 
-    # RAM bar
-    p.setPen(Qt.NoPen)
-    p.setBrush(COLOR_BAR_TRACK)
-    p.drawRoundedRect(QRectF(m2_x, by + 16.0, meter_w, 4.0), 2.0, 2.0)
-    r_fill = max(0.0, min(meter_w, meter_w * (ram_val / 100.0)))
-    if r_fill > 0.0:
-        p.setBrush(COLOR_RAM_BAR)
-        p.drawRoundedRect(QRectF(m2_x, by + 16.0, r_fill, 4.0), 2.0, 2.0)
+        # 1. Background full track circle (rgba(255, 255, 255, 0.13))
+        p.setPen(QPen(COLOR_BAR_TRACK, stroke, Qt.SolidLine, Qt.FlatCap))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(arc_rect)
+
+        # 2. Foreground active arc (clockwise from 12 o'clock)
+        if val is not None and val > 0.0:
+            fg_col = get_sys_ring_color(val, base_col)
+            pen_fg = QPen(fg_col, stroke, Qt.SolidLine, Qt.RoundCap)
+            p.setPen(pen_fg)
+            span_angle = -int(round((val / 100.0) * 360.0 * 16.0))
+            p.drawArc(arc_rect, 90 * 16, span_angle)
+
+        # 3. Percentage number centred inside (no % sign, '–' for missing/err)
+        p.setFont(f_num)
+        p.setPen(COLOR_TXT_PRIMARY)
+        num_str = f"{int(round(val))}" if val is not None else "–"
+        text_rect = QRectF(cx - r, cy - r - 0.5, 2.0 * r, 2.0 * r)
+        p.drawText(text_rect, Qt.AlignCenter, num_str)
 
     p.restore()
 
