@@ -172,7 +172,7 @@ def test_helpers_dpr_and_hit_rects() -> None:
             p,
             tg1_rect,
             "Wi-Fi",
-            "Karatasli_5G",
+            "Ev_Agi_5G",
             icon=lambda qp, r: qp.fillRect(r, ps.ACCENT),
             state="on",
             hover_part="main",
@@ -391,7 +391,7 @@ def generate_self_check_sheet() -> Path:
     ps.draw_ring_with_text(p, cx_ram, ring_cy, 74, ps.RAM, sub="Bellek", meta="11,6 / 15,7 GB")
     y += rings_card_h + ps.GAP
 
-    # 4. Two toggle buttons Wi-Fi 'Karatasli_5G' on and Bluetooth 'Kapalı' off
+    # 4. Two toggle buttons Wi-Fi 'Ev_Agi_5G' on and Bluetooth 'Kapalı' off
     toggles_card_rect = QRectF(x0, y, cw, toggles_card_h)
     tg_inner = ps.draw_card(p, toggles_card_rect, overline="Hızlı Anahtarlar")
     tg_gap = 8.0
@@ -402,7 +402,7 @@ def generate_self_check_sheet() -> Path:
         p,
         w_rect,
         "Wi-Fi",
-        "Karatasli_5G",
+        "Ev_Agi_5G",
         icon=_draw_wifi_icon,
         state="on",
         has_chevron=True,

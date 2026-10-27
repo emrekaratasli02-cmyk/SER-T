@@ -33,7 +33,7 @@ BAT_ON = {"present": True, "percent": 63, "plugged": False, "charging": False, "
           "rate_w": 58.2, "full_mwh": 48686, "design_mwh": 61538, "capacity_pct": 79, "source": "Windows"}
 BAT_CHG = dict(BAT_ON, percent=30, plugged=True, charging=True, secs_left=None, rate_w=46.0)
 BAT_LOW = dict(BAT_ON, percent=15, rate_w=12.0)
-WIFI_ON = {"available": True, "on": True, "connected": True, "ssid": "Karatasli_5G", "signal": 81}
+WIFI_ON = {"available": True, "on": True, "connected": True, "ssid": "Ev_Agi_5G", "signal": 81}
 WIFI_OFF = {"available": True, "on": False, "connected": False, "ssid": None, "signal": None}
 BT_ON = {"available": True, "on": True, "connected_count": 0}
 BT_OFF = {"available": True, "on": False, "connected_count": 0}
@@ -140,7 +140,7 @@ def test_panel_states_and_renders():
     assert battery_panel.chip_text(BAT_CHG) == "Şarj oluyor"
     assert battery_panel.chip_text(BAT_LOW) == "Düşük pil"
     assert cases["wifi_off"]._toggle_texts("wifi") == ("Wi-Fi", "Kapalı")
-    assert cases["on_battery"]._toggle_texts("wifi") == ("Karatasli_5G", "Sinyal %81")
+    assert cases["on_battery"]._toggle_texts("wifi") == ("Ev_Agi_5G", "Sinyal %81")
     assert cases["bt_unavailable"]._toggle_texts("bluetooth") == ("Bluetooth", "Kullanılamıyor")
     assert cases["busy"]._toggle_texts("wifi")[1] == "Kapatılıyor…"
     assert battery_panel.fmt_mwh(48686) == "48.686"

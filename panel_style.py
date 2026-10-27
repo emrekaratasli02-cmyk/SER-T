@@ -93,7 +93,7 @@ ANCHOR_GAP = 8.0      # panel ile şerit arası
 
 # 27 Eki 2026: tek sütunlu tüm paneller aynı genişlikte (kapsülde geçerken kenar oynamasın); takvim ızgara olduğu için geniş
 PANEL_W = 352
-WIDTH = {"mail": PANEL_W, "cal": 440, "claude": PANEL_W, "ag": PANEL_W, "sys": PANEL_W, "bright": PANEL_W, "vol": PANEL_W, "bat": PANEL_W}
+WIDTH = {"mail": PANEL_W, "cal": 440, "claude": PANEL_W, "ag": PANEL_W, "sys": PANEL_W, "bright": PANEL_W, "vol": PANEL_W, "bat": PANEL_W, "tray": PANEL_W, "wx": PANEL_W, "fx": PANEL_W}
 
 FONT_FAMILY = "Segoe UI Variable Text"
 

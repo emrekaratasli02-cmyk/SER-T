@@ -37,7 +37,7 @@ There is 1 interface on the system:
     Physical address       : 40:c7:3c:99:b8:a3
     Interface type         : Primary
     State                  : connected
-    SSID                   : Karatasli_5G
+    SSID                   : Ev_Agi_5G
     AP BSSID               : 6c:e8:73:5d:31:25
     Band                   : 5 GHz
     Channel                : 36
@@ -50,7 +50,7 @@ There is 1 interface on the system:
     Transmit rate (Mbps)   : 468
     Signal                 : 61%
     Rssi                   : -68
-    Profile                : Karatasli_5G
+    Profile                : Ev_Agi_5G
 """
 
 NETSH_TR_CONNECTED = """
@@ -111,7 +111,7 @@ def test_netsh_parser() -> None:
         "available": True,
         "on": True,
         "connected": True,
-        "ssid": "Karatasli_5G",
+        "ssid": "Ev_Agi_5G",
         "signal": 61,
     }, f"Unexpected EN connected result: {r_en}"
 

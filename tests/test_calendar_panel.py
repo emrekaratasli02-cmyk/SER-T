@@ -41,7 +41,7 @@ ANCHOR = QRectF(500, 800, 120, 40)
 
 STUB_EVENTS = [
     {
-        "title": "💸 Vergi: Eylül KDV son gün – 791,00 TL",
+        "title": "💸 Vergi: Örnek KDV son gün – 1.234,56 TL",
         "start": dt.date(2026, 10, 28),
         "end": dt.date(2026, 10, 29),
         "all_day": True,
@@ -124,7 +124,7 @@ def test_category_classification() -> None:
     tax_cases = [
         "💸 Vergi: Örnek gelir vergisi son gün – 1.234,56 TL",
         "💸 Vergi: Örnek KDV öde – 456,70 TL (GECİKMEDE)",
-        "Eylül KDV son gün – 791,00 TL",
+        "Örnek KDV son gün – 1.234,56 TL",
         "SGK prim borcu son ödeme",
         "İnternet faturası öde",
         "Kira ödemesi",
@@ -313,7 +313,7 @@ def test_design_contract() -> None:
     assert "Resmi tatil" in cats and "Vergi/ödeme" in cats
     tax_row = [s for s in panel._cached_selected_events if s["category"] == "Vergi/ödeme"][0]
     assert tax_row["strip_color"] == panel_style.WARN
-    assert tax_row["amount"] == "791,00 TL"
+    assert tax_row["amount"] == "1.234,56 TL"
 
     # Upcoming rows use the same 3 x 28 px strip colors (no round dot field).
     assert len(panel._cached_upcoming) == 4

@@ -32,7 +32,7 @@ NOW = dt.datetime(2026, 10, 27, 20, 35, tzinfo=LOCAL_TZ)
 ANCHOR = QRectF(500, 800, 120, 32)
 
 TAX_EVENT = {
-    "title": "💸 Vergi: Eylül KDV son gün – 791,00 TL",
+    "title": "💸 Vergi: Örnek KDV son gün – 1.234,56 TL",
     "start": dt.date(2026, 10, 28),
     "end": dt.date(2026, 10, 29),
     "all_day": True,
@@ -84,12 +84,12 @@ def click(panel: cp.CalendarPanel, pt) -> None:
 
 
 def test_amount_parser() -> None:
-    assert cp.parse_turkish_amount("Eylül KDV son gün – 791,00 TL") == "791,00"
+    assert cp.parse_turkish_amount("Örnek KDV son gün – 1.234,56 TL") == "1.234,56"
     assert cp.parse_turkish_amount("Kira 6.432,80 TL") == "6.432,80"
     assert cp.parse_turkish_amount("1.234,56 TL ödendi") == "1.234,56"
     assert cp.parse_turkish_amount("Tutar yok") is None
-    assert cp.parse_turkish_amount("791,00") is None            # TL olmadan None
-    assert cp.parse_turkish_amount("791,00 USD") is None
+    assert cp.parse_turkish_amount("1.234,56") is None            # TL olmadan None
+    assert cp.parse_turkish_amount("1.234,56 USD") is None
     assert cp.parse_turkish_amount(None) is None
 
 
@@ -97,8 +97,8 @@ def test_chip_window_and_tax_only() -> None:
     # 28 Eki (now + ~3 sa): çip var
     panel = mk([TAX_EVENT] + OTHER_EVENTS)
     assert panel._tax_chip is not None
-    assert panel._tax_chip["amount"] == "791,00"
-    assert panel._tax_chip["label"] == "Eylül KDV son gün · 791,00 TL"
+    assert panel._tax_chip["amount"] == "1.234,56"
+    assert panel._tax_chip["label"] == "Örnek KDV son gün · 1.234,56 TL"
     panel.hide_instant()
     panel.close()
 
@@ -113,7 +113,7 @@ def test_chip_window_and_tax_only() -> None:
 
     # Vergi değil: kategori Google ve başlıkta anahtar kelime yok -> çip yok
     not_tax = {
-        "title": "Toplantı – 791,00 TL",
+        "title": "Toplantı – 1.234,56 TL",
         "start": dt.date(2026, 10, 28),
         "end": dt.date(2026, 10, 29),
         "all_day": True,
@@ -127,15 +127,15 @@ def test_chip_window_and_tax_only() -> None:
 
     # Kategori Google ama başlıkta KDV var -> çip var (mevcut kategori VEYA anahtar kelime)
     keyword_tax = dict(not_tax)
-    keyword_tax["title"] = "KDV ödemesi – 791,00 TL"
+    keyword_tax["title"] = "KDV ödemesi – 1.234,56 TL"
     panel = mk([keyword_tax])
-    assert panel._tax_chip is not None and panel._tax_chip["amount"] == "791,00"
+    assert panel._tax_chip is not None and panel._tax_chip["amount"] == "1.234,56"
     panel.hide_instant()
     panel.close()
 
     # Vergi ama tutar yok -> çip yok (tutar uydurulmaz)
     no_amount = {
-        "title": "💸 Vergi: Eylül KDV son gün",
+        "title": "💸 Vergi: Örnek KDV son gün",
         "start": dt.date(2026, 10, 28),
         "end": dt.date(2026, 10, 29),
         "all_day": True,
@@ -165,7 +165,7 @@ def test_chip_hit_test_and_test_clipboard_guard() -> None:
         cp.QGuiApplication.clipboard = orig_clip
 
     assert panel._tax_copied is True
-    assert cp._write_clipboard("791,00") is False              # testte gerçek yazma kapalı
+    assert cp._write_clipboard("1.234,56") is False              # testte gerçek yazma kapalı
     panel.hide_instant()
     panel.close()
 
