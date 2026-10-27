@@ -70,8 +70,12 @@ def test_helpers():
 
     # reset_clock tests
     # Today
-    now_today = now.replace(hour=16, minute=9, second=0).isoformat()
-    # Turkish time will be +3 hours -> 19:09
+    # "Bugün" yerel (İstanbul) güne göre kurulur; UTC günü 00:00-03:00 arası dünü gösterir
+    from sources import LOCAL_TZ
+    now_today = (dt.datetime.now(LOCAL_TZ)
+                 .replace(hour=19, minute=9, second=0, microsecond=0)
+                 .astimezone(dt.timezone.utc).isoformat())
+    # 16:09 UTC -> 19:09 TR (aynı yerel gün)
     assert reset_clock(now_today) == "19:09"
 
     # Future date
