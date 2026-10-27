@@ -445,13 +445,11 @@ def main() -> int:
     test_slider_value_at()
     test_helpers_dpr_and_hit_rects()
     test_none_values_draw_no_fill()
+    test_animate_in_out()
     out = generate_self_check_sheet()
     print(f"ALL test_panel_style checks passed. Self-check sheet: {out}")
     return 0
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())
 
 
 def test_animate_in_out() -> None:
@@ -486,5 +484,7 @@ def test_animate_in_out() -> None:
     print("[PASS] animate_in / animate_out")
 
 
+
 if __name__ == "__main__":
-    test_animate_in_out()
+    raise SystemExit(main())
+

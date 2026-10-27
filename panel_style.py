@@ -176,15 +176,13 @@ def animate_out(w, on_done=None, instant: bool = False) -> None:
     """Paneli ortak hareketle gizle: 115 ms, saydamlık 1->0 ve 4 px aşağı (InCubic), sonra hide().
 
     instant=True (ör. kapsülde başka bölüme geçiş) ya da animasyonlar kapalıysa anında gizler.
-    Gizledikten sonra konum ve saydamlık geri alınır; on_done() çağrılır.
+    Gizledikten sonra saydamlık 1'e döner (konumu bir sonraki animate_in zaten belirler); on_done() çağrılır.
     """
     from PySide6.QtCore import QEasingCurve, QParallelAnimationGroup, QPoint, QPropertyAnimation
     _stop_anim(w)
 
-    def _finish(orig=None) -> None:
+    def _finish() -> None:
         w.hide()
-        if orig is not None:
-            w.move(orig)
         w.setWindowOpacity(1.0)
         w._ps_anim = None
         if on_done is not None:
@@ -213,7 +211,7 @@ def animate_out(w, on_done=None, instant: bool = False) -> None:
     a_op.setEndValue(0.0)
     a_op.setEasingCurve(QEasingCurve.Type.InCubic)
     g.addAnimation(a_op)
-    g.finished.connect(lambda: _finish(orig))
+    g.finished.connect(_finish)
     w._ps_anim = g
     g.start()
 
