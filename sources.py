@@ -14,7 +14,9 @@ import httpx
 import psutil
 
 CRED_PATH = Path.home() / ".claude" / ".credentials.json"
-from logpath import CLAUDE_CACHE, LOG_PATH
+from logpath import get_claude_cache_path, LOG_PATH
+
+CLAUDE_CACHE = get_claude_cache_path()
 
 _EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=3)
 _IN_FLIGHT: set[str] = set()
@@ -327,7 +329,8 @@ _claude_cooldown_until = 0.0
 def _claude_cached(reason: str) -> Dict[str, Any]:
     """Son iyi Claude değerini döndür (kaynak satırında önbellek saati yazar); yoksa hata."""
     try:
-        c = json.loads(CLAUDE_CACHE.read_text(encoding="utf-8"))
+        cache_path = get_claude_cache_path()
+        c = json.loads(cache_path.read_text(encoding="utf-8"))
         at = dt.datetime.fromtimestamp(float(c.pop("cached_at"))).strftime("%H:%M")
         c["source"] = f"Anthropic · önbellek {at} ({reason})"
         return c
@@ -343,8 +346,9 @@ def fetch_claude() -> Dict[str, Any]:
     res = _fetch_claude_live()
     if "err" not in res:
         try:
-            CLAUDE_CACHE.write_text(json.dumps({**res, "cached_at": time.time()}, ensure_ascii=False),
-                                    encoding="utf-8")
+            cache_path = get_claude_cache_path()
+            cache_path.write_text(json.dumps({**res, "cached_at": time.time()}, ensure_ascii=False),
+                                  encoding="utf-8")
         except OSError:
             pass
         return res

@@ -382,85 +382,151 @@ def draw_media_card(
     p.drawText(QRectF(bx, by + 18.0, bw, 16.0), Qt.AlignLeft | Qt.AlignVCenter, elided_sub)
     p.restore()
 
-    # Controls: prev (30px circle), play/pause (32px circle), next (30px circle)
-    # Gap 6px, aligned vertically
+    # Controls: prev (glyph), play/pause with B3 track progress ring (32x32), next (glyph)
+    # B3 Mockup:
+    #   Gap: 8px, aligned vertically
+    #   Prev/Next: plain glyphs without circles, color rgba(255,255,255,0.55), 14x14 icon in 20x20 viewBox
+    #   Play/Pause: 32x32 center area with circular progress ring:
+    #     - Track circle: r=13, stroke rgba(255,255,255,0.12), width 2
+    #     - Progress arc: r=13, stroke #0A84FF, width 2, stroke-linecap round
+    #       drawn only if duration > 0 and position is known; otherwise no progress arc.
+    #     - Center icon: play / pause in white, scaled to fit inside r=13 circle
     cy = rect.center().y()
 
-    r_prev = QRectF(ctrl_x, cy - 15.0, 30.0, 30.0)
-    r_play = QRectF(ctrl_x + 30.0 + 6.0, cy - 16.0, 32.0, 32.0)
-    r_next = QRectF(ctrl_x + 30.0 + 6.0 + 32.0 + 6.0, cy - 15.0, 30.0, 30.0)
+    # Hit targets: prev (24x28), play (32x32), next (24x28)
+    # We place play at ctrl_x + 24.0 + 8.0
+    r_prev = QRectF(ctrl_x, cy - 14.0, 24.0, 28.0)
+    r_play = QRectF(ctrl_x + 24.0 + 8.0, cy - 16.0, 32.0, 32.0)
+    r_next = QRectF(ctrl_x + 24.0 + 8.0 + 32.0 + 8.0, cy - 14.0, 24.0, 28.0)
 
-    # Prev button
+    # 1. Prev button (plain glyph without circle)
+    # SVG viewBox 0 0 20 20: <path d="M4.5 4a1 1 0 0 1 1 1v10a1 1 0 1 1-2 0V5a1 1 0 0 1 1-1zm11.2 1.4a1 1 0 0 0-1.5-.86l-7 4.5a1 1 0 0 0 0 1.72l7 4.5A1 1 0 0 0 16 14.4V5.4z"/>
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
-    prev_bg = QColor(255, 255, 255, int(255 * 0.17)) if hovered_control == "prev" else COLOR_MEDIA_BTN_BG
-    p.setPen(Qt.NoPen)
-    p.setBrush(prev_bg)
-    p.drawEllipse(r_prev)
+    prev_col = QColor(255, 255, 255) if hovered_control == "prev" else QColor(255, 255, 255, int(255 * 0.55))
+    if hovered_control == "prev":
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
+        p.drawRoundedRect(r_prev, 6.0, 6.0)
 
-    # Prev glyph (<svg viewBox="0 0 24 24"><path d="M7 6h2v12H7zM20 6v12l-9-6z"/></svg>)
-    pcx = r_prev.center().x()
-    pcy = r_prev.center().y()
-    p.translate(pcx, pcy)
-    p.scale(13.0 / 24.0, 13.0 / 24.0)
-    p.translate(-12.0, -12.0)
-    p.setBrush(Qt.white)
+    p.translate(r_prev.center().x(), r_prev.center().y())
+    p.scale(14.0 / 20.0, 14.0 / 20.0)
+    p.translate(-10.0, -10.0)
+    p.setPen(Qt.NoPen)
+    p.setBrush(prev_col)
+
     path_prev = QPainterPath()
-    path_prev.addRect(QRectF(7, 6, 2, 12))
-    path_prev.moveTo(20, 6)
-    path_prev.lineTo(20, 18)
-    path_prev.lineTo(11, 12)
+    # bar: M4.5 4a1 1 0 0 1 1 1v10a1 1 0 1 1-2 0V5a1 1 0 0 1 1-1z -> rounded rect 2x12 at (3.5, 4) rx=1
+    path_prev.addRoundedRect(QRectF(3.5, 4.0, 2.0, 12.0), 1.0, 1.0)
+    # triangle: M15.7 5.4a1 1 0 0 0-1.5-.86l-7 4.5a1 1 0 0 0 0 1.72l7 4.5A1 1 0 0 0 16 14.4V5.4z
+    path_prev.moveTo(15.7, 5.4)
+    path_prev.lineTo(8.7, 9.9)
+    path_prev.lineTo(8.7, 10.1)
+    path_prev.lineTo(15.7, 14.6)
     path_prev.closeSubpath()
     p.drawPath(path_prev)
     p.restore()
 
-    # Play/Pause button
+    # 2. Play/Pause button with B3 progress ring
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
-    play_bg = QColor("#2b95ff") if hovered_control == "playpause" else COLOR_MEDIA_PLAY_BG
-    p.setPen(Qt.NoPen)
-    p.setBrush(play_bg)
-    p.drawEllipse(r_play)
 
     pcx = r_play.center().x()
     pcy = r_play.center().y()
+    ring_radius = 13.0
+
+    # Hover background under ring
+    if hovered_control == "playpause":
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
+        p.drawEllipse(r_play)
+
+    # Ring Track: circle cx=16, cy=16, r=13, fill=none, stroke rgba(255,255,255,0.12), stroke-width 2
+    track_pen = QPen(QColor(255, 255, 255, int(255 * 0.14)), 2.0, Qt.SolidLine, Qt.RoundCap)
+    p.setPen(track_pen)
+    p.setBrush(Qt.NoBrush)
+    ring_rect = QRectF(pcx - ring_radius, pcy - ring_radius, ring_radius * 2.0, ring_radius * 2.0)
+    p.drawEllipse(ring_rect)
+
+    # Progress Arc:
+    # Only draw if duration_s is known and > 0.
+    # Calculate progress fraction (0.0 .. 1.0).
+    pos_s = media_info.get("position_s")
+    dur_s = media_info.get("duration_s")
+    progress_frac: Optional[float] = None
+    if dur_s is not None and float(dur_s) > 0.0:
+        d_val = float(dur_s)
+        p_val = float(pos_s) if pos_s is not None else 0.0
+        # Interpolate if playing and updated_at available
+        if playing and "updated_at" in media_info and media_info["updated_at"]:
+            try:
+                import time
+                elapsed = max(0.0, time.monotonic() - float(media_info["updated_at"]))
+                p_val += elapsed
+            except Exception:
+                pass
+        progress_frac = max(0.0, min(1.0, p_val / d_val))
+
+    if progress_frac is not None and progress_frac > 0.0:
+        # Accent #0A84FF, stroke-width 2, round cap
+        # In Qt drawArc, start angle 90 degrees is 12 o'clock (90 * 16).
+        # Span angle is negative for clockwise direction (-360 * fraction * 16).
+        arc_pen = QPen(QColor("#0A84FF"), 2.0, Qt.SolidLine, Qt.RoundCap)
+        p.setPen(arc_pen)
+        start_angle = 90 * 16
+        span_angle = -int(round(progress_frac * 360.0 * 16.0))
+        p.drawArc(ring_rect, start_angle, span_angle)
+
+    # Center Play / Pause Icon
+    # SVG viewBox 0 0 20 20, white
+    p.save()
     p.translate(pcx, pcy)
-    p.scale(13.0 / 24.0, 13.0 / 24.0)
-    p.translate(-12.0, -12.0)
+    p.scale(16.0 / 20.0, 16.0 / 20.0)
+    p.translate(-10.0, -10.0)
+    p.setPen(Qt.NoPen)
     p.setBrush(Qt.white)
+
     path_pp = QPainterPath()
     if playing:
-        # Pause: two vertical bars M7 5h4v14H7z M13 5h4v14h-4z
-        path_pp.addRect(QRectF(7, 5, 4, 14))
-        path_pp.addRect(QRectF(13, 5, 4, 14))
+        # Pause: two vertical rounded bars:
+        # <rect x="5.2" y="4" width="3.4" height="12" rx="1.7"/>
+        # <rect x="11.4" y="4" width="3.4" height="12" rx="1.7"/>
+        path_pp.addRoundedRect(QRectF(5.2, 4.0, 3.4, 12.0), 1.7, 1.7)
+        path_pp.addRoundedRect(QRectF(11.4, 4.0, 3.4, 12.0), 1.7, 1.7)
     else:
-        # Play: triangle M8 5v14l11-7z
-        path_pp.moveTo(8, 5)
-        path_pp.lineTo(8, 19)
-        path_pp.lineTo(19, 12)
+        # Play: smooth triangle: M7 4.5v11l9-5.5z
+        path_pp.moveTo(7.0, 4.5)
+        path_pp.lineTo(7.0, 15.5)
+        path_pp.lineTo(16.0, 10.0)
         path_pp.closeSubpath()
     p.drawPath(path_pp)
     p.restore()
+    p.restore()
 
-    # Next button
+    # 3. Next button (plain glyph without circle)
+    # SVG viewBox 0 0 20 20: <path d="M15.5 4a1 1 0 0 1 1 1v10a1 1 0 1 1-2 0V5a1 1 0 0 1 1-1zM4.3 5.4a1 1 0 0 1 1.5-.86l7 4.5a1 1 0 0 1 0 1.72l-7 4.5A1 1 0 0 1 4.3 14.4V5.4z"/>
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
-    next_bg = QColor(255, 255, 255, int(255 * 0.17)) if hovered_control == "next" else COLOR_MEDIA_BTN_BG
-    p.setPen(Qt.NoPen)
-    p.setBrush(next_bg)
-    p.drawEllipse(r_next)
+    next_col = QColor(255, 255, 255) if hovered_control == "next" else QColor(255, 255, 255, int(255 * 0.55))
+    if hovered_control == "next":
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
+        p.drawRoundedRect(r_next, 6.0, 6.0)
 
-    pcx = r_next.center().x()
-    pcy = r_next.center().y()
-    p.translate(pcx, pcy)
-    p.scale(13.0 / 24.0, 13.0 / 24.0)
-    p.translate(-12.0, -12.0)
-    p.setBrush(Qt.white)
+    p.translate(r_next.center().x(), r_next.center().y())
+    p.scale(14.0 / 20.0, 14.0 / 20.0)
+    p.translate(-10.0, -10.0)
+    p.setPen(Qt.NoPen)
+    p.setBrush(next_col)
+
     path_next = QPainterPath()
-    path_next.addRect(QRectF(15, 6, 2, 12))
-    path_next.moveTo(4, 6)
-    path_next.lineTo(4, 18)
-    path_next.lineTo(13, 12)
+    # bar at right: rounded rect 2x12 at (14.5, 4) rx=1
+    path_next.addRoundedRect(QRectF(14.5, 4.0, 2.0, 12.0), 1.0, 1.0)
+    # triangle pointing right:
+    path_next.moveTo(4.3, 5.4)
+    path_next.lineTo(11.3, 9.9)
+    path_next.lineTo(11.3, 10.1)
+    path_next.lineTo(4.3, 14.6)
     path_next.closeSubpath()
     p.drawPath(path_next)
     p.restore()
@@ -1249,6 +1315,135 @@ def draw_clock_block(
 # ==============================================================================
 # 7. QUICK ACTION BUTTONS & TRAY CLUSTER
 # ==============================================================================
+
+def draw_quick_settings_pill(
+    p: QPainter,
+    rect: QRectF,
+    hovered_part: Optional[str] = None,
+    active_part: Optional[str] = None,
+    vol_level: float = 100.0,
+    vol_muted: bool = False,
+) -> Tuple[QRectF, QRectF]:
+    """Draw A4 combined quick settings pill (74x32) containing sun (left) and speaker (right).
+
+    Mockup spec:
+      - Container: height 32px, border-radius 10px, background rgba(255,255,255,0.065), border 1px solid rgba(255,255,255,0.08)
+      - Left half (sun hit area) & Right half (speaker hit area)
+      - Hovered part: rgba(255,255,255,0.10), Active part: rgba(255,255,255,0.15), radius 6px
+      - Thin vertical separator at center: 1px wide, 14px high, rgba(255,255,255,0.14)
+      - Fluent style icons: 16x16 glyphs in 20x20 viewBox, stroke 1.6 roundcap
+    Returns (r_sun, r_spk).
+    """
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+
+    # 1. Pill container
+    p.setPen(QPen(QColor(255, 255, 255, int(255 * 0.08)), 1.0))
+    p.setBrush(QColor(255, 255, 255, int(255 * 0.065)))
+    p.drawRoundedRect(rect, 10.0, 10.0)
+
+    # 2. Divide pill into two equal halves for hit testing & hover
+    mid_x = rect.x() + rect.width() / 2.0
+    r_sun = QRectF(rect.x(), rect.y(), rect.width() / 2.0, rect.height())
+    r_spk = QRectF(mid_x, rect.y(), rect.width() / 2.0, rect.height())
+
+    # Left / right hover/active inner rounded rects (inset 3px for 26x26 feel)
+    r_sun_inner = r_sun.adjusted(3.0, 3.0, -2.0, -3.0)
+    r_spk_inner = r_spk.adjusted(2.0, 3.0, -3.0, -3.0)
+
+    # Sun part background
+    if active_part == "bright":
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * 0.15)))
+        p.drawRoundedRect(r_sun_inner, 6.0, 6.0)
+    elif hovered_part == "bright":
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
+        p.drawRoundedRect(r_sun_inner, 6.0, 6.0)
+
+    # Speaker part background
+    if active_part == "vol":
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * 0.15)))
+        p.drawRoundedRect(r_spk_inner, 6.0, 6.0)
+    elif hovered_part == "vol":
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
+        p.drawRoundedRect(r_spk_inner, 6.0, 6.0)
+
+    # 3. Vertical divider (1px wide, 14px high, rgba(255,255,255,0.14))
+    div_y = rect.center().y() - 7.0
+    p.setPen(QColor(255, 255, 255, int(255 * 0.14)))
+    p.drawLine(QPointF(mid_x, div_y), QPointF(mid_x, div_y + 14.0))
+
+    # 4. Draw Sun glyph (centered in r_sun)
+    # Fluent Sun: viewBox 0 0 20 20, center (10,10) r=3.6, 8 radial lines
+    sun_col = QColor(255, 255, 255) if (hovered_part == "bright" or active_part == "bright") else QColor(255, 255, 255, int(255 * 0.85))
+    p.save()
+    p.translate(r_sun.center().x(), r_sun.center().y())
+    p.scale(16.0 / 20.0, 16.0 / 20.0)
+    p.translate(-10.0, -10.0)
+    pen_sun = QPen(sun_col, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.setPen(pen_sun)
+    p.setBrush(Qt.NoBrush)
+    p.drawEllipse(QRectF(10.0 - 3.6, 10.0 - 3.6, 7.2, 7.2))
+    p.drawLine(QPointF(10.0, 2.0), QPointF(10.0, 4.2))
+    p.drawLine(QPointF(10.0, 15.8), QPointF(10.0, 18.0))
+    p.drawLine(QPointF(2.0, 10.0), QPointF(4.2, 10.0))
+    p.drawLine(QPointF(15.8, 10.0), QPointF(18.0, 10.0))
+    p.drawLine(QPointF(4.34, 4.34), QPointF(5.9, 5.9))
+    p.drawLine(QPointF(14.1, 14.1), QPointF(15.66, 15.66))
+    p.drawLine(QPointF(4.34, 15.66), QPointF(5.9, 14.1))
+    p.drawLine(QPointF(14.1, 5.9), QPointF(15.66, 4.34))
+    p.restore()
+
+    # 5. Draw Speaker glyph (centered in r_spk)
+    # Fluent Speaker: viewBox 0 0 20 20, path d="M4 7.2h2.8l4.2-3.7v13l-4.2-3.7H4V7.2z" fill="currentColor"
+    # Waves: arc 1: M14.2 6.5c1.6 1.8 1.6 4.8 0 6.6
+    #        arc 2: M16.6 4.2c2.8 3.1 2.8 7.9 0 11
+    spk_col = QColor(255, 255, 255) if (hovered_part == "vol" or active_part == "vol") else QColor(255, 255, 255, int(255 * 0.85))
+    p.save()
+    p.translate(r_spk.center().x(), r_spk.center().y())
+    p.scale(16.0 / 20.0, 16.0 / 20.0)
+    p.translate(-10.0, -10.0)
+    pen_spk = QPen(spk_col, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.setPen(pen_spk)
+    p.setBrush(spk_col)
+
+    spk_body = QPainterPath()
+    spk_body.moveTo(4.0, 7.2)
+    spk_body.lineTo(6.8, 7.2)
+    spk_body.lineTo(11.0, 3.5)
+    spk_body.lineTo(11.0, 16.5)
+    spk_body.lineTo(6.8, 12.8)
+    spk_body.lineTo(4.0, 12.8)
+    spk_body.closeSubpath()
+    p.drawPath(spk_body)
+
+    if vol_muted:
+        # Diagonal slash across speaker
+        p.setBrush(Qt.NoBrush)
+        p.drawLine(QPointF(3.0, 3.0), QPointF(17.0, 17.0))
+    else:
+        p.setBrush(Qt.NoBrush)
+        lvl = max(0.0, min(100.0, float(vol_level)))
+        if lvl > 0.0:
+            # 1 sound wave: M14.2 6.5c1.6 1.8 1.6 4.8 0 6.6
+            w1 = QPainterPath()
+            w1.moveTo(14.2, 6.5)
+            w1.cubicTo(15.8, 8.3, 15.8, 11.3, 14.2, 13.1)
+            p.drawPath(w1)
+        if lvl >= 50.0:
+            # 2nd sound wave: M16.6 4.2c2.8 3.1 2.8 7.9 0 11
+            w2 = QPainterPath()
+            w2.moveTo(16.6, 4.2)
+            w2.cubicTo(19.4, 7.3, 19.4, 12.1, 16.6, 15.2)
+            p.drawPath(w2)
+    p.restore()
+
+    p.restore()
+    return (r_sun, r_spk)
+
 
 def draw_action_button(
     p: QPainter,

@@ -134,7 +134,7 @@ def test_band_layout_order_and_edge_padding() -> None:
     assert r_media.right() < r_cal.left()
     assert r_cal.right() < r_chv.left()
     assert r_chv.right() < r_sun.left()
-    assert r_sun.right() < r_spk.left()
+    assert abs(r_sun.right() - r_spk.left()) <= 0.001  # A4: merged into one pill
     assert r_spk.right() < r_clock.left()
 
     # Weather is attached to the left of clock text within the clock block

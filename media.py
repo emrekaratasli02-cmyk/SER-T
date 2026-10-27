@@ -422,6 +422,32 @@ _cached_winrt_mgr = None
 _WINRT_NOW_PLAYING_ENABLED = True
 
 
+
+def timeline_now(position, start_time, end_time, last_updated, playing: bool,
+                 now_utc: Optional[datetime.datetime] = None) -> Tuple[Optional[float], Optional[float]]:
+    """WinRT zaman çizelgesini 'şu an'a çevir: (konum_sn, süre_sn).
+
+    Windows konumu SON GÜNCELLEME anındaki haliyle verir (27 Eki 2026 ölçümü: konum 3:03,
+    last_updated 10 dk önce). Çalıyorsa geçen süre eklenir; süre bilinmiyorsa (0) None döner,
+    uydurma ilerleme gösterilmez.
+    """
+    def secs(td) -> Optional[float]:
+        return float(td.total_seconds()) if td is not None and hasattr(td, "total_seconds") else None
+    start = secs(start_time) or 0.0
+    end = secs(end_time)
+    pos = secs(position)
+    dur = (end - start) if end is not None else None
+    if dur is None or dur <= 0.0:
+        return (None, None)
+    if pos is None:
+        return (None, dur)
+    pos -= start
+    if playing and isinstance(last_updated, datetime.datetime) and last_updated.year > 1601:
+        now = now_utc or datetime.datetime.now(datetime.timezone.utc)
+        lu = last_updated if last_updated.tzinfo else last_updated.replace(tzinfo=datetime.timezone.utc)
+        pos += max(0.0, (now - lu).total_seconds())
+    return (min(max(0.0, pos), dur), dur)
+
 def clean_media_title(title: str) -> str:
     """Tarayıcı sekme başlığını okunur hale getirir.
     'The Mentalist 2. Sezon 17. Bölüm izle | Hdfilmcehennemi' -> 'The Mentalist · 2. Sezon 17. Bölüm'."""
@@ -482,10 +508,31 @@ def _now_playing_winrt() -> Optional[Dict[str, object]]:
         else:
             cleaned_artist = raw_artist
 
-        return {"title": clean_media_title(title), "artist": cleaned_artist,
-                "app": _WINRT_APP_NAMES.get(key, aumid.split("!")[0] or "Medya"),
-                "exe": aumid, "playing": status == 4, "status": status,
-                "session_exes": [], "source": "Windows medya oturumu"}
+        pos_s: Optional[float] = None
+        dur_s: Optional[float] = None
+        try:
+            tl = s.get_timeline_properties()
+            if tl is not None:
+                pos_s, dur_s = timeline_now(
+                    getattr(tl, "position", None), getattr(tl, "start_time", None),
+                    getattr(tl, "end_time", None), getattr(tl, "last_updated_time", None),
+                    playing=(status == 4))
+        except Exception as tl_exc:
+            _log(f"timeline read: {tl_exc}")
+
+        return {
+            "title": clean_media_title(title),
+            "artist": cleaned_artist,
+            "app": _WINRT_APP_NAMES.get(key, aumid.split("!")[0] or "Medya"),
+            "exe": aumid,
+            "playing": status == 4,
+            "status": status,
+            "session_exes": [],
+            "source": "Windows medya oturumu",
+            "position_s": pos_s,
+            "duration_s": dur_s,
+            "updated_at": time.monotonic(),
+        }
 
     # WinRT bazen hiç dönmüyor (açılışta bar'ı kilitliyordu): ayrı iş parçacığında, 1.5 sn sınırla çalıştır.
     import threading

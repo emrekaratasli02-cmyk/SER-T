@@ -362,7 +362,7 @@ def test_paint_benchmark_and_snapshots() -> None:
 
     # Load real ay.json data
     real_month = sources.fetch_month_calendar()
-    real_claude = sources.fetch_claude()
+    real_claude = {"pct": 20, "resets_at": "2026-10-31T00:00:00Z"}
 
     # Benchmark paint performance
     panel.show_for(QRectF(500, 800, 120, 40), real_month, real_claude)

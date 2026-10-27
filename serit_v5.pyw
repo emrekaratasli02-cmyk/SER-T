@@ -149,9 +149,11 @@ SYS_CARD_WIDTH: float = 96.0
 MARKET_CARD_WIDTH: float = 160.0
 CLOCK_BLOCK_WIDTH: float = 70.0
 TRAY_COLUMN_WIDTH: float = 32.0
-ACTION_BUTTONS_WIDTH: float = 96.0
+ACTION_BUTTONS_WIDTH: float = 110.0
 ACTION_BTN_SIZE: float = 30.0
-ACTION_BTN_GAP: float = 3.0
+ACTION_BTN_GAP: float = 6.0
+ACTION_PILL_WIDTH: float = 74.0
+ACTION_PILL_HEIGHT: float = 32.0
 TRAY_ICON_SIZE: float = 26.0
 TRAY_ICON_GAP: float = 2.0
 
@@ -497,6 +499,7 @@ class SeritDock(QWidget):
         self._pressed_key: Optional[str] = None
         self._icon_cache = LRUCache(128)
         self._clock_rect: Optional[QRectF] = None
+        self._media_rect: Optional[QRectF] = None
         self._tray_items: List[Dict[str, Any]] = []
         self._tray_icons: Dict[str, QPixmap] = {}
 
@@ -868,6 +871,13 @@ class SeritDock(QWidget):
         self.media_timer.start()
         self.submit_fetch("media")
 
+        # Media progress ring smooth update timer (2 Hz / 500 ms)
+        # Repaints only the play button rect while playing with known duration, near-zero CPU.
+        self.media_ring_timer = QTimer(self)
+        self.media_ring_timer.setInterval(500)
+        self.media_ring_timer.timeout.connect(self._on_media_ring_tick)
+        self.media_ring_timer.start()
+
         # Top processes polling timer (60 s)
         self.top_timer = QTimer(self)
         self.top_timer.setInterval(60000)
@@ -1025,6 +1035,19 @@ class SeritDock(QWidget):
             self.update(self._clock_rect.toRect().adjusted(-2, -2, 2, 2))
         else:
             self.update()
+
+    def _on_media_ring_tick(self) -> None:
+        """Repaint only the media play button rect for smooth ring progression (~2 fps, near-zero CPU)."""
+        if not self._now_playing_info or not self._now_playing_info.get("playing"):
+            return
+        dur = self._now_playing_info.get("duration_s")
+        if dur is None or float(dur) <= 0.0:
+            return
+        if self._media_hit_rects and "playpause" in self._media_hit_rects:
+            r_play = self._media_hit_rects["playpause"]
+            self.update(r_play.toRect().adjusted(-3, -3, 3, 3))
+        elif self._media_rect is not None:
+            self.update(self._media_rect.toRect())
 
     def _poll_media_and_volume(self) -> None:
         """Poll media in background worker."""
@@ -1575,6 +1598,7 @@ class SeritDock(QWidget):
             cur_rw_x = final_apps_x + w_apps + (GAP_MODULE if (w_apps > 0) else 0.0)
             if has_media:
                 r_media = QRectF(cur_rw_x, card_y, media_w, card_h)
+                self._media_rect = r_media
                 self.hit_boxes.append((r_media, "media", self._now_playing_info))
                 m_hover = (self._hover_key == "media")
                 m_press = self.press_tween.scale if (self._pressed_key == "media") else 1.0
@@ -1614,22 +1638,29 @@ class SeritDock(QWidget):
             if r_wx is not None:
                 self.hit_boxes.append((r_wx, "wx", None))
 
-            # Action buttons cluster: ^ chevron, brightness, volume
-            actions_w = ACTION_BUTTONS_WIDTH  # 96.0
+            # Action buttons cluster: ^ chevron (30x30), and A4 Quick Settings Pill (74x32)
+            actions_w = ACTION_BUTTONS_WIDTH  # 110.0
             actions_x = r_clock_x - GAP_MODULE - actions_w
             btn_y = card_y + (card_h - ACTION_BTN_SIZE) / 2.0
+            pill_y = card_y + (card_h - ACTION_PILL_HEIGHT) / 2.0
             tray_open = bool(self.tray_panel.is_open()) if self.tray_panel else bool(self.tray_popover.isVisible())
             bright_open = bool(self.brightness_popover.is_open())
             vol_open = bool(self.vol_popover.isVisible())
 
             r_chv = QRectF(actions_x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
-            r_sun = QRectF(actions_x + ACTION_BTN_SIZE + ACTION_BTN_GAP, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
-            r_spk = QRectF(actions_x + (ACTION_BTN_SIZE + ACTION_BTN_GAP) * 2, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
+            r_pill = QRectF(actions_x + ACTION_BTN_SIZE + ACTION_BTN_GAP, pill_y, ACTION_PILL_WIDTH, ACTION_PILL_HEIGHT)
 
             dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
-            dock_cards.draw_action_button(p, r_sun, "bright", hover=(self._hover_key == "bright"), active=bright_open)
-            dock_cards.draw_action_button(
-                p, r_spk, "vol", hover=(self._hover_key == "vol"), active=vol_open, vol_level=self._vol_level, vol_muted=self._vol_muted
+
+            hov_part = self._hover_key if self._hover_key in ("bright", "vol") else None
+            act_part = "bright" if bright_open else ("vol" if vol_open else None)
+            r_sun, r_spk = dock_cards.draw_quick_settings_pill(
+                p,
+                r_pill,
+                hovered_part=hov_part,
+                active_part=act_part,
+                vol_level=self._vol_level,
+                vol_muted=self._vol_muted,
             )
 
             self.hit_boxes.append((r_chv, "tray", None))
@@ -1762,20 +1793,27 @@ class SeritDock(QWidget):
                 self.hit_boxes.append((r_wx, "wx", None))
             x += w_clock + GAP_MODULE
 
-            # Action buttons
+            # Action buttons cluster: ^ chevron (30x30), and A4 Quick Settings Pill (74x32)
             btn_y = card_y + (card_h - ACTION_BTN_SIZE) / 2.0
+            pill_y = card_y + (card_h - ACTION_PILL_HEIGHT) / 2.0
             tray_open = bool(self.tray_panel.is_open()) if self.tray_panel else bool(self.tray_popover.isVisible())
             bright_open = bool(self.brightness_popover.is_open())
             vol_open = bool(self.vol_popover.isVisible())
 
             r_chv = QRectF(x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
-            r_sun = QRectF(x + ACTION_BTN_SIZE + ACTION_BTN_GAP, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
-            r_spk = QRectF(x + (ACTION_BTN_SIZE + ACTION_BTN_GAP) * 2, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
+            r_pill = QRectF(x + ACTION_BTN_SIZE + ACTION_BTN_GAP, pill_y, ACTION_PILL_WIDTH, ACTION_PILL_HEIGHT)
 
             dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
-            dock_cards.draw_action_button(p, r_sun, "bright", hover=(self._hover_key == "bright"), active=bright_open)
-            dock_cards.draw_action_button(
-                p, r_spk, "vol", hover=(self._hover_key == "vol"), active=vol_open, vol_level=self._vol_level, vol_muted=self._vol_muted
+
+            hov_part = self._hover_key if self._hover_key in ("bright", "vol") else None
+            act_part = "bright" if bright_open else ("vol" if vol_open else None)
+            r_sun, r_spk = dock_cards.draw_quick_settings_pill(
+                p,
+                r_pill,
+                hovered_part=hov_part,
+                active_part=act_part,
+                vol_level=self._vol_level,
+                vol_muted=self._vol_muted,
             )
 
             self.hit_boxes.append((r_chv, "tray", None))
