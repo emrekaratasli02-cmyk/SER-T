@@ -319,6 +319,8 @@ def test_link_click_mock() -> None:
         "category": "Google Takvim",
     }
     panel.show_for(QRectF(100, 600, 100, 40), {"events": [mock_event]}, {})
+    # Panel "bugün" ile açılır; test tarihten bağımsız olsun diye etkinliğin gününü seç
+    panel.select_date(dt.date(2026, 10, 26))
 
     # Mock QDesktopServices.openUrl
     orig_open_url = QDesktopServices.openUrl

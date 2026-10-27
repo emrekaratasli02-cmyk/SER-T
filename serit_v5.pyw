@@ -35,6 +35,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QColor,
     QFont,
     QFontMetricsF,
@@ -72,6 +73,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "pinned": None,
     "alerts_enabled": True,
     "reserve_space": True,
+    # "band" = tam genişlik koyu şerit (Lumabar "full width"), "pill" = ortada kapsül
+    "style": "band",
     "cards": {
         "sys": False,
         "fx": False,
@@ -649,6 +652,8 @@ class SeritDock(QWidget):
         # AppBar registered state
         self._appbar_registered: bool = False
         self._appbar_bottom_logical: Optional[int] = None
+        # Bant modunda kart grubunun (animasyonlu) genişliği; grup bu genişlikle ortalanır
+        self._content_w: float = 0.0
 
         # Proactive alerts engine & toast manager (normal mode only)
         alerts_enabled = bool(self.settings.get("alerts_enabled", True))
@@ -737,7 +742,9 @@ class SeritDock(QWidget):
                 return False
             screen = self.screen() or QGuiApplication.primaryScreen()
             dpr = float(screen.devicePixelRatio()) if screen else 1.0
-            appbar_h = int(round((DOCK_HEIGHT + 12 + 4) * dpr))  # dock + alt boşluk + 4 (mantıksal 80)
+            # Bant: tam 64 (şeridin kendisi). Kapsül: 64 + alt boşluk 12 + 4 = 80 (mantıksal)
+            logical_h = DOCK_HEIGHT if self._is_band() else (DOCK_HEIGHT + 12 + 4)
+            appbar_h = int(round(logical_h * dpr))
 
             abd.rc.left = mi.rcMonitor.left
             abd.rc.right = mi.rcMonitor.right
@@ -1057,6 +1064,14 @@ class SeritDock(QWidget):
         ab_bottom = getattr(self, "_appbar_bottom_logical", None)
         if getattr(self, "_appbar_registered", False) and ab_bottom is not None:
             geom.setBottom(int(ab_bottom))
+        if self._is_band():
+            # Tam genişlik şerit: ekranın soluna, sağına ve dibine yapışık
+            sg = screen.geometry() if screen else QRect(0, 0, 1536, 864)
+            if self.width() != sg.width() or self.height() != int(DOCK_HEIGHT):
+                self.resize(sg.width(), int(DOCK_HEIGHT))
+            self.move(sg.left(), int(geom.bottom() - DOCK_HEIGHT + 1))
+            return
+
         pos = self.settings.get("pos")
 
         if pos and len(pos) == 2:
@@ -1074,7 +1089,14 @@ class SeritDock(QWidget):
         clamped_y = max(geom.top(), min(target_y, geom.bottom() - int(DOCK_HEIGHT)))
         self.move(clamped_x, clamped_y)
 
+    def _is_band(self) -> bool:
+        return str(self.settings.get("style", "band")) != "pill"
+
     def _on_width_tween_update(self, val: float) -> None:
+        if self._is_band():
+            self._content_w = float(val)
+            self.update()
+            return
         curr_w = int(round(val))
         if curr_w != self.width() and self.isVisible():
             cx = self.x() + self.width() / 2.0
@@ -1131,6 +1153,19 @@ class SeritDock(QWidget):
         inner_gaps = max(0, n_items - 1) * GAP_MODULE
         total_w = int(math.ceil(6.0 * 2.0 + sum(items) + inner_gaps))
 
+        if self._is_band():
+            scr = self.screen() or QGuiApplication.primaryScreen()
+            sw = scr.geometry().width() if scr else 1536
+            if self.width() != sw or self.height() != int(DOCK_HEIGHT):
+                self.resize(sw, int(DOCK_HEIGHT))
+            if initial or self.preview_mode or not self.isVisible() or self._content_w <= 0:
+                self._content_w = float(total_w)
+                self.dock_width_tween.value = float(total_w)
+                self.dock_width_tween.target_val = float(total_w)
+            elif total_w != int(round(self.dock_width_tween.target_val)):
+                self.dock_width_tween.retarget(total_w)
+            return
+
         if initial or self.preview_mode or not self.isVisible():
             self.resize(total_w, int(DOCK_HEIGHT))
             self.dock_width_tween.value = float(total_w)
@@ -1159,11 +1194,19 @@ class SeritDock(QWidget):
         p.setRenderHint(QPainter.SmoothPixmapTransform)
 
         # 1. Physical Glass Capsule with Specular Rim & Grain (cached QPixmap)
-        r_dock = QRectF(0.5, 0.5, self.width() - 1.0, DOCK_HEIGHT - 1.0)
-        theme.draw_glass_capsule(p, r_dock, radius=DOCK_RADIUS)
+        if self._is_band():
+            # Tam genişlik koyu şerit (köşesiz) + üstte ince ayırıcı çizgi
+            p.fillRect(QRectF(0, 0, self.width(), DOCK_HEIGHT), QColor(13, 15, 19))
+            p.fillRect(QRectF(0, 0, self.width(), 1.0), QColor(255, 255, 255, 18))
+            cw = self._content_w if self._content_w > 0 else float(self.width())
+            x0 = float(max(0, int(round((self.width() - cw) / 2.0))))
+        else:
+            r_dock = QRectF(0.5, 0.5, self.width() - 1.0, DOCK_HEIGHT - 1.0)
+            theme.draw_glass_capsule(p, r_dock, radius=DOCK_RADIUS)
+            x0 = 0.0
 
         self.hit_boxes.clear()
-        x = 6.0  # inner padding 6px
+        x = x0 + 6.0  # inner padding 6px
         card_y = CARD_Y  # 6px from top
         card_h = CARD_HEIGHT  # 52px
 
@@ -1330,8 +1373,8 @@ class SeritDock(QWidget):
                     self._drag_tile_cur_x = pos.x()
                     return
 
-            # Check dock window dragging
-            if self._drag_start_pos:
+            # Check dock window dragging (bant ekrana sabit, sürüklenmez)
+            if self._drag_start_pos and not self._is_band():
                 delta = event.globalPosition().toPoint() - self._drag_start_pos
                 if not self._is_dragging and delta.manhattanLength() > 5:
                     self._is_dragging = True
@@ -1696,6 +1739,18 @@ class SeritDock(QWidget):
         act_refresh = menu.addAction("Yenile")
         act_refresh.triggered.connect(self.action_refresh)
 
+        menu.addSeparator()
+        style_group = QActionGroup(menu)
+        style_group.setExclusive(True)
+        for label, style in (("Tam genişlik şerit", "band"), ("Ortada kapsül", "pill")):
+            act_style = QAction(label, menu)
+            act_style.setCheckable(True)
+            act_style.setChecked((style == "band") == self._is_band())
+            act_style.triggered.connect(lambda _c=False, st=style: self.set_dock_style(st))
+            style_group.addAction(act_style)
+            menu.addAction(act_style)
+        menu.addSeparator()
+
         # Optional cards toggles (dock v3: sys, fx, cal)
         cards_cfg = dict(self.settings.get("cards") or {})
         
@@ -1799,6 +1854,18 @@ class SeritDock(QWidget):
                 winapi.taskbar_autohide_set(bool(orig))
                 self.settings["taskbar_original"] = None
             save_settings(self.settings)
+
+    def set_dock_style(self, style: str) -> None:
+        style = "pill" if style == "pill" else "band"
+        if str(self.settings.get("style", "band")) == style:
+            return
+        self.settings["style"] = style
+        save_settings(self.settings)
+        self._content_w = 0.0
+        self.compute_layout_and_resize(initial=True)
+        self._register_appbar()  # ayrılan alt alan: bant 64, kapsül 80
+        self.place_dock()
+        self.update()
 
     def action_reset_pos(self) -> None:
         self.settings["pos"] = None

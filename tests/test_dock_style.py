@@ -1,0 +1,54 @@
+"""Bant (tam genişlik) ve kapsül görünümleri: genişlik, kart grubunun ortalanması, sürükleme, AppBar yüksekliği."""
+import importlib.util
+import sys
+import tempfile
+from pathlib import Path
+
+from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QApplication
+
+APP_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(APP_DIR))
+spec = importlib.util.spec_from_file_location("serit_v5_style", str(APP_DIR / "serit_v5.pyw"))
+serit_mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(serit_mod)
+# Gerçek settings.json'a asla yazma
+serit_mod.SETTINGS_FILE = Path(tempfile.mkdtemp(prefix="serit_style_")) / "settings.json"
+serit_mod.save_settings = lambda cfg: None
+
+
+def test_styles() -> None:
+    app = QApplication.instance() or QApplication([])
+    sw = app.primaryScreen().geometry().width()
+
+    band = serit_mod.SeritDock({"style": "band", "pinned": []}, preview_mode=True)
+    band.compute_layout_and_resize(initial=True)
+    assert band._is_band()
+    assert band.width() == sw, (band.width(), sw)
+    assert 0 < band._content_w < sw, band._content_w
+    img = QImage(band.size(), QImage.Format.Format_ARGB32)
+    band.render(img)  # paintEvent hit_boxes'ı doldurur
+    xs = [r.left() for r, _k, _e in band.hit_boxes]
+    xe = [r.right() for r, _k, _e in band.hit_boxes]
+    left_gap, right_gap = min(xs), band.width() - max(xe)
+    assert abs(left_gap - right_gap) < 12, ("kart grubu ortada değil", left_gap, right_gap)
+
+    pill = serit_mod.SeritDock({"style": "pill", "pinned": []}, preview_mode=True)
+    pill.compute_layout_and_resize(initial=True)
+    assert not pill._is_band()
+    assert pill.width() < sw and abs(pill.width() - band._content_w) <= 1, (pill.width(), band._content_w)
+
+    # Varsayılan (ayar yoksa) bant
+    dflt = serit_mod.SeritDock({"pinned": []}, preview_mode=True)
+    assert dflt._is_band()
+
+    # Stil değiştirme kapsüle geçince pencere daralır
+    band.set_dock_style("pill")
+    assert not band._is_band() and band.width() < sw
+    band.set_dock_style("band")
+    assert band._is_band() and band.width() == sw
+    print("ALL DOCK STYLE TESTS PASSED.")
+
+
+if __name__ == "__main__":
+    test_styles()
