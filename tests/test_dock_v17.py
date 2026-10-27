@@ -47,3 +47,16 @@ def test_states_render_without_error() -> None:
 if __name__ == "__main__":
     test_cards_same_width_pair()
     test_states_render_without_error()
+
+
+def test_reset_rounds_to_minute() -> None:
+    import datetime as dt
+    now = dt.datetime(2026, 10, 27, 16, 50, tzinfo=dt.timezone.utc)
+    assert dock_cards.format_reset_display("2026-10-31T05:59:59.791398+00:00", now) == "Cmt 09:00"
+    assert dock_cards.format_reset_display("2026-10-27T21:29:59+00:00", now) == "4 sa 39 dk"
+    assert dock_cards.format_reset_display("", now) == "—"
+    print("[PASS] sıfırlanma zamanı dakikaya yuvarlanıyor")
+
+
+if __name__ == "__main__":
+    test_reset_rounds_to_minute()
