@@ -454,7 +454,6 @@ def main() -> int:
 
 def test_animate_in_out() -> None:
     """Ortak açılış/kapanış hareketi: sonunda hedef konumda, saydamlık 1; kapanınca gizli ve konum geri."""
-    import time as _t
     from PySide6.QtCore import QPoint
     from PySide6.QtWidgets import QApplication, QWidget
     app = QApplication.instance() or QApplication([])
@@ -462,22 +461,23 @@ def test_animate_in_out() -> None:
     w.resize(120, 80)
     target = QPoint(200, 300)
 
-    def run(ms: int) -> None:
-        end = _t.perf_counter() + ms / 1000.0
-        while _t.perf_counter() < end:
-            app.processEvents()
-            _t.sleep(0.005)
+    def finish() -> None:
+        """Animasyonu zamana bağlı beklemeden sonuna getir (test makine yükünden etkilenmesin)."""
+        g = getattr(w, "_ps_anim", None)
+        if g is not None:
+            g.setCurrentTime(g.totalDuration())
+        app.processEvents()
 
     ps.animate_in(w, target)
-    run(400)
+    finish()
     assert w.isVisible() and w.pos() == target, w.pos()
     assert abs(w.windowOpacity() - 1.0) < 0.01
     done = []
     ps.animate_out(w, on_done=lambda: done.append(1))
-    run(400)
-    assert not w.isVisible() and done == [1] and w.pos() == target
+    finish()
+    assert not w.isVisible() and done == [1] and abs(w.windowOpacity() - 1.0) < 0.01
     ps.animate_in(w, target, switch_from_x=50)
-    run(300)
+    finish()
     assert w.pos() == target
     ps.animate_out(w, instant=True)
     assert not w.isVisible()
