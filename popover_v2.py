@@ -198,6 +198,23 @@ def top_processes(n: int = 3) -> List[Dict[str, Any]]:
         "memory compression",
         "idle",
     }
+    # Hızlı yol: tek NtQuerySystemInformation çağrısı (~5 ms). psutil yolu ~440 ms
+    # sürüyor ve GIL çekişmesiyle GUI'yi ~0,4 sn donduruyordu (ui_stall ölçümü, 28 Eki).
+    try:
+        import proc_snapshot
+
+        fast = proc_snapshot.memory_by_name()
+    except Exception:
+        fast = None
+    if fast is not None:
+        rows = [
+            {"name": k, "mb": round(v, 1)}
+            for k, v in fast.items()
+            if k.lower() not in skip
+        ]
+        rows.sort(key=lambda x: x["mb"], reverse=True)
+        return rows[:n]
+
     agg: Dict[str, float] = {}
     try:
         for p in psutil.process_iter(["name", "memory_info"]):
