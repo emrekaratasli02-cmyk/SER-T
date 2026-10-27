@@ -53,6 +53,9 @@ def _get_settings_hash() -> str:
     return ""
 
 
+_SETTINGS_HASH_AT_IMPORT = _get_settings_hash()
+
+
 # ---------------------------------------------------------------------------
 # 1) Offscreen Rendering with Synthetic Data
 # ---------------------------------------------------------------------------
@@ -445,6 +448,7 @@ def test_common_public_api_contract(qapp: QApplication) -> None:
 # ---------------------------------------------------------------------------
 def test_settings_json_never_modified() -> None:
     """Strictly assert D:/Apps/serit/settings.json was never modified."""
-    initial_hash = "f2b965bbe8ceb5c24c5989e79f0b6e5421aeceacb5c8bc3eb6559bacc3c474ed"
+    # Sabit hash yerine modül yüklendiği andaki hash ile karşılaştır (Emre ayarı değiştirince test kırılmasın)
+    initial_hash = _SETTINGS_HASH_AT_IMPORT
     current_hash = _get_settings_hash()
     assert current_hash == initial_hash, "settings.json was modified by tests!"

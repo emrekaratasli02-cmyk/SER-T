@@ -445,7 +445,7 @@ class VolumeCoalescer(QObject):
 class VolumePopover(QWidget):
     """Sectioned acrylic glass flyout panel for master audio volume control."""
 
-    WIDTH: int = 280
+    WIDTH: int = 304
     HEIGHT: int = 126
 
     def __init__(
@@ -490,7 +490,13 @@ class VolumePopover(QWidget):
         self.resize(self.WIDTH, self.HEIGHT)
         cx = anchor_global.center().x()
         x = int(round(cx - self.width() / 2.0))
-        y = int(round(anchor_global.top() - self.height() - 10.0))
+        y = int(round(anchor_global.top() - self.height() - 8.0))
+        # Ekrandan taşmasın: diğer paneller gibi kullanılabilir alanın içine sıkıştır (kenardan 8 px)
+        scr = QApplication.screenAt(QPointF(cx, anchor_global.center().y()).toPoint()) or QApplication.primaryScreen()
+        if scr is not None:
+            g = scr.geometry()
+            x = max(g.left() + 8, min(x, g.right() + 1 - self.width() - 8))
+            y = max(g.top() + 8, y)
         self.move(x, y)
         self.show()
         self.raise_()
@@ -538,17 +544,8 @@ class VolumePopover(QWidget):
                 self._request_volume(pct, force=False)
                 return
 
-            # Presets (25%, 50%, 75%, 100%)
-            presets = [("25%", 25.0), ("50%", 50.0), ("75%", 75.0), ("100%", 100.0)]
-            pad_x = 16.0
-            preset_w = 34.0
-            preset_h = 24.0
-            preset_gap = 5.0
-            presets_total = len(presets) * preset_w + (len(presets) - 1) * preset_gap
-            start_px = float(self.width()) - pad_x - presets_total
-            footer_y = r_slider.bottom() + 10.0 if r_slider else 78.0
-            for idx, (_, val) in enumerate(presets):
-                rp = QRectF(start_px + idx * (preset_w + preset_gap), footer_y, preset_w, preset_h)
+            # Hızlı seçim düğmeleri: konumlar çizim fonksiyonundan gelir (tek kaynak)
+            for rp, val in self._hit_rects.get("presets", []):
                 if rp.contains(pos):
                     self._request_volume(val, force=True)
                     return

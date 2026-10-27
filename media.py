@@ -10,12 +10,14 @@ Rules:
   - Calls must happen on the UI thread (CoInitialize invoked per COM call).
   - Never raises unhandled exceptions from public functions; logs to D:/Apps/serit/serit.log.
   - Title parsing is a heuristic; WinRT GSMTC would be the robust path if 'winrt-Windows.Media.Control'
-    were installed. An optional import detects WinRT if installed, otherwise safely falls back.
+    were installed. An optional import re
+import detects WinRT if installed, otherwise safely falls back.
 """
 
 from __future__ import annotations
 
 import ctypes
+import re
 import ctypes.wintypes as w
 import datetime
 import os
@@ -1027,6 +1029,47 @@ def draw_media_chip(
     }
 
 
+
+# Windows ses aygıtı adlarını ekranda Türkçe göstermek için (yalnız görüntü; veri ham kalır)
+_DEVICE_WORDS_TR = (
+    ("Speakers", "Hoparlör"),
+    ("Headphones", "Kulaklık"),
+    ("Headset Earphone", "Kulaklık"),
+    ("Headset", "Kulaklık seti"),
+    ("Earphones", "Kulaklık"),
+    ("Microphone", "Mikrofon"),
+    ("Digital Audio", "Dijital ses"),
+    ("Line Out", "Hat çıkışı"),
+    ("Audio Device", "Ses aygıtı"),
+)
+
+
+PRESET_W = 40.0
+PRESET_GAP = 4.0
+
+
+def tr_device_name(name: str) -> str:
+    """'Speakers (Realtek(R) Audio)' -> 'Hoparlör · Realtek Audio'. Bilinmeyen ad olduğu gibi kalır."""
+    raw = str(name or "").strip()
+    if not raw or raw == "Default Audio":
+        return ""
+    if raw == "Speakers":
+        return "Hoparlör"
+    raw = re.sub(r"\((?:R|TM|C)\)", "", raw, flags=re.IGNORECASE)
+    m = re.match(r"^(.*?)\s*\((.*)\)\s*$", raw)
+    kind, vendor = (m.group(1), m.group(2)) if m else (raw, "")
+    for en, tr in _DEVICE_WORDS_TR:
+        if kind.strip().lower() == en.lower():
+            kind = tr
+            break
+    else:
+        for en, tr in _DEVICE_WORDS_TR:
+            kind = re.sub(r"\b" + re.escape(en) + r"\b", tr, kind, flags=re.IGNORECASE)
+    kind = re.sub(r"\s{2,}", " ", kind).strip()
+    vendor = re.sub(r"\s{2,}", " ", vendor).strip()
+    return f"{kind} · {vendor}" if vendor else kind
+
+
 def draw_volume_slider_panel(
     p: QPainter,
     rect: QRectF,
@@ -1094,7 +1137,7 @@ def draw_volume_slider_panel(
     dev_y = top_y + 20.0
     f_sub = theme.make_font(10.5, QFont.Weight.Normal)
     fm_sub = QFontMetricsF(f_sub)
-    dev_str = device or "Varsayılan Ses Aygıtı"
+    dev_str = tr_device_name(device) or "Varsayılan ses aygıtı"
     elided_dev = fm_sub.elidedText(dev_str, Qt.ElideRight, card_w - pad_x * 2 - 10.0)
     p.setFont(f_sub)
     p.setPen(theme.COLOR_TEXT_MUTED)
@@ -1161,16 +1204,18 @@ def draw_volume_slider_panel(
     mute_txt = "Sesi Aç" if muted else "Sessiz Yap"
     p.drawText(r_mute, Qt.AlignCenter, mute_txt)
 
-    # Quick Preset Pills (25%, 50%, 75%, 100%)
-    presets = [("25%", 25), ("50%", 50), ("75%", 75), ("100%", 100)]
-    preset_w = 34.0
+    # Hızlı seçim düğmeleri (%25, %50, %75, %100) — Türkçe yüzde biçimi
+    presets = [("%25", 25), ("%50", 50), ("%75", 75), ("%100", 100)]
+    preset_w = PRESET_W
     preset_h = 24.0
-    preset_gap = 5.0
+    preset_gap = PRESET_GAP
+    preset_rects = []
     presets_total = len(presets) * preset_w + (len(presets) - 1) * preset_gap
     start_px = rect.right() - pad_x - presets_total
 
     for idx, (p_txt, _) in enumerate(presets):
         r_p = QRectF(start_px + idx * (preset_w + preset_gap), footer_y, preset_w, preset_h)
+        preset_rects.append((r_p, float(_)))
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(255, 255, 255, 20))
         p.drawRoundedRect(r_p, 5.0, 5.0)
@@ -1184,5 +1229,6 @@ def draw_volume_slider_panel(
     return {
         "slider": r_track,
         "mute_btn": r_mute,
+        "presets": preset_rects,
         "card": rect,
     }
