@@ -373,6 +373,19 @@ def test_performance_timing() -> None:
     print("  [OK] Performance benchmark passed.")
 
 
+def test_file_description_ctypes() -> None:
+    """Regression: VerQueryValueW used to raise 'expected LP_c_void_p instead of pointer'."""
+    errors: List[str] = []
+    with patch.object(audio_mixer, "_log", side_effect=errors.append):
+        d1 = audio_mixer.get_file_description("C:/Windows/System32/notepad.exe")
+        d2 = audio_mixer.get_file_description("C:/Windows/System32/audiodg.exe")
+    assert not errors, errors
+    assert d1 == "Notepad", d1
+    assert "Audio" in d2, d2
+    assert audio_mixer.get_file_description("C:/nonexistent/x.exe") == ""
+    print("[PASS] get_file_description ctypes")
+
+
 # ==============================================================================
 # MAIN RUNNER
 # ==============================================================================
@@ -383,6 +396,7 @@ def main() -> int:
     print("=" * 60)
 
     test_display_name_resolution()
+    test_file_description_ctypes()
     test_session_merging()
     test_sorting_order()
     test_exit_and_expiry_handling()

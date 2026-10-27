@@ -640,17 +640,27 @@ _LAST_GOOD_MONTH_CALENDAR: Optional[Dict[str, Any]] = None
 
 
 def _safe_read_json_file(path: Path) -> Tuple[Optional[Any], Optional[Exception]]:
-    """Read and parse JSON file, retrying once after 150ms on JSONDecodeError."""
-    try:
+    """Read and parse JSON file, retrying once after 150ms on a partial write.
+
+    A half-written file can raise JSONDecodeError or UnicodeDecodeError (cut inside a
+    multi-byte char); both are reported to callers as JSONDecodeError (keep last good value).
+    """
+    def _once() -> Any:
         text = path.read_text(encoding="utf-8")
-        return json.loads(text), None
-    except json.JSONDecodeError:
+        return json.loads(text)
+
+    try:
+        return _once(), None
+    except ValueError:
         time.sleep(0.15)
         try:
-            text = path.read_text(encoding="utf-8")
-            return json.loads(text), None
+            return _once(), None
         except json.JSONDecodeError as retry_exc:
             return None, retry_exc
+        except ValueError as retry_exc:  # UnicodeDecodeError
+            return None, json.JSONDecodeError(str(retry_exc), "", 0)
+        except Exception as exc:
+            return None, exc
     except Exception as exc:
         return None, exc
 

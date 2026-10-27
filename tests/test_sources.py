@@ -244,7 +244,27 @@ def test_event_when():
     print("ALL EVENT_WHEN ASSERTIONS PASSED")
 
 
+def test_safe_read_partial_json() -> None:
+    import tempfile, threading
+    import sources
+    from pathlib import Path
+    d = Path(tempfile.mkdtemp(prefix="serit_sr_"))
+    f = d / "x.json"
+    f.write_text('{"a": ', encoding="utf-8")
+    val, err = sources._safe_read_json_file(f)
+    assert val is None and isinstance(err, json.JSONDecodeError)
+    f.write_bytes('{"a": "ş'.encode("utf-8")[:-1])  # cut inside a multibyte char
+    val, err = sources._safe_read_json_file(f)
+    assert val is None and isinstance(err, json.JSONDecodeError), err
+    f.write_text('{"a": ', encoding="utf-8")
+    threading.Timer(0.05, lambda: f.write_text('{"a": 1}', encoding="utf-8")).start()
+    val, err = sources._safe_read_json_file(f)
+    assert val == {"a": 1} and err is None, (val, err)
+    print("PARTIAL JSON READ OK")
+
+
 if __name__ == "__main__":
+    test_safe_read_partial_json()
     test_helpers()
     test_store()
     test_event_when()

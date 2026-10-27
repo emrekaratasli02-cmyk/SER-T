@@ -16,6 +16,9 @@ import media  # noqa: E402
 spec = importlib.util.spec_from_file_location("sv", ROOT / "serit_v5.pyw")
 sv = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sv)
+import tempfile as _tf  # noqa: E402
+sv.SETTINGS_FILE = Path(_tf.mkdtemp(prefix="serit_vol_")) / "settings.json"  # never touch real settings
+sv.save_settings = lambda cfg: None
 
 
 def test_device_names():

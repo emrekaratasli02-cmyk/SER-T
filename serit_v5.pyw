@@ -209,7 +209,10 @@ def save_settings(cfg: dict) -> None:
         tmp_file = SETTINGS_FILE.parent / "settings.json.tmp"
         bak_file = SETTINGS_FILE.parent / "settings.json.bak"
         content = json.dumps(cfg, ensure_ascii=False, indent=2)
-        tmp_file.write_text(content, encoding="utf-8")
+        with open(tmp_file, "w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
         if SETTINGS_FILE.exists():
             try:
                 curr_content = SETTINGS_FILE.read_text(encoding="utf-8")
@@ -2258,7 +2261,10 @@ class SeritDock(QWidget):
                 res = {"ok": False, "reason": str(exc)}
             self.dispatcher.tray_resolved.emit(item, res, anchor_global)
 
-        sources.submit("tray_resolve", _resolve_worker)
+        if not sources.submit("tray_resolve", _resolve_worker):
+            # worker could not be queued: do not leave the menu flag stuck forever
+            self._action_in_flight = False
+            self._action_menu_item = None
 
     def _on_tray_resolved(self, item: dict, res: dict, anchor_global: QRectF) -> None:
         self._action_in_flight = False

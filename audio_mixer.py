@@ -150,6 +150,38 @@ def _get_proc_meta(proc: psutil.Process) -> tuple[str, str, List[str]]:
     return meta
 
 
+def _version_dll():
+    """Private version.dll handle with explicit signatures (independent of winapi's)."""
+    global _VERSION_DLL
+    if _VERSION_DLL is None:
+        dll = ctypes.WinDLL("version", use_last_error=True)
+        dll.GetFileVersionInfoSizeW.argtypes = [w.LPCWSTR, ctypes.POINTER(w.DWORD)]
+        dll.GetFileVersionInfoSizeW.restype = w.DWORD
+        dll.GetFileVersionInfoW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, ctypes.c_void_p]
+        dll.GetFileVersionInfoW.restype = w.BOOL
+        dll.VerQueryValueW.argtypes = [
+            ctypes.c_void_p,
+            w.LPCWSTR,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(w.UINT),
+        ]
+        dll.VerQueryValueW.restype = w.BOOL
+        _VERSION_DLL = dll
+    return _VERSION_DLL
+
+
+_VERSION_DLL = None
+
+
+def _query_string(version, buf, lang_cp: str) -> str:
+    p_val = ctypes.c_void_p()
+    val_len = w.UINT()
+    sub = r"\StringFileInfo" + "\\" + lang_cp + r"\FileDescription"
+    if version.VerQueryValueW(buf, sub, ctypes.byref(p_val), ctypes.byref(val_len)) and p_val.value and val_len.value:
+        return ctypes.wstring_at(p_val.value).strip()
+    return ""
+
+
 def get_file_description(filepath: str) -> str:
     """Extract FileDescription from Win32 version resource via ctypes."""
     if not filepath:
@@ -161,67 +193,32 @@ def get_file_description(filepath: str) -> str:
 
     desc = ""
     try:
-        version = ctypes.windll.version
+        version = _version_dll()
         size = version.GetFileVersionInfoSizeW(filepath, None)
         if size > 0:
             buf = ctypes.create_string_buffer(size)
             if version.GetFileVersionInfoW(filepath, 0, size, buf):
-                # 1. Query translation table
                 p_trans = ctypes.c_void_p()
                 u_len = w.UINT()
                 if (
                     version.VerQueryValueW(
                         buf,
-                        r"\\VarFileInfo\\Translation",
+                        r"\VarFileInfo\Translation",
                         ctypes.byref(p_trans),
                         ctypes.byref(u_len),
                     )
                     and p_trans.value
                     and u_len.value >= 4
                 ):
-                    count = u_len.value // 4
                     words = ctypes.cast(p_trans, ctypes.POINTER(w.WORD))
-                    for i in range(count):
-                        lang = words[i * 2]
-                        cp = words[i * 2 + 1]
-                        for fmt in (f"{lang:04x}{cp:04x}", f"{lang:04X}{cp:04X}"):
-                            sub = f"\\\\StringFileInfo\\\\{fmt}\\\\FileDescription"
-                            p_val = ctypes.c_wchar_p()
-                            val_len = w.UINT()
-                            if (
-                                version.VerQueryValueW(
-                                    buf, sub, ctypes.byref(p_val), ctypes.byref(val_len)
-                                )
-                                and p_val.value
-                            ):
-                                desc = p_val.value.strip()
-                                break
+                    for i in range(u_len.value // 4):
+                        desc = _query_string(version, buf, f"{words[i * 2]:04x}{words[i * 2 + 1]:04x}")
                         if desc:
                             break
-
-                # 2. Well-known fallback codepages
                 if not desc:
-                    for cp_hex in (
-                        "040904b0",
-                        "040904B0",
-                        "040904e4",
-                        "040904E4",
-                        "04090000",
-                        "000004b0",
-                        "000004B0",
-                        "041f04b0",
-                        "041F04B0",
-                    ):
-                        sub = f"\\\\StringFileInfo\\\\{cp_hex}\\\\FileDescription"
-                        p_val = ctypes.c_wchar_p()
-                        val_len = w.UINT()
-                        if (
-                            version.VerQueryValueW(
-                                buf, sub, ctypes.byref(p_val), ctypes.byref(val_len)
-                            )
-                            and p_val.value
-                        ):
-                            desc = p_val.value.strip()
+                    for cp_hex in ("040904b0", "040904e4", "04090000", "000004b0", "041f04b0"):
+                        desc = _query_string(version, buf, cp_hex)
+                        if desc:
                             break
     except Exception as e:
         _log(f"get_file_description error for {filepath}: {e}")
