@@ -91,9 +91,131 @@ PRESET_PILL_H = 28.0
 TOGGLE_H = 38.0
 ANCHOR_GAP = 8.0      # panel ile şerit arası
 
-WIDTH = {"mail": 380, "cal": 440, "claude": 360, "ag": 360, "sys": 360, "bright": 340, "vol": 340}
+# 27 Eki 2026: tek sütunlu tüm paneller aynı genişlikte (kapsülde geçerken kenar oynamasın); takvim ızgara olduğu için geniş
+PANEL_W = 352
+WIDTH = {"mail": PANEL_W, "cal": 440, "claude": PANEL_W, "ag": PANEL_W, "sys": PANEL_W, "bright": PANEL_W, "vol": PANEL_W, "bat": PANEL_W}
 
 FONT_FAMILY = "Segoe UI Variable Text"
+
+# --- Hareket (tüm paneller aynı) -------------------------------------------------------------
+ANIM_OPEN_MS = 160     # açılış: saydamlık 0->1 + 6 px aşağıdan yukarı kayma, OutCubic
+ANIM_CLOSE_MS = 115    # kapanış: saydamlık 1->0 + 4 px aşağı, InCubic
+ANIM_OPEN_SLIDE = 6.0
+ANIM_CLOSE_SLIDE = 4.0
+ANIM_SWITCH_MS = 110   # kapsülde güneş/hoparlör/pil arası geçiş
+
+
+def reduced_motion() -> bool:
+    """Windows 'Animasyon efektleri' kapalıysa True (o zaman tüm süreler 0 ms kullanılır)."""
+    try:
+        import ctypes
+        val = ctypes.c_int(1)
+        # SPI_GETCLIENTAREAANIMATION = 0x1042
+        if ctypes.windll.user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(val), 0):
+            return not bool(val.value)
+    except Exception:
+        pass
+    return False
+
+
+def anim_ms(ms: int) -> int:
+    """Hareket süresi; Windows'ta animasyonlar kapalıysa 0."""
+    return 0 if reduced_motion() else int(ms)
+
+
+def _stop_anim(w) -> None:
+    g = getattr(w, "_ps_anim", None)
+    if g is not None:
+        try:
+            g.stop()
+        except RuntimeError:
+            pass
+        w._ps_anim = None
+
+
+def animate_in(w, target, switch_from_x: int | None = None) -> None:
+    """Paneli ortak hareketle göster.
+
+    Normal açılış: 160 ms, saydamlık 0->1 ve 6 px aşağıdan yukarı kayma (OutCubic).
+    switch_from_x verilirse (kapsülde başka bölümden geçiş): saydamlık hep 1, 110 ms yatay kayma.
+    Ölçek animasyonu yok (DPR 1,25'te yazı bulanıklaşmasın). Animasyonlar kapalıysa anında gösterir.
+    """
+    from PySide6.QtCore import QEasingCurve, QParallelAnimationGroup, QPoint, QPropertyAnimation
+    _stop_anim(w)
+    target = QPoint(int(target.x()), int(target.y()))
+    switching = switch_from_x is not None
+    ms = anim_ms(ANIM_SWITCH_MS if switching else ANIM_OPEN_MS)
+    if ms <= 0:
+        w.setWindowOpacity(1.0)
+        w.move(target)
+        w.show()
+        return
+    start = QPoint(int(switch_from_x), target.y()) if switching else QPoint(target.x(), target.y() + int(ANIM_OPEN_SLIDE))
+    w.setWindowOpacity(1.0 if switching else 0.0)
+    w.move(start)
+    w.show()
+    g = QParallelAnimationGroup(w)
+    a_pos = QPropertyAnimation(w, b"pos", g)
+    a_pos.setDuration(ms)
+    a_pos.setStartValue(start)
+    a_pos.setEndValue(target)
+    a_pos.setEasingCurve(QEasingCurve.Type.OutCubic)
+    g.addAnimation(a_pos)
+    if not switching:
+        a_op = QPropertyAnimation(w, b"windowOpacity", g)
+        a_op.setDuration(ms)
+        a_op.setStartValue(0.0)
+        a_op.setEndValue(1.0)
+        a_op.setEasingCurve(QEasingCurve.Type.OutCubic)
+        g.addAnimation(a_op)
+    w._ps_anim = g
+    g.start()
+
+
+def animate_out(w, on_done=None, instant: bool = False) -> None:
+    """Paneli ortak hareketle gizle: 115 ms, saydamlık 1->0 ve 4 px aşağı (InCubic), sonra hide().
+
+    instant=True (ör. kapsülde başka bölüme geçiş) ya da animasyonlar kapalıysa anında gizler.
+    Gizledikten sonra konum ve saydamlık geri alınır; on_done() çağrılır.
+    """
+    from PySide6.QtCore import QEasingCurve, QParallelAnimationGroup, QPoint, QPropertyAnimation
+    _stop_anim(w)
+
+    def _finish(orig=None) -> None:
+        w.hide()
+        if orig is not None:
+            w.move(orig)
+        w.setWindowOpacity(1.0)
+        w._ps_anim = None
+        if on_done is not None:
+            on_done()
+
+    if not w.isVisible():
+        if on_done is not None:
+            on_done()
+        return
+    ms = 0 if instant else anim_ms(ANIM_CLOSE_MS)
+    if ms <= 0:
+        _finish()
+        return
+    orig = QPoint(w.pos())
+    end = QPoint(orig.x(), orig.y() + int(ANIM_CLOSE_SLIDE))
+    g = QParallelAnimationGroup(w)
+    a_pos = QPropertyAnimation(w, b"pos", g)
+    a_pos.setDuration(ms)
+    a_pos.setStartValue(orig)
+    a_pos.setEndValue(end)
+    a_pos.setEasingCurve(QEasingCurve.Type.InCubic)
+    g.addAnimation(a_pos)
+    a_op = QPropertyAnimation(w, b"windowOpacity", g)
+    a_op.setDuration(ms)
+    a_op.setStartValue(float(w.windowOpacity()))
+    a_op.setEndValue(0.0)
+    a_op.setEasingCurve(QEasingCurve.Type.InCubic)
+    g.addAnimation(a_op)
+    g.finished.connect(lambda: _finish(orig))
+    w._ps_anim = g
+    g.start()
 
 _TR_UPPER_MAP = str.maketrans({
     "i": "İ",
@@ -167,6 +289,9 @@ def draw_panel_shell(p: QPainter, r: QRectF) -> None:
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.setPen(QPen(PANEL_BORDER, 1.0))
     p.drawPath(rounded(r.adjusted(0.5, 0.5, -0.5, -0.5), R_PANEL - 0.5))
+    # Üst kenarda ince ışık çizgisi (derinlik; köşe yarıçapı kadar içeriden)
+    p.setPen(QPen(QColor(255, 255, 255, 38), 1.0))
+    p.drawLine(QPointF(r.left() + R_PANEL, r.top() + 1.0), QPointF(r.right() - R_PANEL, r.top() + 1.0))
     p.restore()
 
 
@@ -178,6 +303,8 @@ def draw_tile(p: QPainter, r: QRectF, hover: bool = False) -> None:
     p.setBrush(TILE_HOVER if hover else TILE_BG)
     p.drawPath(rounded(r.adjusted(0.5, 0.5, -0.5, -0.5), R_TILE))
     p.setBrush(Qt.BrushStyle.NoBrush)  # fırça sızıntısını önle
+    p.setPen(QPen(QColor(255, 255, 255, 23), 1.0))  # üst kenar biraz daha parlak
+    p.drawLine(QPointF(r.left() + R_TILE, r.top() + 0.5), QPointF(r.right() - R_TILE, r.top() + 0.5))
     p.restore()
 
 
@@ -278,8 +405,9 @@ def draw_header(
         chip_rect = QRectF(right_limit - chip_w, cy - chip_h / 2.0, chip_w, chip_h)
 
         is_interactive = "›" in chip or "▾" in chip
-        p.setPen(QPen(CHIP_BORDER, 1.0))
-        p.setBrush(QColor(255, 255, 255, 23) if is_interactive else CHIP_BG)
+        # Tıklanabilir etiket: koyu dolgu + belirgin kenar; bilgi etiketi: kenarsız soluk
+        p.setPen(QPen(QColor(255, 255, 255, 36), 1.0) if is_interactive else Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0x25, 0x28, 0x30) if is_interactive else QColor(255, 255, 255, 13))
         p.drawPath(rounded(chip_rect.adjusted(0.5, 0.5, -0.5, -0.5), chip_h / 2.0))
 
         text_left = chip_rect.left() + 8.0
@@ -297,7 +425,7 @@ def draw_header(
             text_left += 11.0
 
         p.setFont(f_chip)
-        p.setPen(TEXT_BODY if is_interactive else TEXT_CHIP)
+        p.setPen(TEXT if is_interactive else QColor(255, 255, 255, 140))
         t_rect = QRectF(text_left, chip_rect.top(), max(0.0, chip_rect.right() - 8.0 - text_left), chip_h)
         p.drawText(t_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, chip)
         right_limit = chip_rect.left() - 8.0
@@ -436,15 +564,18 @@ def draw_slider(
     icon: QPixmap | Callable[[QPainter, QRectF], None] | None = None,
     hover: bool = False,
     muted: bool = False,
+    compact: bool = False,
 ) -> dict[str, QRectF]:
-    """Lumabar yatay kalın hap kaydırıcı: üstte etiket + Türkçe %, altta 18 px hap iz + 20 px beyaz tutaç.
+    """compact=True: uygulama satırı için 10 px iz + 14 px tutaç (yine sürüklenebilir görünür).
+
+    Lumabar yatay kalın hap kaydırıcı: üstte etiket + Türkçe %, altta 18 px hap iz + 20 px beyaz tutaç.
     value None ise dolum ve tutaç çizilmez, sağda '—' yazar.
     """
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-    track_h = min(SLIDER_TRACK_H, max(6.0, rect.height() * 0.48))
-    knob_sz = min(SLIDER_KNOB_SZ, rect.height())
+    track_h = min(10.0 if compact else SLIDER_TRACK_H, max(6.0, rect.height() * 0.48))
+    knob_sz = min(14.0 if compact else SLIDER_KNOB_SZ, rect.height())
     track_y = rect.bottom() - track_h - max(0.0, (knob_sz - track_h) / 2.0)
     track_rect = QRectF(rect.left(), track_y, rect.width(), track_h)
 
@@ -519,9 +650,11 @@ def draw_slider(
         p.setBrush(shadow_grad)
         p.drawEllipse(knob_rect.adjusted(-2.0, -1.0, 2.0, 3.0))
 
-        # Beyaz tutaç gövdesi
+        # Beyaz tutaç gövdesi + kart renginde 1,5 px ayırıcı halka (beyaz dolguda kaybolmasın)
+        p.setPen(QPen(TILE_BG, 1.5))
         p.setBrush(TEXT)
         p.drawEllipse(knob_rect)
+        p.setPen(Qt.PenStyle.NoPen)
 
     p.restore()
     return {"track": track_rect, "knob": knob_rect}

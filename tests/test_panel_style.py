@@ -56,7 +56,7 @@ def test_constants_and_legacy_compat() -> None:
     assert ps.R_PANEL == 16.0
     assert ps.R_TILE == 12.0
     assert ps.R_BUTTON == 8.0
-    assert isinstance(ps.WIDTH, dict) and ps.WIDTH["sys"] == 360
+    assert isinstance(ps.WIDTH, dict) and ps.WIDTH["sys"] == ps.PANEL_W == 352  # 27 Eki: tüm tek sütun paneller 352
     assert ps.pct(25.4) == "%25"
     assert ps.pct(None) == "—"
 
@@ -452,3 +452,39 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_animate_in_out() -> None:
+    """Ortak açılış/kapanış hareketi: sonunda hedef konumda, saydamlık 1; kapanınca gizli ve konum geri."""
+    import time as _t
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QApplication, QWidget
+    app = QApplication.instance() or QApplication([])
+    w = QWidget()
+    w.resize(120, 80)
+    target = QPoint(200, 300)
+
+    def run(ms: int) -> None:
+        end = _t.perf_counter() + ms / 1000.0
+        while _t.perf_counter() < end:
+            app.processEvents()
+            _t.sleep(0.005)
+
+    ps.animate_in(w, target)
+    run(400)
+    assert w.isVisible() and w.pos() == target, w.pos()
+    assert abs(w.windowOpacity() - 1.0) < 0.01
+    done = []
+    ps.animate_out(w, on_done=lambda: done.append(1))
+    run(400)
+    assert not w.isVisible() and done == [1] and w.pos() == target
+    ps.animate_in(w, target, switch_from_x=50)
+    run(300)
+    assert w.pos() == target
+    ps.animate_out(w, instant=True)
+    assert not w.isVisible()
+    print("[PASS] animate_in / animate_out")
+
+
+if __name__ == "__main__":
+    test_animate_in_out()
