@@ -29,10 +29,24 @@ from PySide6.QtWidgets import QApplication
 app = QApplication.instance() or QApplication([])
 
 import media
+import panel_style
+import volume_panel as vp
 from volume_panel import AppVolumeCoalescer, MasterVolumeCoalescer, VolumePopover
 
-SCRATCH_DIR = Path("C:/Users/Emre Karatasli/AppData/Local/hermes/cache/scratch/serit-v14")
+# Renderlar (yalnız bu çalışma ağacında): _ref/out — çalışma ağacının dışına yazma
+SCRATCH_DIR = ROOT / "_ref" / "out"
 SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def expect_height(apps_h: float) -> int:
+    """27 Eki kit düzeni: PAD + HEADER + GAP + ana kart + GAP + uygulamalar + GAP + FOOTER + PAD*0.5."""
+    import math
+    master_card = 2 * panel_style.CARD_PAD + vp.CARD_OVER_H + vp.MAIN_ROW_H
+    apps_card = 2 * panel_style.CARD_PAD + vp.CARD_OVER_H + apps_h
+    total = (panel_style.PAD + panel_style.HEADER_H + panel_style.GAP + master_card
+             + panel_style.GAP + apps_card + panel_style.GAP + panel_style.FOOTER_H
+             + panel_style.PAD * 0.5)
+    return int(math.ceil(total))
 
 
 def get_realistic_sessions() -> List[Dict[str, Any]]:
@@ -269,29 +283,29 @@ def test_height_adaptation_and_scroll() -> None:
     # Empty
     w.update_sessions([])
     h_0 = w.compute_height()
-    assert h_0 == 280
+    assert h_0 == expect_height(vp.EMPTY_H)
 
     # 1 row
     w.update_sessions([{"key": "app1", "name": "App 1", "level": 50}])
     h_1 = w.compute_height()
-    assert h_1 == 284
+    assert h_1 == expect_height(vp.ROW_H)
 
     # 4 rows
     w.update_sessions(get_realistic_sessions())
     h_4 = w.compute_height()
-    assert h_4 == 434
+    assert h_4 == expect_height(4 * vp.ROW_H + 3 * vp.ROW_GAP)
 
     # 6 rows
     six_sessions = [{"key": f"app_{i}", "name": f"App {i}", "level": 50} for i in range(6)]
     w.update_sessions(six_sessions)
     h_6 = w.compute_height()
-    assert h_6 == 534
+    assert h_6 == expect_height(6 * vp.ROW_H + 5 * vp.ROW_GAP)
 
     # 8 rows -> capped at 6 rows
     eight_sessions = [{"key": f"app_{i}", "name": f"App {i}", "level": 50} for i in range(8)]
     w.update_sessions(eight_sessions)
     h_8 = w.compute_height()
-    assert h_8 == 534  # height stays capped
+    assert h_8 == expect_height(6 * vp.ROW_H + 5 * vp.ROW_GAP)  # high stays capped
 
     # Test wheel scroll
     w.resize(w.WIDTH, h_8)

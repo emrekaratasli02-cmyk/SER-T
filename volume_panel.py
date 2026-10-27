@@ -1,14 +1,12 @@
-"""Modern dark-mode card-layered audio mixer popover panel for Şerit dock (Direction C).
+"""Ses mikseri paneli — panel_style v2 ortak panel kiti üzerinde (27 Eki 2026, A tasarımı).
 
-Option 2 'Uygulama Mikseri':
-- Header: 'Ses' title + device chip ('Hoparlör · Realtek Audio' via media.tr_device_name) + close button.
-- Master Tile: big percentage, horizontal slider (drag/wheel/click), round mute button.
-- Uygulamalar Tile: per-app session row (icon, name, mini slider, %, mute button; playing apps have blue dot).
-  Empty state: 'Ses çalan uygulama yok'.
-- Footer: 'Windows ses ayarları' link (opens ms-settings:apps-volume on click).
-- Adaptive height based on row count (max 6 visible rows, then scroll).
-- Screen clamping with 8px margin and gap above anchor.
-- Coalesced updates (~40ms master, ~60ms apps) via background worker threads.
+- Başlık: 'Ses' + etkileşimli cihaz rozeti ('Hoparlör · Realtek Audio ›') + kapat ×.
+- GENEL SES kartı: ana kaydırıcı (SOUND dolgu, gerçek seviye; sessizde 'Sessiz') + sağıda sessiz düğmesi.
+- UYGULAMALAR kartı: oturum başına satır — 24 px uygulama ikonu, ad, compact kaydırıcı
+  (10 px iz + 14 px tutaç), yüzde, küçük sessiz düğmesi; oynatan uygulamada mavi nokta.
+  Boş durum: 'Ses çalan uygulama yok'. 6 satırdan fazlası kaydırılır.
+- Alt bilgi: 'Windows ses · HH:MM' + 'Ses ayarları' hayalet düğmesi (ms-settings:apps-volume).
+- Ana/AP düzey τ birleştirme: ~40 ms ana, ~60 ms uygulama (ağır iş GUI dışı işçi iş parçacığında).
 """
 
 from __future__ import annotations
@@ -23,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 from PySide6.QtCore import (
     QEvent,
     QObject,
+    QPoint,
     QPointF,
     QRectF,
     Qt,
@@ -33,7 +32,6 @@ from PySide6.QtGui import (
     QColor,
     QCursor,
     QFont,
-    QFontMetricsF,
     QGuiApplication,
     QMouseEvent,
     QPainter,
@@ -157,29 +155,27 @@ def draw_speaker_icon(p: QPainter, rect: QRectF, color: QColor, muted: bool = Fa
     p.restore()
 
 
-def draw_gear_icon(p: QPainter, rect: QRectF, color: QColor) -> None:
-    """Draw small vector settings gear icon."""
+def draw_bell_icon(p: QPainter, rect: QRectF, color: QColor) -> None:
+    """Draw small vector bell icon (system sounds row fallback)."""
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     cx = rect.center().x()
     cy = rect.center().y()
-    r_outer = 4.8
-    r_inner = 2.4
 
-    pen = QPen(color, 1.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+    pen = QPen(color, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawEllipse(QPointF(cx, cy), r_inner, r_inner)
 
-    # 6 teeth
-    for i in range(6):
-        ang = i * (math.pi / 3.0)
-        cos_a = math.cos(ang)
-        sin_a = math.sin(ang)
-        p.drawLine(
-            QPointF(cx + (r_inner + 0.6) * cos_a, cy + (r_inner + 0.6) * sin_a),
-            QPointF(cx + r_outer * cos_a, cy + r_outer * sin_a),
-        )
+    # Dome (top half circle)
+    dome = QRectF(cx - 5.0, cy - 6.0, 10.0, 10.0)
+    p.drawArc(dome, 0 * 16, 180 * 16)
+    # Sides flaring slightly outwards
+    p.drawLine(QPointF(cx - 5.0, cy - 1.0), QPointF(cx - 6.5, cy + 4.0))
+    p.drawLine(QPointF(cx + 5.0, cy - 1.0), QPointF(cx + 6.5, cy + 4.0))
+    # Base rim
+    p.drawLine(QPointF(cx - 6.5, cy + 4.0), QPointF(cx + 6.5, cy + 4.0))
+    # Clapper
+    p.drawLine(QPointF(cx - 1.6, cy + 6.5), QPointF(cx + 1.6, cy + 6.5))
     p.restore()
 
 
@@ -317,15 +313,69 @@ class AppVolumeCoalescer(QObject):
 
 
 # ---------------------------------------------------------------------------
-# VolumePopover Class (Direction C Option 2 'Uygulama Mikseri')
+# VolumePopover Class (panel_style v2 'Ses' paneli)
 # ---------------------------------------------------------------------------
 
-class VolumePopover(QWidget):
-    """Sectioned Direction C volume mixer popover panel for Şerit dock."""
+CARD_OVER_H = 25.0    # draw_card üst başlığı: 15 px etiket + 10 px boşluk
+MAIN_ROW_H = 46.0     # ana ses kaydırıcı satırı
+ROW_H = 38.0          # uygulama satırı (etiket + 10 px iz + 14 px tutaç)
+ROW_GAP = 10.0
+EMPTY_H = 30.0        # 'Ses çalan uygulama yok'
+MAX_VISIBLE_ROWS = 6
+WHEEL_STEP = 2.0      # tekerleğin seviye adımı (eski davranış)
+MASTER_MUTE_SZ = 28.0
+APP_MUTE_SZ = 24.0
+EMPTY_APPS_TEXT = "Ses çalan uygulama yok"
 
-    WIDTH: int = int(panel_style.WIDTH.get("vol", 340))
-    HEIGHT: int = 282
-    MAX_VISIBLE_ROWS: int = 6
+
+def _device_display(device: str) -> str:
+    """'Speakers (Realtek(R) Audio)' -> 'Hoparlör · Realtek Audio' (media'dan)."""
+    raw = str(device or "").strip()
+    if not raw:
+        return ""
+    if media is not None and hasattr(media, "tr_device_name"):
+        try:
+            out = str(media.tr_device_name(raw) or "")
+            return out or raw
+        except Exception:
+            return raw
+    return raw
+
+
+def _device_kind(display: str) -> str:
+    """'Hoparlör · Realtek Audio' -> 'Hoparlör' (ana kaydırıcı etiketi)."""
+    return display.split(" · ", 1)[0].strip() if display else ""
+
+
+def _sanitize_session(raw: Any, idx: int) -> Dict[str, Any]:
+    """Robustly sanitize an audio session dict; unknown level stays None ('—')."""
+    if not isinstance(raw, dict):
+        return {"key": f"app_{idx}", "name": "Uygulama", "exe": "", "level": None, "muted": False, "active": False}
+    key = str(raw.get("key", raw.get("name", "")) or f"app_{idx}")
+    nm_raw = raw.get("name")
+    name = str(nm_raw).strip() if nm_raw is not None else ""
+    level: Optional[float] = None
+    if raw.get("level") is not None:
+        try:
+            f = float(raw["level"])
+            if not (math.isnan(f) or math.isinf(f)):
+                level = max(0.0, min(100.0, f))
+        except (ValueError, TypeError):
+            level = None
+    return {
+        "key": key,
+        "name": name or "Uygulama",
+        "exe": str(raw.get("exe") or ""),
+        "level": level,
+        "muted": bool(raw.get("muted", False)),
+        "active": bool(raw.get("active", False)),
+    }
+
+
+class VolumePopover(QWidget):
+    """'Ses' mikser paneli — panel_style v2 ortak kit (352 px)."""
+
+    WIDTH: int = int(panel_style.WIDTH["vol"])
 
     sessions_loaded = Signal(object)
 
@@ -348,9 +398,10 @@ class VolumePopover(QWidget):
         self.on_volume_change = on_volume_change
 
         # Master Audio State
-        self._level: float = 50.0
+        self._level: Optional[float] = 50.0
         self._muted: bool = False
         self._device: str = ""
+        self._stamp: str = "—"
 
         # Sessions State
         self._sessions: List[Dict[str, Any]] = []
@@ -365,11 +416,14 @@ class VolumePopover(QWidget):
         self._hover_close: bool = False
         self._hover_footer: bool = False
         self._hover_master_mute: bool = False
+        self._hover_master_slider: bool = False
         self._hover_session_mute: Optional[str] = None
+        self._hover_session_slider: Optional[str] = None
 
         # Hit rectangles cache
         self._btn_close_rect = QRectF()
-        self._link_footer_rect = QRectF()
+        self._chip_rect = QRectF()
+        self._footer_btn_rect = QRectF()
         self._hit_master_slider = QRectF()
         self._hit_master_mute = QRectF()
         self._hit_app_rows: List[Dict[str, Any]] = []
@@ -391,9 +445,7 @@ class VolumePopover(QWidget):
         self._is_closing: bool = False
         self._anchor_timer = QTimer(self)
         self._anchor_timer.setSingleShot(True)
-
-        # Opacity & animation state
-        self._anim_opacity: float = 1.0
+        self._anchor_timer.timeout.connect(self._on_anchor_timeout)
 
         self.resize(self.WIDTH, self.compute_height())
 
@@ -412,57 +464,77 @@ class VolumePopover(QWidget):
         elapsed_ms = (time.monotonic() - self._last_close_time) * 1000.0
         return elapsed_ms <= threshold_ms
 
-    def compute_height(self) -> int:
-        """Compute window height dynamically based on row count (max 6 visible rows)."""
-        # Header (44) + Gap (10) + Master Tile (78) + Gap (10) + Apps Tile + Gap (10) + Footer (40)
+    def _apps_rows_height(self) -> float:
         n = len(self._sessions)
         if n == 0:
-            # Apps tile padding (12+12) + label (16) + gap (10) + empty (38) = 88
-            apps_tile_h = 88
-        else:
-            visible_n = min(n, self.MAX_VISIBLE_ROWS)
-            # Row height 42, gap between rows 8 -> visible rows: 42*v + 8*(v-1) = 50*v - 8
-            # Apps tile padding (12+12) + label (16) + gap (10) + rows = 50*v + 42
-            apps_tile_h = 50 * visible_n + 42
+            return EMPTY_H
+        v = min(n, MAX_VISIBLE_ROWS)
+        return v * ROW_H + (v - 1) * ROW_GAP
 
-        return 44 + 10 + 78 + 10 + apps_tile_h + 10 + 40
+    def compute_height(self) -> int:
+        """Panel yüksekliği kart ölçülerinden hesaplanır."""
+        PAD, GAP = panel_style.PAD, panel_style.GAP
+        master_card = 2 * panel_style.CARD_PAD + CARD_OVER_H + MAIN_ROW_H
+        apps_card = 2 * panel_style.CARD_PAD + CARD_OVER_H + self._apps_rows_height()
+        total = PAD + panel_style.HEADER_H + GAP + master_card + GAP + apps_card
+        total += GAP + panel_style.FOOTER_H + PAD * 0.5
+        return int(math.ceil(total))
 
     def show_for(
         self,
         anchor_global: Optional[QRectF] = None,
-        level: float = 50.0,
+        level: Optional[float] = 50.0,
         muted: bool = False,
         device: str = "",
+        *,
+        switch_from_x: Optional[int] = None,
     ) -> None:
-        """Position panel centered above anchor, clamp to screen, and show."""
+        """Position above anchor, clamp to screen, and animate in (ortak hareket)."""
         self._anchor_global = QRectF(anchor_global) if anchor_global is not None else None
-        self._level = float(level)
+        self._level = None if level is None else max(0.0, min(100.0, float(level)))
         self._muted = bool(muted)
         self._device = str(device)
+        self._stamp = time.strftime("%H:%M")
         self._dragging = None
         self._scroll_y = 0.0
         self._is_closing = False
 
-        h = self.compute_height()
-        self.resize(self.WIDTH, h)
-        self._reposition()
+        self.resize(self.WIDTH, self.compute_height())
 
-        # Apply rounded region if winapi available
-        scr = QGuiApplication.primaryScreen()
+        dpr = 1.0
+        target = self.pos()
         if self._anchor_global is not None:
-            center_pt = self._anchor_global.center().toPoint()
-            scr = QGuiApplication.screenAt(center_pt) or scr
-        dpr = scr.devicePixelRatio() if scr else 1.0
+            anchor_cx = self._anchor_global.center().x()
+            target_x = int(anchor_cx - self.width() / 2.0)
+            target_y = int(self._anchor_global.top() - self.height() - panel_style.ANCHOR_GAP)
 
+            screen = QGuiApplication.screenAt(self._anchor_global.center().toPoint())
+            if screen is None:
+                screen = QGuiApplication.primaryScreen()
+            if screen is not None:
+                geom = screen.availableGeometry()
+                dpr = screen.devicePixelRatio()
+                margin = 8
+                min_x = geom.left() + margin
+                max_x = geom.right() + 1 - self.width() - margin
+                target_x = max(min_x, min(max_x, target_x)) if max_x >= min_x else min_x
+                min_y = geom.top() + margin
+                max_y = geom.bottom() + 1 - self.height() - margin
+                if target_y < min_y:
+                    below_y = int(round(self._anchor_global.bottom() + panel_style.ANCHOR_GAP))
+                    target_y = below_y if below_y + self.height() <= geom.bottom() - margin else min_y
+                elif target_y > max_y:
+                    target_y = max_y
+            target = QPoint(target_x, target_y)
+
+        hwnd = int(self.winId())
         if winapi and hasattr(winapi, "set_round_region"):
             try:
-                hwnd = int(self.winId())
                 winapi.set_round_region(hwnd, self.width(), self.height(), int(panel_style.R_PANEL), dpr)
-            except Exception as exc:
-                _log_err("VolumePopover.winapi_round", exc)
+            except Exception:
+                pass
 
-        self.show()
-        self.raise_()
+        panel_style.animate_in(self, target, switch_from_x=switch_from_x)
         self.activateWindow()
 
         # Start periodic 2s polling and fetch immediately
@@ -470,9 +542,9 @@ class VolumePopover(QWidget):
         self.refresh_sessions()
         self.update()
 
-    def update_volume(self, level: float, muted: bool, device: Optional[str] = None) -> None:
+    def update_volume(self, level: Optional[float], muted: bool, device: Optional[str] = None) -> None:
         """Update master volume level, mute state, and optional device name."""
-        self._level = float(level)
+        self._level = None if level is None else max(0.0, min(100.0, float(level)))
         self._muted = bool(muted)
         if device is not None:
             self._device = str(device)
@@ -514,7 +586,7 @@ class VolumePopover(QWidget):
             _on_done("audio_sessions", res)
 
     def hide(self) -> None:
-        """Hide panel and stop polling timer."""
+        """Hide panel (hard close) and stop timers."""
         self._poll_timer.stop()
         self._master_coalescer.stop()
         self._app_coalescer.stop()
@@ -522,6 +594,29 @@ class VolumePopover(QWidget):
         self._is_closing = False
         self._last_close_time = time.monotonic()
         super().hide()
+
+    def hide_animated(self) -> None:
+        """Close with the shared animate_out motion."""
+        if not self.isVisible() or self._is_closing:
+            self._is_closing = False
+            return
+        self._is_closing = True
+        self._last_close_time = time.monotonic()
+        self._poll_timer.stop()
+        self._dragging = None
+        panel_style.animate_out(self, on_done=self._on_closed)
+
+    def hide_instant(self) -> None:
+        """Close without animation (e.g. switching to another capsule panel)."""
+        self._poll_timer.stop()
+        self._dragging = None
+        if self.isVisible():
+            self._last_close_time = time.monotonic()
+        self._is_closing = False
+        panel_style.animate_out(self, on_done=self._on_closed, instant=True)
+
+    def _on_closed(self) -> None:
+        self._is_closing = False
 
     # -----------------------------------------------------------------------
     # Internal Helpers & Thread-Safe Slots
@@ -540,16 +635,13 @@ class VolumePopover(QWidget):
         )
 
         new_sessions: List[Dict[str, Any]] = []
-        for s in raw_list:
-            if not isinstance(s, dict):
-                continue
-            item = dict(s)
-            k = str(item.get("key", item.get("name", "")))
-            if active_drag_key and k == active_drag_key:
+        for i, s in enumerate(raw_list):
+            item = _sanitize_session(s, i)
+            if active_drag_key and item["key"] == active_drag_key:
                 # Keep currently dragged local level
                 for ex in self._sessions:
-                    if str(ex.get("key", ex.get("name", ""))) == active_drag_key:
-                        item["level"] = ex.get("level", item.get("level", 50.0))
+                    if str(ex.get("key", "")) == active_drag_key:
+                        item["level"] = ex.get("level", item.get("level"))
                         break
             new_sessions.append(item)
 
@@ -616,7 +708,7 @@ class VolumePopover(QWidget):
         """Apply session level request via coalescer."""
         level = max(0.0, min(100.0, float(level)))
         for s in self._sessions:
-            if str(s.get("key", s.get("name", ""))) == key:
+            if str(s.get("key", "")) == key:
                 s["level"] = level
                 break
         self.update()
@@ -650,7 +742,7 @@ class VolumePopover(QWidget):
         """Toggle mute state for an application session."""
         target_muted = False
         for s in self._sessions:
-            if str(s.get("key", s.get("name", ""))) == key:
+            if str(s.get("key", "")) == key:
                 target_muted = not bool(s.get("muted", False))
                 s["muted"] = target_muted
                 break
@@ -679,8 +771,22 @@ class VolumePopover(QWidget):
             _log_err("open_audio_settings", exc)
 
     # -----------------------------------------------------------------------
-    # Painting
+    # Rendering (offscreen ölçekleme için ortak yol)
     # -----------------------------------------------------------------------
+
+    def render_to_image(self, dpr: float = 2.0) -> Any:
+        from PySide6.QtGui import QImage
+        w_phys = max(1, int(self.width() * dpr))
+        h_phys = max(1, int(self.height() * dpr))
+        img = QImage(w_phys, h_phys, QImage.Format.Format_ARGB32_Premultiplied)
+        img.setDevicePixelRatio(dpr)
+        img.fill(Qt.GlobalColor.transparent)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        self._paint_card(p)
+        p.end()
+        return img
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
@@ -694,372 +800,212 @@ class VolumePopover(QWidget):
     def _paint_card(self, p: QPainter) -> None:
         w = float(self.width())
         h = float(self.height())
-        r_full = QRectF(0.0, 0.0, w, h)
+        PAD, GAP = panel_style.PAD, panel_style.GAP
+        cw = w - 2.0 * PAD
+        panel_style.draw_panel_shell(p, QRectF(0.0, 0.0, w, h))
 
-        # 1. Base Shell (Direction C Opaque Dark Graphite)
-        panel_style.draw_panel_shell(p, r_full)
-
-        # -------------------------------------------------------------------
-        # 2. Header: Equalizer Icon + 'Ses' + Device Chip + Close Button ('✕')
-        # -------------------------------------------------------------------
-        icon_r = QRectF(14.0, 13.0, 18.0, 18.0)
-        draw_equalizer_icon(p, icon_r, panel_style.SOUND)
-
-        title = "Ses"
-        f_title = panel_style.f_title()
-        p.setFont(f_title)
-        p.setPen(panel_style.TEXT)
-        fm_t = QFontMetricsF(f_title)
-        title_w = fm_t.horizontalAdvance(title)
-        p.drawText(QRectF(38.0, 11.0, title_w + 4.0, 22.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
-
-        # Close button ('✕')
-        self._btn_close_rect = QRectF(w - 14.0 - 24.0, 10.0, 24.0, 24.0)
-        p.save()
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(panel_style.BUTTON_HOVER if self._hover_close else panel_style.BUTTON_BG)
-        p.drawPath(panel_style.rounded(self._btn_close_rect, panel_style.R_BUTTON))
-        p.setPen(QPen(panel_style.TEXT if self._hover_close else panel_style.TEXT_MUTED, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        cx_c = self._btn_close_rect.center().x()
-        cy_c = self._btn_close_rect.center().y()
-        p.drawLine(QPointF(cx_c - 4.0, cy_c - 4.0), QPointF(cx_c + 4.0, cy_c + 4.0))
-        p.drawLine(QPointF(cx_c + 4.0, cy_c - 4.0), QPointF(cx_c - 4.0, cy_c + 4.0))
-        p.restore()
-
-        # Device Chip: 'Hoparlör · Realtek Audio' via media.tr_device_name
-        dev_raw = self._device
-        dev_name = media.tr_device_name(dev_raw) if (media and hasattr(media, "tr_device_name")) else dev_raw
-        if not dev_name and dev_raw:
-            dev_name = dev_raw
-
-        if dev_name:
-            f_chip = panel_style.font(10.5, QFont.Weight.Medium)
-            p.setFont(f_chip)
-            fm_c = QFontMetricsF(f_chip)
-
-            chip_x = 38.0 + title_w + 10.0
-            max_chip_w = (self._btn_close_rect.left() - 8.0) - chip_x
-            if max_chip_w > 40.0:
-                avail_text_w = max_chip_w - 34.0  # simge (12) + boşluklar
-                disp_dev_name = fm_c.elidedText(dev_name, Qt.TextElideMode.ElideRight, avail_text_w)
-                chip_w = min(max_chip_w, fm_c.horizontalAdvance(disp_dev_name) + 34.0)
-                chip_r = QRectF(chip_x, 12.0, chip_w, 20.0)
-
-                p.save()
-                p.setPen(QPen(QColor(255, 255, 255, 20), 1.0))
-                p.setBrush(QColor(255, 255, 255, 14))
-                p.drawPath(panel_style.rounded(chip_r, 10.0))
-
-                # Mini speaker icon inside chip
-                spk_rect = QRectF(chip_x + 8.0, 16.0, 12.0, 12.0)
-                draw_speaker_icon(p, spk_rect, panel_style.TEXT_MUTED, muted=False)
-
-                # Text
-                p.setPen(panel_style.TEXT_BODY)
-                p.drawText(
-                    QRectF(chip_x + 25.0, 12.0, chip_w - 31.0, 20.0),
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                    disp_dev_name,
-                )
-                p.restore()
-
-        # Separator under header
-        p.setPen(QPen(panel_style.TILE_BORDER, 1.0))
-        p.drawLine(QPointF(0.0, 44.0), QPointF(w, 44.0))
-
-        # -------------------------------------------------------------------
-        # 3. Master Tile: 'GENEL SES SEVİYESİ' + Big % + Slider + Mute Round
-        # -------------------------------------------------------------------
-        y_master = 54.0
-        r_master = QRectF(14.0, y_master, w - 28.0, 78.0)
-        panel_style.draw_tile(p, r_master)
-
-        # Tile Label: 'GENEL SES SEVİYESİ'
-        p.setFont(panel_style.f_label())
-        p.setPen(panel_style.TEXT_LABEL)
-        p.drawText(
-            QRectF(r_master.left() + 12.0, r_master.top() + 11.0, 160.0, 18.0),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            "GENEL SES SEVİYESİ",
+        # ------------------------------------------------------------------
+        # 1. Başlık: 'Ses' + cihaz rozeti ('… ›') + kapat ×
+        # ------------------------------------------------------------------
+        dev_disp = _device_display(self._device)
+        chip = f"{dev_disp} ›" if dev_disp else None
+        hdr = panel_style.draw_header(
+            p,
+            QRectF(PAD, PAD, cw, panel_style.HEADER_H),
+            "Ses",
+            icon=lambda pp, r: draw_equalizer_icon(pp, r, panel_style.SOUND),
+            chip=chip,
+            close_hover=self._hover_close,
         )
+        self._btn_close_rect = QRectF(hdr["close"]) if hdr.get("close") is not None else QRectF()
+        self._chip_rect = QRectF(hdr["chip"]) if hdr.get("chip") is not None else QRectF()
 
-        # Big % Indicator on top-right: e.g. '%25' in SOUND #0A84FF
-        f_pct = panel_style.font(16.0, QFont.Weight.ExtraBold, tabular=True)
-        p.setFont(f_pct)
-        pct_color = panel_style.TEXT_MUTED if self._muted else panel_style.SOUND
-        p.setPen(pct_color)
-        pct_str = "Sessiz" if self._muted else panel_style.pct(self._level)
-        p.drawText(
-            QRectF(r_master.right() - 80.0, r_master.top() + 10.0, 68.0, 18.0),
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            pct_str,
-        )
+        y = PAD + panel_style.HEADER_H + GAP
 
-        # Horizontal Master Slider & Mute Button Row
-        y_controls = r_master.top() + 38.0
-        mute_size = 28.0
-        r_mute = QRectF(r_master.right() - 12.0 - mute_size, y_controls, mute_size, mute_size)
-        self._hit_master_mute = r_mute
+        # ------------------------------------------------------------------
+        # 2. GENEL SES kartı: ana kaydırıcı + sessiz düğmesi
+        # ------------------------------------------------------------------
+        master_h = 2 * panel_style.CARD_PAD + CARD_OVER_H + MAIN_ROW_H
+        inner = panel_style.draw_card(p, QRectF(PAD, y, cw, master_h), "Genel ses")
+        self._paint_master(p, inner)
+        y += master_h + GAP
 
-        # Draw Mute Round Button
-        p.save()
-        p.setPen(QPen(panel_style.TILE_BORDER, 1.0))
-        p.setBrush(panel_style.BUTTON_HOVER if self._hover_master_mute else panel_style.BUTTON_BG)
-        p.drawEllipse(r_mute)
-        mute_icon_color = panel_style.DANGER if self._muted else (panel_style.TEXT if self._hover_master_mute else panel_style.TEXT_BODY)
-        draw_speaker_icon(p, r_mute, mute_icon_color, muted=self._muted)
-        p.restore()
-
-        # Horizontal Master Slider Track
-        slider_left = r_master.left() + 12.0
-        slider_right = r_mute.left() - 10.0
-        slider_w = max(40.0, slider_right - slider_left)
-        track_h = 6.0
-        track_y = y_controls + (mute_size - track_h) / 2.0
-        r_track = QRectF(slider_left, track_y, slider_w, track_h)
-        self._hit_master_slider = QRectF(slider_left, y_controls, slider_w, mute_size)
-
-        # Background track
-        p.save()
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(panel_style.TRACK)
-        p.drawPath(panel_style.rounded(r_track, 3.0))
-
-        # Filled track
-        fill_ratio = max(0.0, min(1.0, self._level / 100.0))
-        fill_w = slider_w * fill_ratio
-        if fill_w > 0.0:
-            r_fill = QRectF(slider_left, track_y, fill_w, track_h)
-            p.setBrush(panel_style.TEXT_MUTED if self._muted else panel_style.SOUND)
-            p.drawPath(panel_style.rounded(r_fill, 3.0))
-
-        # Draggable Thumb
-        thumb_cx = slider_left + fill_w
-        thumb_cy = track_y + track_h / 2.0
-        thumb_r = 7.0
-        p.setPen(QPen(QColor(0, 0, 0, 40), 1.0))
-        p.setBrush(QColor(255, 255, 255))
-        p.drawEllipse(QPointF(thumb_cx, thumb_cy), thumb_r, thumb_r)
-        p.restore()
-
-        # -------------------------------------------------------------------
-        # 4. 'UYGULAMALAR' Tile: Per-App Rows (Scrollable if > 6 rows)
-        # -------------------------------------------------------------------
-        y_apps = r_master.bottom() + 10.0
+        # ------------------------------------------------------------------
+        # 3. UYGULAMALAR kartı: oturum satırları / boş durum / kaydırma
+        # ------------------------------------------------------------------
+        apps_h = 2 * panel_style.CARD_PAD + CARD_OVER_H + self._apps_rows_height()
         n_sessions = len(self._sessions)
-        if n_sessions == 0:
-            apps_tile_h = 88.0
-        else:
-            visible_n = min(n_sessions, self.MAX_VISIBLE_ROWS)
-            apps_tile_h = 50.0 * visible_n + 42.0
-
-        r_apps = QRectF(14.0, y_apps, w - 28.0, apps_tile_h)
-        panel_style.draw_tile(p, r_apps)
-
-        # Section Header: 'UYGULAMALAR' + stream count
-        p.setFont(panel_style.f_label())
-        p.setPen(panel_style.TEXT_LABEL)
-        p.drawText(
-            QRectF(r_apps.left() + 12.0, r_apps.top() + 11.0, 120.0, 16.0),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            "UYGULAMALAR",
+        over_right = (
+            panel_style.turkish_upper(f"{n_sessions} uygulama") if n_sessions else None
         )
-
-        count_text = f"{n_sessions} uygulama" if n_sessions > 0 else "0 uygulama"
-        p.setFont(panel_style.f_small())
-        p.setPen(panel_style.TEXT_MUTED)
-        p.drawText(
-            QRectF(r_apps.right() - 100.0, r_apps.top() + 11.0, 88.0, 16.0),
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            count_text,
+        inner2 = panel_style.draw_card(
+            p, QRectF(PAD, y, cw, apps_h), "Uygulamalar", overline_right=over_right
         )
+        self._paint_apps(p, inner2)
+        y += apps_h + GAP
 
-        # Content Area
-        content_top = r_apps.top() + 34.0
-        content_h = apps_tile_h - 44.0
-        content_r = QRectF(r_apps.left() + 12.0, content_top, r_apps.width() - 24.0, content_h)
+        # ------------------------------------------------------------------
+        # 4. Alt bilgi: 'Windows ses · HH:MM' + 'Ses ayarları' düğmesi
+        # ------------------------------------------------------------------
+        btn = panel_style.draw_footer(
+            p,
+            QRectF(PAD, y, cw, panel_style.FOOTER_H),
+            f"Windows ses · {self._stamp}",
+            "Ses ayarları",
+            button_hover=self._hover_footer,
+        )
+        self._footer_btn_rect = QRectF(btn) if btn is not None else QRectF()
+        assert h >= y + panel_style.FOOTER_H  # yükseklik formülü tutarlı kalmalı
 
+    def _paint_master(self, p: QPainter, inner: QRectF) -> None:
+        """GENEL SES satırı: hoparlör ikonu + etiket + % / 'Sessiz', hap iz, sessiz düğmesi."""
+        lvl = self._level
+        dev_disp = _device_display(self._device)
+        main_label = _device_kind(dev_disp) or "—"
+
+        mute_r = QRectF(inner.right() - MASTER_MUTE_SZ, inner.center().y() - MASTER_MUTE_SZ / 2.0,
+                        MASTER_MUTE_SZ, MASTER_MUTE_SZ)
+        self._hit_master_mute = QRectF(mute_r)
+
+        slider_r = QRectF(inner.left(), inner.top(),
+                          max(40.0, mute_r.left() - 10.0 - inner.left()), inner.height())
+        hover = self._hover_master_slider or self._dragging == "master"
+        res = panel_style.draw_slider(
+            p,
+            slider_r,
+            main_label,
+            lvl,
+            fill=panel_style.SOUND,
+            icon=lambda pp, r: draw_speaker_icon(
+                pp, r, panel_style.DANGER if self._muted else panel_style.TEXT_BODY,
+                muted=self._muted),
+            hover=hover,
+            muted=self._muted,
+        )
+        track = QRectF(res["track"])
+        self._hit_master_slider = track.adjusted(-4.0, -10.0, 4.0, 10.0)
+
+        # Sessiz düğmesi (yuvarlak hap)
+        p.save()
+        p.setPen(QPen(panel_style.BUTTON_BORDER, 1.0))
+        p.setBrush(panel_style.BUTTON_HOVER if self._hover_master_mute else panel_style.BUTTON_BG)
+        p.drawPath(panel_style.rounded(mute_r.adjusted(0.5, 0.5, -0.5, -0.5), panel_style.R_BUTTON))
+        mute_icon_col = panel_style.DANGER if self._muted else (
+            panel_style.TEXT if self._hover_master_mute else panel_style.TEXT_BODY)
+        draw_speaker_icon(p, mute_r, mute_icon_col, muted=self._muted)
+        p.restore()
+
+    def _paint_apps(self, p: QPainter, inner: QRectF) -> None:
+        """UYGULAMALAR satırları; boş durum metni; 6 satırdan fazlası kaydırılır."""
+        n = len(self._sessions)
         self._hit_app_rows = []
+        content_r = QRectF(inner)
 
-        if n_sessions == 0:
-            # Empty State
+        if n == 0:
             p.setFont(panel_style.f_body())
             p.setPen(panel_style.TEXT_MUTED)
-            p.drawText(content_r, Qt.AlignmentFlag.AlignCenter, "Ses çalan uygulama yok")
-        else:
-            total_content_h = n_sessions * 50.0 - 8.0
-            self._max_scroll_y = max(0.0, total_content_h - content_h)
-            self._scroll_y = max(0.0, min(self._max_scroll_y, self._scroll_y))
+            p.drawText(content_r, Qt.AlignmentFlag.AlignCenter, EMPTY_APPS_TEXT)
+            return
 
-            p.save()
-            p.setClipRect(content_r)
+        total_content_h = n * ROW_H + (n - 1) * ROW_GAP
+        self._max_scroll_y = max(0.0, total_content_h - content_r.height())
+        self._scroll_y = max(0.0, min(self._max_scroll_y, self._scroll_y))
 
-            for i, session in enumerate(self._sessions):
-                row_y = content_top + (i * 50.0) - self._scroll_y
-                # Skip off-clip rows
-                if row_y + 44.0 < content_top or row_y > content_top + content_h:
-                    continue
+        p.save()
+        p.setClipRect(content_r)
 
-                key = str(session.get("key", session.get("name", f"app_{i}")))
-                name = str(session.get("name") or "Uygulama")
-                exe = str(session.get("exe") or "")
-                level = float(session.get("level", 100.0))
-                muted = bool(session.get("muted", False))
-                active = bool(session.get("active", False))
+        for i, session in enumerate(self._sessions):
+            row_y = content_r.top() + i * (ROW_H + ROW_GAP) - self._scroll_y
+            if row_y + ROW_H < content_r.top() or row_y > content_r.bottom():
+                continue
 
-                # Upper Line (Icon + Name + Active Dot + %)
-                icon_rect = QRectF(content_r.left(), row_y, 20.0, 20.0)
-                pix = QPixmap()
-                if exe and winapi and hasattr(winapi, "app_icon"):
-                    try:
-                        pix = winapi.app_icon(exe, 32)
-                    except Exception:
-                        pix = QPixmap()
+            key = str(session["key"])
+            name = str(session["name"])
+            exe = str(session["exe"])
+            level = session["level"]
+            muted = bool(session["muted"])
+            active = bool(session["active"])
 
-                if pix and not pix.isNull():
-                    p.drawPixmap(icon_rect.toRect(), pix)
-                else:
-                    draw_fallback_app_icon(p, icon_rect, name)
-
-                # Active blue dot
-                text_left = icon_rect.right() + 8.0
-                if active:
-                    dot_cx = icon_rect.right() + 6.0
-                    dot_cy = row_y + 10.0
-                    p.save()
+            # 24 px uygulama ikonu (gerçek ikon; yoksa harf dolgusu / zil)
+            icon_r = QRectF(content_r.left(), row_y + (ROW_H - 24.0) / 2.0, 24.0, 24.0)
+            pix = QPixmap()
+            if exe and winapi and hasattr(winapi, "app_icon"):
+                try:
+                    pix = winapi.app_icon(exe, 32)
+                except Exception:
+                    pix = QPixmap()
+            if pix is not None and not pix.isNull():
+                p.drawPixmap(icon_r.toRect(), pix)
+            else:
+                if key == "system" or name == "Sistem sesleri":
                     p.setPen(Qt.PenStyle.NoPen)
-                    p.setBrush(panel_style.SOUND)
-                    p.drawEllipse(QPointF(dot_cx, dot_cy), 2.5, 2.5)
-                    p.restore()
-                    text_left = dot_cx + 7.0
+                    p.setBrush(panel_style.BUTTON_BG)
+                    p.drawEllipse(icon_r)
+                    draw_bell_icon(p, icon_r, panel_style.TEXT_BODY)
+                else:
+                    draw_fallback_app_icon(p, icon_r, name)
 
-                # App Percentage
-                f_app_pct = panel_style.font(11.0, QFont.Weight.Medium, tabular=True)
-                p.setFont(f_app_pct)
-                pct_str = "Sessiz" if muted else panel_style.pct(level)
-                p.setPen(panel_style.TEXT_MUTED if muted else (panel_style.SOUND if active else panel_style.TEXT_BODY))
-                fm_ap = QFontMetricsF(f_app_pct)
-                val_w = fm_ap.horizontalAdvance(pct_str) + 4.0
-                val_rect = QRectF(content_r.right() - val_w, row_y, val_w, 20.0)
-                p.drawText(val_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, pct_str)
-
-                # App Name (Elided)
-                avail_name_w = (val_rect.left() - 6.0) - text_left
-                p.setFont(panel_style.f_body())
-                p.setPen(panel_style.TEXT)
-                fm_name = QFontMetricsF(panel_style.f_body())
-                name_disp = fm_name.elidedText(name, Qt.TextElideMode.ElideRight, avail_name_w)
-                p.drawText(
-                    QRectF(text_left, row_y, avail_name_w, 20.0),
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                    name_disp,
-                )
-
-                # Lower Line (Mini Slider + Mini Mute Button)
-                y_lower = row_y + 22.0
-                mini_mute_size = 20.0
-                r_mini_mute = QRectF(content_r.right() - mini_mute_size, y_lower, mini_mute_size, mini_mute_size)
-
-                # Mini Mute Button
-                hover_this_mute = (self._hover_session_mute == key)
-                p.save()
-                p.setPen(QPen(panel_style.TILE_BORDER, 1.0))
-                p.setBrush(panel_style.BUTTON_HOVER if hover_this_mute else panel_style.BUTTON_BG)
-                p.drawPath(panel_style.rounded(r_mini_mute, 6.0))
-                icon_mute_col = panel_style.DANGER if muted else (panel_style.TEXT if hover_this_mute else panel_style.TEXT_MUTED)
-                draw_speaker_icon(p, r_mini_mute, icon_mute_col, muted=muted)
-                p.restore()
-
-                # Mini Slider Track
-                m_track_left = content_r.left()
-                m_track_right = r_mini_mute.left() - 8.0
-                m_track_w = max(30.0, m_track_right - m_track_left)
-                m_track_h = 4.0
-                m_track_y = y_lower + (mini_mute_size - m_track_h) / 2.0
-                r_mini_track = QRectF(m_track_left, m_track_y, m_track_w, m_track_h)
-
-                # Background
+            # 'Özel çalıyor' mavi nokta (ikonun sağ üst köşesinde)
+            if active:
                 p.save()
                 p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(panel_style.TRACK)
-                p.drawPath(panel_style.rounded(r_mini_track, 2.0))
-
-                # Fill
-                fill_ratio_app = max(0.0, min(1.0, level / 100.0))
-                fill_w_app = m_track_w * fill_ratio_app
-                if fill_w_app > 0.0:
-                    r_mini_fill = QRectF(m_track_left, m_track_y, fill_w_app, m_track_h)
-                    p.setBrush(QColor(10, 132, 255, 70) if muted else panel_style.SOUND)
-                    p.drawPath(panel_style.rounded(r_mini_fill, 2.0))
-
-                # Mini Thumb
-                thumb_cx_app = m_track_left + fill_w_app
-                thumb_cy_app = m_track_y + m_track_h / 2.0
-                thumb_r_app = 4.5
-                p.setPen(QPen(QColor(0, 0, 0, 40), 1.0))
-                p.setBrush(QColor(255, 255, 255))
-                p.drawEllipse(QPointF(thumb_cx_app, thumb_cy_app), thumb_r_app, thumb_r_app)
+                glow = QColor(panel_style.SOUND)
+                glow.setAlpha(90)
+                p.setBrush(glow)
+                p.drawEllipse(QPointF(icon_r.right() - 2.0, icon_r.top() + 2.0), 5.0, 5.0)
+                p.setBrush(panel_style.SOUND)
+                p.drawEllipse(QPointF(icon_r.right() - 2.0, icon_r.top() + 2.0), 3.0, 3.0)
                 p.restore()
 
-                # Cache hit rects
-                self._hit_app_rows.append({
-                    "key": key,
-                    "row_rect": QRectF(content_r.left(), row_y, content_r.width(), 44.0),
-                    "slider_rect": QRectF(m_track_left, y_lower, m_track_w, mini_mute_size),
-                    "mute_rect": r_mini_mute,
-                    "level": level,
-                    "muted": muted,
-                })
-
+            # Küçük sessiz düğmesi (sağda)
+            mute_r = QRectF(content_r.right() - APP_MUTE_SZ,
+                            row_y + (ROW_H - APP_MUTE_SZ) / 2.0, APP_MUTE_SZ, APP_MUTE_SZ)
+            hover_mute = (self._hover_session_mute == key)
+            p.save()
+            p.setPen(QPen(panel_style.BUTTON_BORDER, 1.0))
+            p.setBrush(panel_style.BUTTON_HOVER if hover_mute else panel_style.BUTTON_BG)
+            p.drawPath(panel_style.rounded(mute_r.adjusted(0.5, 0.5, -0.5, -0.5), panel_style.R_BUTTON))
+            icon_mute_col = panel_style.DANGER if muted else (
+                panel_style.TEXT if hover_mute else panel_style.TEXT_MUTED)
+            draw_speaker_icon(p, mute_r, icon_mute_col, muted=muted)
             p.restore()
 
-            # Scrollbar indicator if sessions > MAX_VISIBLE_ROWS
-            if n_sessions > self.MAX_VISIBLE_ROWS and self._max_scroll_y > 0.0:
-                sb_w = 3.0
-                sb_x = r_apps.right() - 5.0
-                sb_track_h = content_h
-                sb_thumb_h = max(24.0, (content_h / total_content_h) * sb_track_h)
-                sb_thumb_y = content_top + (self._scroll_y / self._max_scroll_y) * (sb_track_h - sb_thumb_h)
-                p.save()
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(QColor(255, 255, 255, 60))
-                p.drawPath(panel_style.rounded(QRectF(sb_x, sb_thumb_y, sb_w, sb_thumb_h), 1.5))
-                p.restore()
+            # Compact kaydırıcı (10 px iz + 14 px tutaç); yüzde etiket satırının sağında
+            slider_left = icon_r.right() + 10.0
+            slider_r = QRectF(slider_left, row_y,
+                              max(30.0, mute_r.left() - 10.0 - slider_left), ROW_H)
+            hover_row = (self._hover_session_slider == key) or (self._dragging == f"app:{key}")
+            res = panel_style.draw_slider(
+                p, slider_r, name, level, fill=panel_style.SOUND, muted=muted, hover=hover_row,
+                compact=True,
+            )
+            track = QRectF(res["track"])
+            self._hit_app_rows.append({
+                "key": key,
+                "row_rect": QRectF(content_r.left(), row_y, content_r.width(), ROW_H),
+                "track_rect": track,
+                "track": track,
+                "slider_rect": track.adjusted(-4.0, -4.0, 4.0, 4.0),
+                "hit_rect": track.adjusted(-4.0, -4.0, 4.0, 4.0),
+                "mute_rect": QRectF(mute_r),
+                "level": level,
+                "muted": muted,
+            })
 
-        # -------------------------------------------------------------------
-        # 5. Footer: Pinned 'Windows ses ayarları' Link
-        # -------------------------------------------------------------------
-        footer_top = h - 40.0
-        p.setPen(QPen(panel_style.TILE_BORDER, 1.0))
-        p.drawLine(QPointF(14.0, footer_top), QPointF(w - 14.0, footer_top))
+        p.restore()
 
-        footer_text = "Windows ses ayarları"
-        f_foot = panel_style.f_small()
-        p.setFont(f_foot)
-        fm_foot = QFontMetricsF(f_foot)
-        foot_w = fm_foot.horizontalAdvance(footer_text) + 20.0  # icon + gap + text
-        foot_h = 24.0
-        foot_x = (w - foot_w) / 2.0
-        foot_y = footer_top + (40.0 - foot_h) / 2.0
-        self._link_footer_rect = QRectF(foot_x, foot_y, foot_w, foot_h)
-
-        # Draw Settings Gear Icon + Link Text
-        gear_rect = QRectF(foot_x, foot_y + 4.0, 14.0, 14.0)
-        link_color = panel_style.TEXT if self._hover_footer else panel_style.TEXT_MUTED
-        draw_gear_icon(p, gear_rect, link_color)
-
-        p.setPen(link_color)
-        p.drawText(
-            QRectF(foot_x + 18.0, foot_y, foot_w - 18.0, foot_h),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            footer_text,
-        )
-
-        if self._hover_footer:
-            # Underline link text on hover
-            line_y = foot_y + foot_h - 4.0
-            p.setPen(QPen(panel_style.TEXT_BODY, 1.0))
-            p.drawLine(QPointF(foot_x + 18.0, line_y), QPointF(foot_x + foot_w, line_y))
+        # Kaydırma göstergesi
+        if n > MAX_VISIBLE_ROWS and self._max_scroll_y > 0.0:
+            sb_w = 3.0
+            sb_x = content_r.right() + 4.0
+            sb_track_h = content_r.height()
+            sb_thumb_h = max(24.0, (content_r.height() / total_content_h) * sb_track_h)
+            sb_thumb_y = content_r.top() + (self._scroll_y / self._max_scroll_y) * (sb_track_h - sb_thumb_h)
+            p.save()
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 60))
+            p.drawPath(panel_style.rounded(QRectF(sb_x, sb_thumb_y, sb_w, sb_thumb_h), 1.5))
+            p.restore()
 
     # -----------------------------------------------------------------------
     # Interactive Events
@@ -1069,46 +1015,49 @@ class VolumePopover(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             pos = event.position()
 
-            # Close button
+            # Kapat ×
             if self._btn_close_rect.contains(pos):
-                self.hide()
+                self.hide_animated()
                 event.accept()
                 return
 
-            # Footer settings link
-            if self._link_footer_rect.contains(pos):
+            # Cihaz rozeti ('›'): bugünkü ayar eylemi — Windows ses ayarları
+            if self._chip_rect.contains(pos):
                 self._open_windows_sound_settings()
                 event.accept()
                 return
 
-            # Master Mute Button
+            # Alt bilgi düğmesi: 'Ses ayarları'
+            if self._footer_btn_rect.contains(pos):
+                self._open_windows_sound_settings()
+                event.accept()
+                return
+
+            # Ana sessiz düğmesi
             if self._hit_master_mute.contains(pos):
                 self.toggle_master_mute()
                 event.accept()
                 return
 
-            # Master Slider Track
-            if self._hit_master_slider.adjusted(-4.0, -4.0, 4.0, 4.0).contains(pos):
+            # Ana kaydırıcı
+            if self._hit_master_slider.contains(pos):
                 self._dragging = "master"
-                pct = max(0.0, min(100.0, (pos.x() - self._hit_master_slider.left()) / self._hit_master_slider.width() * 100.0))
-                self._request_master_volume(pct, force=False)
+                value = panel_style.slider_value_at(self._hit_master_slider, pos.x())
+                self._request_master_volume(value, force=False)
                 event.accept()
                 return
 
-            # App Session Rows
+            # Uygulama satırları
             for row in self._hit_app_rows:
                 key = row["key"]
-                # Session Mute Button
                 if row["mute_rect"].contains(pos):
                     self.toggle_session_mute(key)
                     event.accept()
                     return
-
-                # Session Slider Track
-                if row["slider_rect"].adjusted(-4.0, -4.0, 4.0, 4.0).contains(pos):
+                if row["slider_rect"].contains(pos):
                     self._dragging = f"app:{key}"
-                    pct = max(0.0, min(100.0, (pos.x() - row["slider_rect"].left()) / row["slider_rect"].width() * 100.0))
-                    self._request_session_level(key, pct, force=False)
+                    value = panel_style.slider_value_at(row["track_rect"], pos.x())
+                    self._request_session_level(key, value, force=False)
                     event.accept()
                     return
 
@@ -1118,47 +1067,54 @@ class VolumePopover(QWidget):
         pos = event.position()
 
         if self._dragging == "master":
-            pct = max(0.0, min(100.0, (pos.x() - self._hit_master_slider.left()) / self._hit_master_slider.width() * 100.0))
-            self._request_master_volume(pct, force=False)
+            value = panel_style.slider_value_at(self._hit_master_slider, pos.x())
+            self._request_master_volume(value, force=False)
             event.accept()
             return
 
         if self._dragging and self._dragging.startswith("app:"):
             key = self._dragging.split(":", 1)[1]
-            # Find matching slider rect
             for row in self._hit_app_rows:
                 if row["key"] == key:
-                    pct = max(0.0, min(100.0, (pos.x() - row["slider_rect"].left()) / row["slider_rect"].width() * 100.0))
-                    self._request_session_level(key, pct, force=False)
+                    value = panel_style.slider_value_at(row["track_rect"], pos.x())
+                    self._request_session_level(key, value, force=False)
                     break
             event.accept()
             return
 
-        # Update hover states
+        # Hover durumları
         hover_close = self._btn_close_rect.contains(pos)
-        hover_footer = self._link_footer_rect.contains(pos)
+        hover_footer = self._footer_btn_rect.contains(pos)
         hover_master_mute = self._hit_master_mute.contains(pos)
+        hover_master_slider = self._hit_master_slider.contains(pos)
 
-        hover_session_mute = None
+        hover_session_mute: Optional[str] = None
+        hover_session_slider: Optional[str] = None
         for row in self._hit_app_rows:
             if row["mute_rect"].contains(pos):
                 hover_session_mute = row["key"]
-                break
+            if row["slider_rect"].contains(pos):
+                hover_session_slider = row["key"]
 
         needs_update = (
             hover_close != self._hover_close
             or hover_footer != self._hover_footer
             or hover_master_mute != self._hover_master_mute
+            or hover_master_slider != self._hover_master_slider
             or hover_session_mute != self._hover_session_mute
+            or hover_session_slider != self._hover_session_slider
         )
 
         self._hover_close = hover_close
         self._hover_footer = hover_footer
         self._hover_master_mute = hover_master_mute
+        self._hover_master_slider = hover_master_slider
         self._hover_session_mute = hover_session_mute
+        self._hover_session_slider = hover_session_slider
 
         # Cursor shaping
-        if hover_close or hover_footer or hover_master_mute or hover_session_mute:
+        if any((hover_close, hover_footer, hover_master_mute, hover_master_slider,
+                hover_session_mute is not None, hover_session_slider is not None)):
             self.setCursor(Qt.CursorShape.PointingHandCursor)
         else:
             self.unsetCursor()
@@ -1168,10 +1124,20 @@ class VolumePopover(QWidget):
 
         super().mouseMoveEvent(event)
 
+    def leaveEvent(self, event) -> None:
+        self._hover_close = False
+        self._hover_footer = False
+        self._hover_master_mute = False
+        self._hover_master_slider = False
+        self._hover_session_mute = None
+        self._hover_session_slider = None
+        self.update()
+        super().leaveEvent(event)
+
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             if self._dragging == "master":
-                self._request_master_volume(self._level, force=True)
+                self._request_master_volume(self._level if self._level is not None else 0.0, force=True)
                 self._dragging = None
                 event.accept()
                 return
@@ -1180,8 +1146,8 @@ class VolumePopover(QWidget):
                 key = self._dragging.split(":", 1)[1]
                 cur_lvl = 50.0
                 for s in self._sessions:
-                    if str(s.get("key", s.get("name", ""))) == key:
-                        cur_lvl = float(s.get("level", 50.0))
+                    if str(s.get("key", "")) == key:
+                        cur_lvl = float(s.get("level") if s.get("level") is not None else 50.0)
                         break
                 self._request_session_level(key, cur_lvl, force=True)
                 self._dragging = None
@@ -1193,27 +1159,29 @@ class VolumePopover(QWidget):
     def wheelEvent(self, event: QWheelEvent) -> None:
         pos = event.position()
         delta = event.angleDelta().y()
-        diff = 2.0 if delta > 0 else -2.0
+        diff = WHEEL_STEP if delta > 0 else -WHEEL_STEP
 
-        # Master slider wheel
-        if self._hit_master_slider.adjusted(-4.0, -10.0, 4.0, 10.0).contains(pos):
-            new_lvl = max(0.0, min(100.0, self._level + diff))
-            self._request_master_volume(new_lvl, force=False)
+        # Ana kaydırıcı tekerleği
+        if self._hit_master_slider.contains(pos):
+            if self._level is not None:
+                new_lvl = max(0.0, min(100.0, self._level + diff))
+                self._request_master_volume(new_lvl, force=False)
             event.accept()
             return
 
-        # App session slider wheel (tight hit rect so wheel scrolls list otherwise)
-        if len(self._sessions) <= self.MAX_VISIBLE_ROWS:
-            for row in self._hit_app_rows:
-                if row["slider_rect"].adjusted(-2.0, -1.0, 2.0, 1.0).contains(pos):
-                    key = row["key"]
-                    new_lvl = max(0.0, min(100.0, float(row["level"]) + diff))
+        # Uygulama kaydırıcı tekerleği (sıkı isabet; boşluktan liste kaydırılır)
+        for row in self._hit_app_rows:
+            if row["slider_rect"].contains(pos):
+                key = row["key"]
+                base = row["level"] if row["level"] is not None else None
+                if base is not None:
+                    new_lvl = max(0.0, min(100.0, float(base) + diff))
                     self._request_session_level(key, new_lvl, force=False)
-                    event.accept()
-                    return
+                event.accept()
+                return
 
-        # Scroll in apps list if > 6 rows
-        if len(self._sessions) > self.MAX_VISIBLE_ROWS and self._max_scroll_y > 0.0:
+        # 6 satırdan fazla ise liste kaydır
+        if len(self._sessions) > MAX_VISIBLE_ROWS and self._max_scroll_y > 0.0:
             step = 35.0 if delta < 0 else -35.0
             self._scroll_y = max(0.0, min(self._max_scroll_y, self._scroll_y + step))
             self.update()
@@ -1222,9 +1190,13 @@ class VolumePopover(QWidget):
 
         super().wheelEvent(event)
 
+    def _on_anchor_timeout(self) -> None:
+        if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
+            self.hide_animated()
+
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape:
-            self.hide()
+            self.hide_animated()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -1238,7 +1210,7 @@ class VolumePopover(QWidget):
                     self._anchor_timer.start(300)
                     super().changeEvent(event)
                     return
-                self.hide()
+                self.hide_animated()
         super().changeEvent(event)
 
     def hideEvent(self, event) -> None:
@@ -1246,8 +1218,8 @@ class VolumePopover(QWidget):
         self._master_coalescer.stop()
         self._app_coalescer.stop()
         self._dragging = None
-        self._is_closing = False
         self._last_close_time = time.monotonic()
+        self._is_closing = False
         super().hideEvent(event)
 
 
