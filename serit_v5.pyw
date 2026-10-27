@@ -139,10 +139,10 @@ CARD_HEIGHT: float = 52.0
 CARD_RADIUS: float = 13.0
 CARD_Y: float = 6.0
 GAP_MODULE: float = 6.0
-CLAUDE_CARD_WIDTH: float = 182.0
+CLAUDE_CARD_WIDTH: float = 192.0
 MEDIA_CARD_WIDTH: float = 314.0
 MEDIA_CARD_WIDTH_COMPACT: float = 240.0
-AG_CARD_WIDTH: float = 142.0
+AG_CARD_WIDTH: float = 192.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
@@ -1459,28 +1459,40 @@ class SeritDock(QWidget):
             apps_x = round(sw / 2.0 - w_apps / 2.0) if w_apps > 0 else round(sw / 2.0)
 
             # Left wing: Claude, Mail, Antigravity, Sistem
+            # Sığmazsa önce Mail, sonra Claude + Antigravity birlikte (çift olarak) daralır.
             eff_mail_w = w_mail
-            if show_mail:
-                needed_space = (
-                    (w_claude if show_claude else 0.0)
-                    + eff_mail_w
-                    + (w_ag if show_ag else 0.0)
-                    + (SYS_CARD_WIDTH if show_sys else 0.0)
-                    + max(0, (int(show_claude) + int(show_mail) + int(show_ag) + int(show_sys)) - 1) * GAP_MODULE
-                )
-                max_allowed_lw = apps_x - (GAP_MODULE if (w_apps > 0) else 0.0) - 10.0
-                if needed_space > max_allowed_lw:
-                    overflow = needed_space - max_allowed_lw
-                    can_shrink = max(0.0, eff_mail_w - dock_cards.MAIL_CARD_MIN_WIDTH)
-                    eff_mail_w -= min(overflow, can_shrink)
+            eff_claude_w = w_claude
+            eff_ag_w = w_ag
+            n_lw = int(show_claude) + int(show_mail) + int(show_ag) + int(show_sys)
+            needed_space = (
+                (w_claude if show_claude else 0.0)
+                + (eff_mail_w if show_mail else 0.0)
+                + (w_ag if show_ag else 0.0)
+                + (SYS_CARD_WIDTH if show_sys else 0.0)
+                + max(0, n_lw - 1) * GAP_MODULE
+            )
+            max_allowed_lw = apps_x - (GAP_MODULE if (w_apps > 0) else 0.0) - 10.0
+            overflow = needed_space - max_allowed_lw
+            if overflow > 0 and show_mail:
+                can_shrink = max(0.0, eff_mail_w - dock_cards.MAIL_CARD_MIN_WIDTH)
+                cut = min(overflow, can_shrink)
+                eff_mail_w -= cut
+                overflow -= cut
+            n_pair = int(show_claude) + int(show_ag)
+            if overflow > 0 and n_pair:
+                per = min(overflow / n_pair, max(0.0, CLAUDE_CARD_WIDTH - dock_cards.CONC_CARD_MIN_WIDTH))
+                if show_claude:
+                    eff_claude_w -= per
+                if show_ag:
+                    eff_ag_w -= per
 
             lw_cards: List[Tuple[str, float]] = []
             if show_claude:
-                lw_cards.append(("claude", w_claude))
+                lw_cards.append(("claude", eff_claude_w))
             if show_mail:
                 lw_cards.append(("mail", eff_mail_w))
             if show_ag:
-                lw_cards.append(("ag", w_ag))
+                lw_cards.append(("ag", eff_ag_w))
             if show_sys:
                 lw_cards.append(("sys", SYS_CARD_WIDTH))
 

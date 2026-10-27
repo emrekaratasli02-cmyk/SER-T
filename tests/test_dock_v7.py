@@ -98,7 +98,7 @@ def test_claude_symbol_fallback() -> None:
     get_qapp()
     img = QImage(200, 64, QImage.Format.Format_ARGB32_Premultiplied)
     p = QPainter(img)
-    rect = QRectF(0.0, 0.0, 182.0, 52.0)
+    rect = QRectF(0.0, 0.0, 184.0, 52.0)
     claude_data = {"session": 55, "week": 20, "session_reset": "4sa 12dk"}
 
     # 1. Normal render with existing SVG

@@ -46,6 +46,11 @@ CARD_FILL_HOVER: QColor = QColor(255, 255, 255, int(255 * 0.11))
 CARD_BORDER: QColor = QColor(255, 255, 255, int(255 * 0.08))
 
 COLOR_CLAUDE_TILE: QColor = QColor("#D97757")
+COLOR_CLAUDE_CORAL: QColor = QColor("#D97757")
+COLOR_CLAUDE_SKY: QColor = QColor("#38BDF8")
+COLOR_GEMINI_BLUE: QColor = QColor("#8AB4F8")
+COLOR_RING_CRITICAL: QColor = QColor("#F87171")
+COLOR_CONCENTRIC_TRACK: QColor = QColor(255, 255, 255, int(255 * 0.08))
 COLOR_BAR_GREEN: QColor = QColor("#34C759")
 COLOR_BAR_AMBER: QColor = QColor("#FF9F0A")
 COLOR_BAR_RED: QColor = QColor("#FF453A")
@@ -65,15 +70,221 @@ COLOR_CAL_RED: QColor = QColor("#FF453A")
 
 TR_DAYS_SHORT = {0: "Pzt", 1: "Sal", 2: "Çar", 3: "Per", 4: "Cum", 5: "Cmt", 6: "Paz"}
 
-CLAUDE_CARD_WIDTH: float = 182.0
+CLAUDE_CARD_WIDTH: float = 192.0
 MEDIA_CARD_WIDTH: float = 314.0
 MEDIA_CARD_WIDTH_COMPACT: float = 240.0
-AG_CARD_WIDTH: float = 142.0
+AG_CARD_WIDTH: float = 192.0
+# Sol kanat sığmazsa Claude/Antigravity kartları bu genişliğe kadar daralır (sıfırlanma yazısı sığmazsa gizlenir)
+CONC_CARD_MIN_WIDTH: float = 132.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
 SYS_RING_SIZE: float = 34.0
 SYS_RING_STROKE: float = 3.5
+
+
+def format_reset_display(
+    reset_val: Any,
+    now_utc: Optional[dt.datetime] = None,
+) -> str:
+    """Format reset time for D4 concentric card rows.
+
+    If the reset is less than 24h away, returns remaining time like '47 dk', '1 sa 59 dk'.
+    Otherwise returns short Turkish weekday + time like 'Per 16:40', 'Cmt 09:00'.
+    Unknown -> '—'.
+    """
+    if not reset_val or not isinstance(reset_val, (str, dt.datetime)):
+        return "—"
+
+    if now_utc is None:
+        now_utc = dt.datetime.now(dt.timezone.utc)
+
+    target_dt: Optional[dt.datetime] = None
+    if isinstance(reset_val, dt.datetime):
+        target_dt = reset_val
+    else:
+        s = reset_val.strip()
+        # 1. Direct relative time pattern like '47 dk', '1 sa 59 dk', '4sa 12dk'
+        m_rel = re.match(r"^(\d+)\s*(sa|dk|g)(\s*(\d+)\s*dk)?$", s)
+        if m_rel:
+            parts = []
+            g1, u1 = m_rel.group(1), m_rel.group(2)
+            parts.append(f"{g1} {u1}")
+            if m_rel.group(4):
+                parts.append(f"{m_rel.group(4)} dk")
+            return " ".join(parts)
+
+        # 2. Try parsing ISO string
+        try:
+            clean = s.replace("Z", "+00:00")
+            target_dt = dt.datetime.fromisoformat(clean)
+        except Exception:
+            target_dt = None
+
+    if target_dt is not None:
+        if target_dt.tzinfo is None:
+            target_dt = target_dt.replace(tzinfo=dt.timezone.utc)
+        diff_sec = (target_dt - now_utc).total_seconds()
+        if diff_sec < 0:
+            diff_sec = 0.0
+        if diff_sec < 86400.0:  # less than 24h away
+            sec = int(round(diff_sec))
+            h, rem = divmod(sec, 3600)
+            m = (rem % 3600) // 60
+            if h > 0 and m > 0:
+                return f"{h} sa {m} dk"
+            elif h > 0:
+                return f"{h} sa"
+            else:
+                return f"{m} dk"
+        else:
+            tz_tr = getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))
+            local_dt = target_dt.astimezone(tz_tr)
+            w_idx = local_dt.weekday()
+            w_str = TR_DAYS_SHORT.get(w_idx, "")
+            return f"{w_str} {local_dt.hour:02d}:{local_dt.minute:02d}".strip()
+
+    # 3. Fallback for strings that already carry TR weekday and time (e.g. '29 Eki Per 16:40')
+    m_tr = re.search(r"(Pzt|Sal|Çar|Per|Cum|Cmt|Paz)\s+(\d{1,2}:\d{2})", str(reset_val))
+    if m_tr:
+        return f"{m_tr.group(1)} {m_tr.group(2)}"
+
+    return "—"
+
+
+def draw_concentric_rings_slot(
+    p: QPainter,
+    slot_rect: QRectF,
+    outer_pct: Optional[float],
+    outer_color: QColor,
+    inner_pct: Optional[float],
+    inner_color: QColor,
+    logo_pixmap: Optional[QPixmap],
+    fallback_icon_fn: Optional[Any] = None,
+) -> None:
+    """Draw 40x40 concentric rings gauge with centred logo inside.
+
+    viewBox 42x42: outer r=18, inner r=13, stroke 2.2 round caps, clockwise from 12 o'clock.
+    Track: rgba(255, 255, 255, 0.08).
+    Colours: identity colour below 90%, #F87171 at >= 90%. Missing -> empty track only.
+    """
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+
+    center = slot_rect.center()
+    cx = center.x()
+    cy = center.y()
+    scale = slot_rect.width() / 42.0
+    r_outer = 18.0 * scale
+    r_inner = 13.0 * scale
+    stroke_w = 2.2 * scale
+
+    rect_outer = QRectF(cx - r_outer, cy - r_outer, 2.0 * r_outer, 2.0 * r_outer)
+    rect_inner = QRectF(cx - r_inner, cy - r_inner, 2.0 * r_inner, 2.0 * r_inner)
+
+    # 1. Background tracks
+    pen_track = QPen(COLOR_CONCENTRIC_TRACK, stroke_w, Qt.SolidLine, Qt.RoundCap)
+    p.setPen(pen_track)
+    p.setBrush(Qt.NoBrush)
+    p.drawEllipse(rect_outer)
+    p.drawEllipse(rect_inner)
+
+    # 2. Outer ring arc (start 12 o'clock = 90 deg, clockwise = negative span)
+    if outer_pct is not None and outer_pct > 0.0:
+        val_clamped = max(0.0, min(100.0, float(outer_pct)))
+        fg_col = COLOR_RING_CRITICAL if val_clamped >= 90.0 else outer_color
+        pen_outer = QPen(fg_col, stroke_w, Qt.SolidLine, Qt.RoundCap)
+        p.setPen(pen_outer)
+        span_angle = -int(round((val_clamped / 100.0) * 360.0 * 16.0))
+        p.drawArc(rect_outer, 90 * 16, span_angle)
+
+    # 3. Inner ring arc
+    if inner_pct is not None and inner_pct > 0.0:
+        val_clamped = max(0.0, min(100.0, float(inner_pct)))
+        fg_col = COLOR_RING_CRITICAL if val_clamped >= 90.0 else inner_color
+        pen_inner = QPen(fg_col, stroke_w, Qt.SolidLine, Qt.RoundCap)
+        p.setPen(pen_inner)
+        span_angle = -int(round((val_clamped / 100.0) * 360.0 * 16.0))
+        p.drawArc(rect_inner, 90 * 16, span_angle)
+
+    # 4. Centred logo
+    if logo_pixmap is not None and not logo_pixmap.isNull():
+        lw = logo_pixmap.width() / logo_pixmap.devicePixelRatioF()
+        lh = logo_pixmap.height() / logo_pixmap.devicePixelRatioF()
+        lx = cx - lw / 2.0
+        ly = cy - lh / 2.0
+        p.drawPixmap(QPointF(lx, ly), logo_pixmap)
+    elif fallback_icon_fn is not None:
+        fallback_icon_fn(p, slot_rect)
+
+    p.restore()
+
+
+def draw_concentric_text_rows(
+    p: QPainter,
+    text_rect: QRectF,
+    row1: Tuple[Optional[float], QColor, str, str],
+    row2: Tuple[Optional[float], QColor, str, str],
+) -> None:
+    """Draw two text rows for concentric card:
+
+    Each row: bold coloured percentage (%11.5 DemiBold tabular), label (10.0 Normal),
+    reset time right-aligned muted (9.5 Normal).
+    """
+    f_pct = theme.make_font(11.5, QFont.Weight.DemiBold, tabular=True)
+    f_lbl = theme.make_font(10.0, QFont.Weight.Normal)
+    f_rst = theme.make_font(9.5, QFont.Weight.Normal)
+
+    rx = text_rect.x()
+    rw = text_rect.width()
+    y1 = text_rect.y()
+    row_h = 17.0
+    y2 = y1 + row_h + 2.0
+
+    rows_data = [
+        (row1, y1),
+        (row2, y2),
+    ]
+
+    fm_lbl = QFontMetricsF(f_lbl)
+
+    def fm_lbl_w(t: str) -> float:
+        return fm_lbl.horizontalAdvance(t)
+
+    p.save()
+    for (pct_val, base_col, lbl_text, rst_text), ry in rows_data:
+        r_box = QRectF(rx, ry, rw, row_h)
+
+        # 1. Percent text
+        if pct_val is not None:
+            pct_num = int(round(float(pct_val)))
+            pct_str = f"%{pct_num}"
+            pct_col = COLOR_RING_CRITICAL if pct_num >= 90 else base_col
+        else:
+            pct_str = "—"
+            pct_col = COLOR_TXT_MUTED
+
+        p.setFont(f_pct)
+        p.setPen(pct_col)
+        fm_pct = p.fontMetrics()
+        p.drawText(r_box, Qt.AlignLeft | Qt.AlignVCenter, pct_str)
+        wp = fm_pct.horizontalAdvance(pct_str)
+
+        # 2. Label text
+        p.setFont(f_lbl)
+        p.setPen(COLOR_TXT_PRIMARY)
+        r_lbl = QRectF(rx + wp + 4.0, ry, rw - wp - 4.0, row_h)
+        p.drawText(r_lbl, Qt.AlignLeft | Qt.AlignVCenter, lbl_text)
+
+        # 3. Reset text (right-aligned, muted) — yalnızca etiketle çakışmadan sığarsa
+        p.setFont(f_rst)
+        fm_rst = p.fontMetrics()
+        need_w = wp + 4.0 + fm_lbl_w(lbl_text) + 6.0 + fm_rst.horizontalAdvance(rst_text)
+        if rst_text and need_w <= rw:
+            p.setPen(COLOR_TXT_MUTED)
+            p.drawText(r_box, Qt.AlignRight | Qt.AlignVCenter, rst_text)
+
+    p.restore()
 
 
 def get_progress_bar_color(pct: float) -> QColor:
@@ -161,23 +372,10 @@ def get_claude_symbol_pixmap(target_size: float = 29.0, dpr: float = 1.0) -> Opt
         return None
 
 
-def draw_claude_tile_star(p: QPainter, rect: QRectF) -> None:
-    """Draw 40x40 tile radius 10 fill #D97757 with 6-spoke rounded star (colour #1d1410)."""
+def draw_claude_star_glyph(p: QPainter, rect: QRectF, size: float = 16.0) -> None:
+    """Draw 6-spoke rounded star glyph (#D97757) centered inside slot."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
-    tile_path = theme.rounded_path(rect, 10.0)
-    p.fillPath(tile_path, COLOR_CLAUDE_TILE)
-
-    # 6-spoke star matching HTML mockup:
-    # 12 lines from center or 6 diametrical lines through center
-    # SVG viewBox 0 0 24 24, stroke 2.6, stroke-linecap round
-    # The mockup uses:
-    # (3.50,12) to (20.50,12)
-    # (4.64,7.75) to (19.36,16.25)
-    # (7.75,4.64) to (16.25,19.36)
-    # (12,3.5) to (12,20.5)
-    # (16.25,4.64) to (7.75,19.36)
-    # (19.36,7.75) to (4.64,16.25)
     star_lines = [
         (3.50, 12.00, 20.50, 12.00),
         (4.64, 7.75, 19.36, 16.25),
@@ -186,23 +384,21 @@ def draw_claude_tile_star(p: QPainter, rect: QRectF) -> None:
         (16.25, 4.64, 7.75, 19.36),
         (19.36, 7.75, 4.64, 16.25),
     ]
-
-    p.save()
-    # Star is 28x28 centered in 40x40 rect (mockup: .claude .tile svg { width: 28px; height: 28px; })
-    star_size = 28.0
-    scale = star_size / 24.0
-    sx = rect.x() + (rect.width() - star_size) / 2.0
-    sy = rect.y() + (rect.height() - star_size) / 2.0
+    scale = size / 24.0
+    sx = rect.x() + (rect.width() - size) / 2.0
+    sy = rect.y() + (rect.height() - size) / 2.0
     p.translate(sx, sy)
     p.scale(scale, scale)
-
-    pen = QPen(QColor("#1d1410"), 2.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    pen = QPen(COLOR_CLAUDE_CORAL, 2.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen)
     for x1, y1, x2, y2 in star_lines:
         p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
     p.restore()
 
-    p.restore()
+
+def draw_claude_tile_star(p: QPainter, rect: QRectF) -> None:
+    """Draw 6-spoke rounded star glyph fallback."""
+    draw_claude_star_glyph(p, rect, size=16.0)
 
 
 def draw_claude_card(
@@ -212,84 +408,63 @@ def draw_claude_card(
     hover: bool = False,
     press_scale: float = 1.0,
 ) -> None:
-    """Renders 182x52 Claude card according to dock v3 spec."""
+    """Renders 184x52 Claude card according to D4 'Konsantrik çift halka' spec."""
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
 
-    # 40x40 Slot at left + 6px padding (Option C: flat symbol 29x29 centred, no tile)
-    slot_rect = QRectF(rect.x() + 6.0, rect.y() + 6.0, 40.0, 40.0)
+    # 40x40 Slot at left: padding 10px -> x = rect.x() + 10.0, y = rect.y() + 6.0
+    slot_rect = QRectF(rect.x() + 10.0, rect.y() + 6.0, 40.0, 40.0)
     dev = p.device()
     dpr = dev.devicePixelRatioF() if dev is not None else 1.0
-    claude_pm = get_claude_symbol_pixmap(29.0, dpr)
-    if claude_pm is not None and not claude_pm.isNull():
-        sym_x = slot_rect.x() + (slot_rect.width() - 29.0) / 2.0
-        sym_y = slot_rect.y() + (slot_rect.height() - 29.0) / 2.0
-        p.drawPixmap(QPointF(sym_x, sym_y), claude_pm)
-    else:
-        draw_claude_tile_star(p, slot_rect)
+    claude_pm = get_claude_symbol_pixmap(16.0, dpr)
 
     # Data
     s_pct = claude_data.get("session")
     w_pct = claude_data.get("week")
     s_reset = claude_data.get("session_reset", "")
-    has_err = ("err" in claude_data) or (s_pct is None and w_pct is None and not s_reset)
+    w_reset = claude_data.get("week_reset", "")
+    has_err = ("err" in claude_data) or (s_pct is None and w_pct is None and not s_reset and not w_reset)
 
-    time_left = sources.left_text(s_reset) if (s_reset and isinstance(s_reset, str)) else "--"
-    if has_err and (not s_reset or time_left == "--"):
-        time_left = "–"
+    outer_pct = float(s_pct) if s_pct is not None else None
+    inner_pct = float(w_pct) if w_pct is not None else None
 
-    s_pct_val = float(s_pct) if s_pct is not None else 0.0
-    w_pct_val = float(w_pct) if w_pct is not None else 0.0
+    # Concentric rings slot (Outer: session, Inner: week)
+    draw_concentric_rings_slot(
+        p,
+        slot_rect,
+        outer_pct=outer_pct if not has_err else None,
+        outer_color=COLOR_CLAUDE_CORAL,
+        inner_pct=inner_pct if not has_err else None,
+        inner_color=COLOR_CLAUDE_SKY,
+        logo_pixmap=claude_pm,
+        fallback_icon_fn=draw_claude_tile_star,
+    )
 
-    s_str = f"%{int(round(s_pct_val))}" if s_pct is not None else "–"
-    w_str = f"Hafta %{int(round(w_pct_val))}" if w_pct is not None else "Hafta –"
+    # Right side text area: gap 9px -> x = 10 + 40 + 9 = rect.x() + 59.0
+    bx = rect.x() + 59.0
+    bw = max(20.0, rect.right() - 10.0 - bx)
 
-    # Body rect (112px wide, x = tile_right + 10px = rect.x() + 56px)
-    bx = rect.x() + 56.0
-    by = rect.y() + 7.0
-    bw = 112.0
-
-    # Fonts
-    f_lbl = theme.make_font(12.0, QFont.Weight.DemiBold)
-    f_sub = theme.make_font(11.0, QFont.Weight.Normal, tabular=True)
-    f_big = theme.make_font(17.0, QFont.Weight.Bold, tabular=True)
-
-    # Row 1: Oturum left + time_left right
     p.save()
-    p.setFont(f_lbl)
-    p.setPen(COLOR_TXT_PRIMARY)
-    p.drawText(QRectF(bx, by, bw, 14.0), Qt.AlignLeft | Qt.AlignVCenter, "Oturum")
-
-    p.setFont(f_sub)
-    p.setPen(COLOR_TXT_MUTED)
-    p.drawText(QRectF(bx, by, bw, 14.0), Qt.AlignRight | Qt.AlignVCenter, time_left)
-
-    # Row 2: %XX big left + Hafta %XX right
-    p.setFont(f_big)
-    p.setPen(COLOR_TXT_PRIMARY)
-    p.drawText(QRectF(bx, by + 14.0, bw, 20.0), Qt.AlignLeft | Qt.AlignVCenter, s_str)
-
-    p.setFont(f_sub)
-    p.setPen(COLOR_TXT_MUTED)
-    p.drawText(QRectF(bx, by + 16.0, bw, 18.0), Qt.AlignRight | Qt.AlignVCenter, w_str)
-
-    # Row 3: 4px progress bar radius 2 (track rgba(255,255,255,0.13))
-    bar_y = by + 34.0
-    bar_rect = QRectF(bx, bar_y, bw, 4.0)
-    p.setPen(Qt.NoPen)
-    p.setBrush(COLOR_BAR_TRACK)
-    p.drawRoundedRect(bar_rect, 2.0, 2.0)
-
-    # Fill
-    fill_w = max(0.0, min(bw, bw * (s_pct_val / 100.0)))
-    if fill_w > 0.0 and s_pct is not None:
-        fill_color = get_progress_bar_color(s_pct_val)
-        p.setBrush(fill_color)
-        p.drawRoundedRect(QRectF(bx, bar_y, fill_w, 4.0), 2.0, 2.0)
-
-    # If error / stale, draw a small amber dot in the top right
     if has_err:
+        p.setOpacity(0.65)
+        f_err = theme.make_font(10.5, QFont.Weight.Normal)
+        p.setFont(f_err)
+        p.setPen(COLOR_TXT_MUTED)
+        p.drawText(QRectF(bx, rect.y(), bw, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, "Claude okunamadı")
+        p.setOpacity(1.0)
+        p.setPen(Qt.NoPen)
         p.setBrush(COLOR_BAR_AMBER)
         p.drawEllipse(QPointF(rect.right() - 8.0, rect.top() + 8.0), 3.0, 3.0)
+        p.restore()
+        return
+
+    # Reset strings
+    s_reset_str = format_reset_display(s_reset)
+    w_reset_str = format_reset_display(w_reset)
+
+    text_rect = QRectF(bx, rect.y() + 8.0, bw, 36.0)
+    row1 = (outer_pct, COLOR_CLAUDE_CORAL, "Oturum", s_reset_str)
+    row2 = (inner_pct, COLOR_CLAUDE_SKY, "Hafta", w_reset_str)
+    draw_concentric_text_rows(p, text_rect, row1, row2)
 
     p.restore()
 
@@ -695,23 +870,46 @@ def draw_ag_card(
     hover: bool = False,
     press_scale: float = 1.0,
 ) -> None:
-    """Renders 142x52 Antigravity quota card with Claude & Gemini usage bars."""
+    """Renders 184x52 Antigravity quota card according to D4 'Konsantrik çift halka' spec."""
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
 
-    # 40x40 Slot at left + 6px padding (matching Claude card slot and visual size)
-    slot_rect = QRectF(rect.x() + 6.0, rect.y() + 6.0, 40.0, 40.0)
+    # 40x40 Slot at left: padding 10px -> x = rect.x() + 10.0, y = rect.y() + 6.0
+    slot_rect = QRectF(rect.x() + 10.0, rect.y() + 6.0, 40.0, 40.0)
     dev = p.device()
     dpr = dev.devicePixelRatioF() if dev is not None else 1.0
-    pm = get_antigravity_pixmap(35.0, dpr)
-    if pm is not None and not pm.isNull():
-        sym_x = slot_rect.x() + (slot_rect.width() - 35.0) / 2.0
-        sym_y = slot_rect.y() + (slot_rect.height() - 35.0) / 2.0
-        p.drawPixmap(QPointF(sym_x, sym_y), pm)
-
-    bx = rect.x() + 46.0
-    bw = max(20.0, rect.right() - 10.0 - bx)
+    ag_pm = get_antigravity_pixmap(17.0, dpr)
 
     has_err = bool(ag_data.get("err")) or not ag_data.get("groups")
+
+    groups = ag_data.get("groups") or []
+    # Claude = group labelled 'Claude'
+    claude_grp = next((g for g in groups if str(g.get("label", "")).lower() == "claude"), None)
+    used_claude: Optional[float] = float(claude_grp["used"]) if (claude_grp and "used" in claude_grp) else None
+    claude_reset_raw = (claude_grp.get("reset_at") or claude_grp.get("reset_tr")) if claude_grp else ""
+
+    # Gemini = max 'used' among groups whose label starts with 'Gemini'
+    gemini_grps = [g for g in groups if str(g.get("label", "")).startswith("Gemini")]
+    used_gemini: Optional[float] = None
+    gemini_reset_raw = ""
+    if gemini_grps:
+        max_grp = max(gemini_grps, key=lambda g: float(g.get("used", 0.0)))
+        used_gemini = float(max_grp.get("used", 0.0))
+        gemini_reset_raw = max_grp.get("reset_at") or max_grp.get("reset_tr") or ""
+
+    # Concentric rings slot (Outer: Claude quota, Inner: Gemini quota)
+    draw_concentric_rings_slot(
+        p,
+        slot_rect,
+        outer_pct=used_claude if not has_err else None,
+        outer_color=COLOR_CLAUDE_CORAL,
+        inner_pct=used_gemini if not has_err else None,
+        inner_color=COLOR_GEMINI_BLUE,
+        logo_pixmap=ag_pm,
+    )
+
+    # Right side text area: gap 9px -> x = 10 + 40 + 9 = rect.x() + 59.0
+    bx = rect.x() + 59.0
+    bw = max(20.0, rect.right() - 10.0 - bx)
 
     p.save()
     if has_err:
@@ -727,52 +925,14 @@ def draw_ag_card(
         p.restore()
         return
 
-    groups = ag_data.get("groups") or []
-    # Claude = group labelled 'Claude'
-    claude_grp = next((g for g in groups if str(g.get("label", "")).lower() == "claude"), None)
-    used_claude = float(claude_grp.get("used", 0.0)) if claude_grp else 0.0
+    # Reset strings
+    claude_rst_str = format_reset_display(claude_reset_raw)
+    gemini_rst_str = format_reset_display(gemini_reset_raw)
 
-    # Gemini = max 'used' among groups whose label starts with 'Gemini'
-    gemini_grps = [g for g in groups if str(g.get("label", "")).startswith("Gemini")]
-    used_gemini = max((float(g.get("used", 0.0)) for g in gemini_grps), default=0.0) if gemini_grps else 0.0
-
-    f_lbl = theme.make_font(10.5, QFont.Weight.Normal)
-    f_pct = theme.make_font(10.5, QFont.Weight.DemiBold, tabular=True)
-
-    rows_data = [
-        ("Claude", used_claude, rect.y() + 10.0),
-        ("Gemini", used_gemini, rect.y() + 28.0),
-    ]
-
-    lbl_w = 34.0
-    pct_w = 26.0
-    bar_x = bx + lbl_w + 5.0
-    bar_w = max(10.0, bw - lbl_w - pct_w - 10.0)
-    pct_x = bar_x + bar_w + 5.0
-
-    for name, used_val, row_y in rows_data:
-        p.setFont(f_lbl)
-        p.setPen(COLOR_TXT_MUTED)
-        p.drawText(QRectF(bx, row_y, lbl_w, 14.0), Qt.AlignLeft | Qt.AlignVCenter, name)
-
-        # 4px bar track
-        bar_rect = QRectF(bar_x, row_y + 5.0, bar_w, 4.0)
-        p.setPen(Qt.NoPen)
-        p.setBrush(COLOR_BAR_TRACK)
-        p.drawRoundedRect(bar_rect, 2.0, 2.0)
-
-        # Bar fill
-        fill_w = max(0.0, min(bar_w, bar_w * (used_val / 100.0)))
-        if fill_w > 0.0:
-            fill_col = get_progress_bar_color(used_val)
-            p.setBrush(fill_col)
-            p.drawRoundedRect(QRectF(bar_x, row_y + 5.0, fill_w, 4.0), 2.0, 2.0)
-
-        # Percentage
-        p.setFont(f_pct)
-        p.setPen(COLOR_TXT_PRIMARY)
-        pct_str = f"%{int(round(used_val))}"
-        p.drawText(QRectF(pct_x, row_y, pct_w, 14.0), Qt.AlignRight | Qt.AlignVCenter, pct_str)
+    text_rect = QRectF(bx, rect.y() + 8.0, bw, 36.0)
+    row1 = (used_claude, COLOR_CLAUDE_CORAL, "Claude", claude_rst_str)
+    row2 = (used_gemini, COLOR_GEMINI_BLUE, "Gemini", gemini_rst_str)
+    draw_concentric_text_rows(p, text_rect, row1, row2)
 
     p.restore()
 

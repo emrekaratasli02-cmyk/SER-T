@@ -231,8 +231,8 @@ def test_mail_and_ag_card_states() -> None:
     }
     img_ag = QImage(200, 64, QImage.Format.Format_ARGB32)
     p_ag = QPainter(img_ag)
-    dock_cards.draw_ag_card(p_ag, QRectF(10, 6, 142, 52), ag_ok)
-    dock_cards.draw_ag_card(p_ag, QRectF(10, 6, 142, 52), {"err": "Quota error"})
+    dock_cards.draw_ag_card(p_ag, QRectF(10, 6, 192, 52), ag_ok)
+    dock_cards.draw_ag_card(p_ag, QRectF(10, 6, 192, 52), {"err": "Quota error"})
     p_ag.end()
 
     # 3. Hit boxes in SeritDock
