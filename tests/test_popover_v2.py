@@ -133,9 +133,10 @@ def test_content_builders():
         "fetched_at": time.time(),
     }
     f_res = build_fx_content(fx_data)
-    assert f_res["title"] == "Piyasa"
+    assert f_res["title"] == "Döviz"
     assert len(f_res["sections"][0]["rows"]) == 3
-    assert "%+0,14" in f_res["sections"][0]["rows"][0]["chg"]
+    assert "%0,14" in f_res["sections"][0]["rows"][0]["chg"]
+    assert f_res["sections"][0]["rows"][0]["val"].endswith(" TL")
 
     # 5. Stale & Error Builders
     stale_claude = dict(claude_data, stale=True)
