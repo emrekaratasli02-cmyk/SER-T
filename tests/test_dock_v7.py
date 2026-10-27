@@ -75,12 +75,12 @@ def test_clock_v1_metrics_and_midnight_roll() -> None:
 
     assert r_clk == rect
     assert r_wx is not None
-    assert r_wx.left() > rect.left()
+    assert r_wx.left() >= rect.left()  # hava durumu artık solda (27 Eki 2026), saat en sağda
     assert r_wx.right() <= rect.right()
 
     # Test hit priority: pos on weather portion hits wx first
     pos_weather = QPointF(r_wx.center().x(), r_wx.center().y())
-    pos_time = QPointF(rect.left() + 20.0, rect.center().y())
+    pos_time = QPointF(rect.right() - 20.0, rect.center().y())  # saat artık sağ kenarda
 
     hit_boxes = [(r_wx, "wx", None), (r_clk, "clock", None)]
     # First match wins (or reversed if checked reversed)
@@ -117,29 +117,19 @@ def test_claude_symbol_fallback() -> None:
 
 
 def test_tray_cluster_shrinking() -> None:
-    """Verify tray cluster icon count shrinks from 7 down to 0 when space is tight."""
+    """Verify individual tray icons are not placed on the band (delegated to tray panel)."""
     get_qapp()
 
     dock = serit_mod.SeritDock({"style": "band", "pinned": []}, preview_mode=True)
     dock._tray_items = [{"name": f"app_{i}"} for i in range(10)]
-    dock.resize(1000, 64)
-
-    # Simulate tight space (media playing on 1000px screen)
-    dock._now_playing_info = {"title": "Test Song", "app": "Music"}
-    img = QImage(1000, 64, QImage.Format.Format_ARGB32)
-    dock.render(img)
-
-    tray_hits = [e for r, k, e in dock.hit_boxes if k == "tray_icon"]
-    assert len(tray_hits) == 0, f"Expected 0 tray icons due to tight space, got {len(tray_hits)}"
-
-    # Now simulate generous width (no media on 1536px band)
-    dock._now_playing_info = None
     dock.resize(1536, 64)
+    dock.compute_layout_and_resize(initial=True)
     img_wide = QImage(1536, 64, QImage.Format.Format_ARGB32)
     dock.render(img_wide)
-    tray_hits_wide = [e for r, k, e in dock.hit_boxes if k == "tray_icon"]
-    assert len(tray_hits_wide) == 7, f"Expected 7 tray icons with ample space, got {len(tray_hits_wide)}"
-    print("[PASS] Tray cluster icon count shrinking verified.")
+
+    tray_hits = [e for r, k, e in dock.hit_boxes if k == "tray_icon"]
+    assert len(tray_hits) == 0, f"Expected 0 tray icons on band, got {len(tray_hits)}"
+    print("[PASS] Tray icons absent from band verified.")
 
 
 def test_brightness_coalescing_and_resubmission() -> None:
@@ -215,12 +205,12 @@ def test_band_vs_pill_hit_boxes() -> None:
     assert "tray" in band_keys
     assert "bright" in band_keys
     assert "vol" in band_keys
-    assert "tray_icon" in band_keys
+    assert "tray_icon" not in band_keys
 
-    # Tray cluster buttons must be pinned to the right edge (within ~14px of screen width)
-    vol_rect = next(r for r, k, _e in band.hit_boxes if k == "vol")
-    assert band.width() - vol_rect.right() == 14.0, (
-        f"Vol button should end 14px from right screen edge, got {band.width() - vol_rect.right()}"
+    # Clock must be pinned to the far right edge (within 14px of screen width)
+    clock_rect = next(r for r, k, _e in band.hit_boxes if k == "clock")
+    assert band.width() - clock_rect.right() == 14.0, (
+        f"Clock should end 14px from right screen edge, got {band.width() - clock_rect.right()}"
     )
 
     # Pill style

@@ -115,10 +115,12 @@ def test_wings_no_overlap() -> None:
             rw_hits = [r for r, k, _e in dock.hit_boxes if k in ("media", "cal")]
             clk_hits = [r for r, k, _e in dock.hit_boxes if k == "clock"]
             vol_hits = [r for r, k, _e in dock.hit_boxes if k == "vol"]
+            chv_hits = [r for r, k, _e in dock.hit_boxes if k == "tray"]
 
             assert len(app_hits) == n_apps
             assert len(clk_hits) >= 1
             assert len(vol_hits) == 1
+            assert len(chv_hits) == 1
 
             lw_left = min(r.left() for r in lw_hits)
             lw_right = max(r.right() for r in lw_hits)
@@ -126,21 +128,22 @@ def test_wings_no_overlap() -> None:
             app_right = max(r.right() for r in app_hits)
             rw_left = min(r.left() for r in rw_hits)
             rw_right = max(r.right() for r in rw_hits)
-            clk_left = min(r.left() for r in clk_hits)
-            vol_right = vol_hits[0].right()
+            chv_left = chv_hits[0].left()
+            clk_right = clk_hits[0].right()
 
             # Assert clearances
             assert lw_left >= 10.0, f"Left wing {lw_left} overlaps left screen edge (< 10px)"
             assert lw_right <= app_left - 5.5, f"Left wing {lw_right} overlaps apps {app_left}"
             assert rw_left >= app_right + 5.5, f"Right wing {rw_left} overlaps apps {app_right}"
-            assert clk_left >= rw_right + 11.5, f"Clock {clk_left} overlaps right wing {rw_right} (clearance < 12px)"
-            assert abs(sw - 14.0 - vol_right) <= 1.0, f"Vol button not pinned 14px from right edge: {sw - vol_right}"
+            assert chv_left >= rw_right + 11.5, f"Actions {chv_left} overlaps right wing {rw_right} (clearance < 12px)"
+            assert abs(sw - 14.0 - clk_right) <= 1.0, f"Clock not pinned 14px from right screen edge: {sw - clk_right}"
+
 
     print("[PASS] Wings do not overlap apps or clock with and without media.")
 
 
 def test_fitting_order() -> None:
-    """Verify tray icons drop 7 -> 0 before the media card compacts from 314 to 240 px."""
+    """Verify fitting order: media compacts first (314 -> 240 px), then calendar shrinks, then center shifts."""
     get_qapp()
 
     # Create dock with media playing
@@ -148,7 +151,7 @@ def test_fitting_order() -> None:
     dock._tray_items = [{"name": f"tray_{i}"} for i in range(10)]
     dock._now_playing_info = {"title": "A Very Long Media Track Title", "app": "Spotify"}
 
-    # At 1536 width with 0 apps, media card is 314px and ample room allows tray icons
+    # At 1536 width with 0 apps, media card is 314px and no individual tray icons on band
     dock.resize(1536, 64)
     img = QImage(1536, 64, QImage.Format.Format_ARGB32)
     dock.render(img)
@@ -156,24 +159,9 @@ def test_fitting_order() -> None:
     r_media_wide = next(r for r, k, _e in dock.hit_boxes if k == "media")
     tray_icons_wide = [e for r, k, e in dock.hit_boxes if k == "tray_icon"]
     assert r_media_wide.width() == 314.0, f"Expected uncompacted 314px media card, got {r_media_wide.width()}"
-    assert len(tray_icons_wide) > 0, "Expected visible tray icons on ample width"
+    assert len(tray_icons_wide) == 0, f"Expected no tray icons on band, got {len(tray_icons_wide)}"
 
-    # Gradually reduce width to watch fitting order
-    # When tray icons drop, media card MUST still be 314px until tray icons reach 0!
-    for w in range(1400, 1050, -40):
-        dock.resize(w, 64)
-        img_w = QImage(w, 64, QImage.Format.Format_ARGB32)
-        dock.render(img_w)
-        tray_icons = [e for r, k, e in dock.hit_boxes if k == "tray_icon"]
-        r_media = next(r for r, k, _e in dock.hit_boxes if k == "media")
-
-        if len(tray_icons) > 0:
-            assert r_media.width() == 314.0, (
-                f"Media card compacted to {r_media.width()} while tray icons ({len(tray_icons)}) were still visible! "
-                "Tray icons must drop before media card compacts."
-            )
-
-    # In extremely tight space (e.g. 1000px with 8 apps + media), tray icons must be 0 and media compacted to 240px
+    # In extremely tight space (e.g. 1000px with 8 apps + media), tray icons are 0 and media compacted to 240px
     eight_apps = [{"exe": f"app_{i}.exe", "name": f"App {i}"} for i in range(8)]
     dock_tight = serit_mod.SeritDock({"style": "band", "pinned": eight_apps}, preview_mode=True)
     dock_tight.tiles = list(eight_apps)

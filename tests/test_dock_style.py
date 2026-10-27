@@ -33,9 +33,10 @@ def test_styles() -> None:
     if apps_hits:
         app_cx = (min(r.left() for r in apps_hits) + max(r.right() for r in apps_hits)) / 2.0
         assert abs(app_cx - (sw / 2.0)) <= 1.0, ("uygulama grubu ortada değil", app_cx, sw / 2.0)
-    # Saat sağ kenardaki tepsi kümesinin hemen soluna sabitlenir
+    # Saat en sağ kenara sabitlenir
     clock_hits = [r for r, k, _e in band.hit_boxes if k == "clock"]
     assert len(clock_hits) == 1, "Saat kartı bulunamadı"
+    assert sw - clock_hits[0].right() == 14.0, ("Saat en sağ kenarda değil", clock_hits[0].right(), sw)
 
     pill = serit_mod.SeritDock({"style": "pill", "pinned": []}, preview_mode=True)
     pill.compute_layout_and_resize(initial=True)

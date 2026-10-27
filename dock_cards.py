@@ -598,7 +598,7 @@ def draw_mail_card(
 _AG_ICON_CACHE: Dict[Tuple[float, float], QPixmap] = {}
 
 
-def get_antigravity_pixmap(target_size: float = 28.0, dpr: float = 1.0) -> Optional[QPixmap]:
+def get_antigravity_pixmap(target_size: float = 35.0, dpr: float = 1.0) -> Optional[QPixmap]:
     """Load and cache high-quality downscaled Antigravity PNG icon."""
     key = (target_size, dpr)
     if key in _AG_ICON_CACHE:
@@ -632,15 +632,17 @@ def draw_ag_card(
     """Renders 142x52 Antigravity quota card with Claude & Gemini usage bars."""
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
 
-    # 28x28 Slot at left with 8px padding
-    slot_rect = QRectF(rect.x() + 8.0, rect.y() + (rect.height() - 28.0) / 2.0, 28.0, 28.0)
+    # 40x40 Slot at left + 6px padding (matching Claude card slot and visual size)
+    slot_rect = QRectF(rect.x() + 6.0, rect.y() + 6.0, 40.0, 40.0)
     dev = p.device()
     dpr = dev.devicePixelRatioF() if dev is not None else 1.0
-    pm = get_antigravity_pixmap(28.0, dpr)
+    pm = get_antigravity_pixmap(35.0, dpr)
     if pm is not None and not pm.isNull():
-        p.drawPixmap(slot_rect.topLeft(), pm)
+        sym_x = slot_rect.x() + (slot_rect.width() - 35.0) / 2.0
+        sym_y = slot_rect.y() + (slot_rect.height() - 35.0) / 2.0
+        p.drawPixmap(QPointF(sym_x, sym_y), pm)
 
-    bx = rect.x() + 44.0
+    bx = rect.x() + 46.0
     bw = max(20.0, rect.right() - 10.0 - bx)
 
     has_err = bool(ag_data.get("err")) or not ag_data.get("groups")
@@ -1138,13 +1140,10 @@ def draw_clock_v1(
 ) -> Tuple[QRectF, Optional[QRectF]]:
     """Renders Clock V1 'Sade' without box or background.
 
-    Left column:
-      time 'HH:MM' 20px weight 600 tabular white, letter-spacing -0.3
-      gap 3px
-      date 'Sal, 27 Ekim' 11px weight 500 colour rgba(235,238,245,.58)
-    Right column (if weather available):
-      12px gap, 1px separator rgba(255,255,255,.10) 24px high with 8px left padding
-      14px weather icon (white 85%) + 5px gap + temp '16°' 13px weight 600.
+    Left (if weather available): 14px weather icon + 5px + temp '16°' 13px/600, 8px gap,
+      1px separator rgba(255,255,255,.10) 24px high, 12px gap.
+    Right (at the band's right edge): time 'HH:MM' 20px/600 tabular, 3px gap,
+      date 'Sal, 27 Ekim' 11px/500 rgba(235,238,245,.58); both right-aligned.
 
     Hover: rounded rect rgba(255,255,255,.07) radius 11 behind whole clock.
     Returns (r_clock, r_wx).
@@ -1180,55 +1179,45 @@ def draw_clock_v1(
     w_left = max(w_time, w_date)
 
     cur_x = rect.x() + 10.0
-
-    # Vertical centering of left column:
-    # time 22px high, 3px gap, date 14px high -> total 39px in 52px slot
-    total_h = 22.0 + 3.0 + 14.0
-    start_y = rect.y() + (rect.height() - total_h) / 2.0
-
-    # Draw Time
-    r_time = QRectF(cur_x, start_y, w_left, 22.0)
-    p.setFont(f_time)
-    p.setPen(Qt.white)
-    p.drawText(r_time, Qt.AlignLeft | Qt.AlignVCenter, time_str)
-
-    # Draw Date
-    r_date = QRectF(cur_x, start_y + 22.0 + 3.0, w_left, 14.0)
-    p.setFont(f_date)
-    p.setPen(QColor(235, 238, 245, int(255 * 0.58)))
-    p.drawText(r_date, Qt.AlignLeft | Qt.AlignVCenter, date_str)
-
-    cur_x += w_left
-
     r_wx: Optional[QRectF] = None
-    if has_weather and temp_str:
-        cur_x += 12.0
-        sep_x = cur_x
-        # 1px separator rgba(255,255,255,.10) 24px high
-        sep_y = rect.y() + (rect.height() - 24.0) / 2.0
-        p.fillRect(QRectF(sep_x, sep_y, 1.0, 24.0), QColor(255, 255, 255, int(255 * 0.10)))
 
-        cur_x += 1.0 + 8.0
-        # 14px weather icon (white 85%)
+    # Hava durumu SOLDA, saat en sağ kenarda (27 Eki 2026, Emre: "saat en sağda olsun")
+    if has_weather and temp_str:
+        wx_left = rect.x()
         icon_y = rect.y() + (rect.height() - 14.0) / 2.0
         r_icon = QRectF(cur_x, icon_y, 14.0, 14.0)
         p.save()
         p.setOpacity(0.85)
         theme.draw_weather_icon(p, r_icon, icon=wx_icon or "cloud")
         p.restore()
-
         cur_x += 14.0 + 5.0
-        # Temperature
         f_temp = theme.make_font(13.0, QFont.Weight.DemiBold)
         fm_temp = QFontMetricsF(f_temp)
         w_temp = fm_temp.horizontalAdvance(temp_str)
-        r_temp_text = QRectF(cur_x, rect.y(), w_temp, rect.height())
         p.setFont(f_temp)
         p.setPen(COLOR_TXT_PRIMARY)
-        p.drawText(r_temp_text, Qt.AlignLeft | Qt.AlignVCenter, temp_str)
+        p.drawText(QRectF(cur_x, rect.y(), w_temp, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, temp_str)
+        cur_x += w_temp + 8.0
+        sep_x = cur_x
+        sep_y = rect.y() + (rect.height() - 24.0) / 2.0
+        p.fillRect(QRectF(sep_x, sep_y, 1.0, 24.0), QColor(255, 255, 255, int(255 * 0.10)))
+        cur_x += 1.0 + 12.0
+        # Hava durumu tıklama alanı: sol kenardan ayırıcıya kadar
+        r_wx = QRectF(wx_left, rect.y(), max(0.0, sep_x + 1.0 - wx_left), rect.height())
 
-        # Weather hit box from separator to the right edge of clock
-        r_wx = QRectF(sep_x, rect.y(), max(0.0, rect.right() - sep_x), rect.height())
+    # Saat + tarih (sağa yaslı sütun)
+    total_h = 22.0 + 3.0 + 14.0
+    start_y = rect.y() + (rect.height() - total_h) / 2.0
+
+    r_time = QRectF(cur_x, start_y, w_left, 22.0)
+    p.setFont(f_time)
+    p.setPen(Qt.white)
+    p.drawText(r_time, Qt.AlignRight | Qt.AlignVCenter, time_str)
+
+    r_date = QRectF(cur_x, start_y + 22.0 + 3.0, w_left, 14.0)
+    p.setFont(f_date)
+    p.setPen(QColor(235, 238, 245, int(255 * 0.58)))
+    p.drawText(r_date, Qt.AlignRight | Qt.AlignVCenter, date_str)
 
     p.restore()
     return rect, r_wx

@@ -1465,22 +1465,17 @@ class SeritDock(QWidget):
             lw_end = apps_x - (GAP_MODULE if (lw_w > 0 and w_apps > 0) else 0.0)
             lw_start = lw_end - lw_w
 
-            # Right end / Tray cluster
-            all_items = list(self._tray_items)
-            max_icons = min(7, len(all_items))
-
-            def cluster_w_for(n: int) -> float:
-                icons_w = (n * TRAY_ICON_SIZE + max(0, n - 1) * TRAY_ICON_GAP) if n > 0 else 0.0
-                gap_to_actions = 4.0 if n > 0 else 0.0
-                return 9.0 + icons_w + gap_to_actions + ACTION_BUTTONS_WIDTH
-
-            # Fitting algorithm
-            shown_icons = max_icons
+            # Right end layout & clearance:
+            # Order at right edge: [Right Wing: Media, Cal] ... [Actions: ^, Sun, Spk] [Gap] [Weather + Clock]
+            # Clock right edge is pinned at sw - 14.0.
+            # Actions left edge is: (sw - 14.0) - w_clock - GAP_MODULE - ACTION_BUTTONS_WIDTH
             media_w = MEDIA_CARD_WIDTH if has_media else 0.0
             cal_w = natural_cal_w
             center_shift = 0.0
 
-            def calc_clearance(icons_cnt: int, m_w: float, c_w: float, shift: float) -> float:
+            actions_left_x = (sw - 14.0) - w_clock - GAP_MODULE - ACTION_BUTTONS_WIDTH
+
+            def calc_clearance(m_w: float, c_w: float, shift: float) -> float:
                 rw_items = []
                 if has_media:
                     rw_items.append(m_w)
@@ -1488,28 +1483,22 @@ class SeritDock(QWidget):
                     rw_items.append(c_w)
                 rw_w_calc = (sum(rw_items) + max(0, len(rw_items) - 1) * GAP_MODULE) if rw_items else 0.0
                 rw_end_calc = (apps_x - shift) + w_apps + (GAP_MODULE if (rw_w_calc > 0 and w_apps > 0) else 0.0) + rw_w_calc
-                cl_w_calc = cluster_w_for(icons_cnt)
-                cl_x_calc = (sw - 14.0) - cl_w_calc
-                clk_x_calc = cl_x_calc - GAP_MODULE - w_clock
-                return clk_x_calc - rw_end_calc
+                return actions_left_x - rw_end_calc
 
-            # (a) reduce visible tray icons 7 -> 0
-            while shown_icons > 0 and calc_clearance(shown_icons, media_w, cal_w, center_shift) < 12.0:
-                shown_icons -= 1
-
-            # (b) compact media card: 314 -> 240 px
-            if has_media and calc_clearance(shown_icons, media_w, cal_w, center_shift) < 12.0:
+            # Fitting algorithm:
+            # (a) compact media card: 314 -> 240 px
+            if has_media and calc_clearance(media_w, cal_w, center_shift) < 12.0:
                 media_w = MEDIA_CARD_WIDTH_COMPACT
 
-            # (c) calendar card max width shrinks with eliding down to 96 px
-            if show_cal and calc_clearance(shown_icons, media_w, cal_w, center_shift) < 12.0:
-                needed = 12.0 - calc_clearance(shown_icons, media_w, cal_w, center_shift)
+            # (b) calendar card max width shrinks with eliding down to 96 px
+            if show_cal and calc_clearance(media_w, cal_w, center_shift) < 12.0:
+                needed = 12.0 - calc_clearance(media_w, cal_w, center_shift)
                 can_shrink = max(0.0, cal_w - 96.0)
                 shrink_by = min(needed, can_shrink)
                 cal_w -= shrink_by
 
-            # (d) shift centre block left (min 10 px clearance from left screen edge)
-            curr_clearance = calc_clearance(shown_icons, media_w, cal_w, center_shift)
+            # (c) shift centre block left (min 10 px clearance from left screen edge)
+            curr_clearance = calc_clearance(media_w, cal_w, center_shift)
             if curr_clearance < 12.0:
                 needed = 12.0 - curr_clearance
                 max_shift = max(0.0, lw_start - 10.0)
@@ -1603,11 +1592,10 @@ class SeritDock(QWidget):
                 dock_cards.draw_calendar_card(p, r_cal, cal_data, hover=cal_hover, press_scale=cal_press)
                 cur_rw_x += cal_w + GAP_MODULE
 
-            # Right End: Clock V1 then Tray Cluster
-            cluster_w = cluster_w_for(shown_icons)
-            cluster_x = (sw - 14.0) - cluster_w
-            clock_x = cluster_x - GAP_MODULE - w_clock
-            r_clock = QRectF(clock_x, card_y, w_clock, card_h)
+            # Right end: Clock V1 at the far right edge, Action buttons to its left
+            # Right edge padding: 14.0px (matching action buttons padding previously and left edge balance)
+            r_clock_x = (sw - 14.0) - w_clock
+            r_clock = QRectF(r_clock_x, card_y, w_clock, card_h)
             self._clock_rect = r_clock
             clk_hover = (self._hover_key == "clock")
             clk_press = self.press_tween.scale if (self._pressed_key == "clock") else 1.0
@@ -1626,47 +1614,17 @@ class SeritDock(QWidget):
             if r_wx is not None:
                 self.hit_boxes.append((r_wx, "wx", None))
 
-            # Tray Cluster (Separator + Tray icons + Action buttons)
-            sep_x = cluster_x + 2.0
-            sep_y = card_y + (card_h - 24.0) / 2.0
-            p.fillRect(QRectF(sep_x, sep_y, 1.0, 24.0), QColor(255, 255, 255, int(255 * 0.10)))
-            cur_tray_x = sep_x + 1.0 + 6.0
-
-            icon_btn_y = card_y + (card_h - TRAY_ICON_SIZE) / 2.0
-            for i in range(shown_icons):
-                item = all_items[i]
-                r_btn = QRectF(cur_tray_x, icon_btn_y, TRAY_ICON_SIZE, TRAY_ICON_SIZE)
-                is_h = (self._hover_key == "tray_icon" and self._hover_tray_item == item)
-                if is_h:
-                    p.setPen(Qt.NoPen)
-                    p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
-                    p.drawRoundedRect(r_btn, 6.0, 6.0)
-
-                name = item.get("name", "")
-                pm = self._tray_icons.get(name)
-                if pm and not pm.isNull():
-                    r_ico = QRectF(
-                        r_btn.x() + (TRAY_ICON_SIZE - 18.0) / 2.0,
-                        r_btn.y() + (TRAY_ICON_SIZE - 18.0) / 2.0,
-                        18.0,
-                        18.0,
-                    )
-                    theme.draw_icon_crisp(p, pm, r_ico)
-
-                self.hit_boxes.append((r_btn, "tray_icon", item))
-                cur_tray_x += TRAY_ICON_SIZE + TRAY_ICON_GAP
-
-            if shown_icons > 0:
-                cur_tray_x = cur_tray_x - TRAY_ICON_GAP + 4.0
-
+            # Action buttons cluster: ^ chevron, brightness, volume
+            actions_w = ACTION_BUTTONS_WIDTH  # 96.0
+            actions_x = r_clock_x - GAP_MODULE - actions_w
             btn_y = card_y + (card_h - ACTION_BTN_SIZE) / 2.0
             tray_open = bool(self.tray_panel.is_open()) if self.tray_panel else bool(self.tray_popover.isVisible())
             bright_open = bool(self.brightness_popover.is_open())
             vol_open = bool(self.vol_popover.isVisible())
 
-            r_chv = QRectF(cur_tray_x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
-            r_sun = QRectF(cur_tray_x + ACTION_BTN_SIZE + ACTION_BTN_GAP, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
-            r_spk = QRectF(cur_tray_x + (ACTION_BTN_SIZE + ACTION_BTN_GAP) * 2, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
+            r_chv = QRectF(actions_x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
+            r_sun = QRectF(actions_x + ACTION_BTN_SIZE + ACTION_BTN_GAP, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
+            r_spk = QRectF(actions_x + (ACTION_BTN_SIZE + ACTION_BTN_GAP) * 2, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
 
             dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
             dock_cards.draw_action_button(p, r_sun, "bright", hover=(self._hover_key == "bright"), active=bright_open)
