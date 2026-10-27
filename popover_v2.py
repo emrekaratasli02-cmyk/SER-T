@@ -698,14 +698,20 @@ def build_wx_content(data: dict, city: str = "Aksaray") -> dict:
     resolved_city = str(data.get("city") or city)
 
     temp = _safe_float(data.get("temp"))
-    temp_str = f"{sources.fmt_tr(temp, 1)}°" if temp is not None else "--°"
+    temp_str = f"{sources.fmt_tr(temp, 1)}°" if temp is not None else "—"
     feel = _safe_float(data.get("feel"))
-    feel_str = f"{sources.fmt_tr(feel, 1)}°" if feel is not None else "--°"
+    feel_str = f"{sources.fmt_tr(feel, 1)}°" if feel is not None else "—"
     desc = str(data.get("desc") or "Bilinmiyor")
     icon = str(data.get("icon") or "cloud")
     min_t = _safe_float(data.get("min"))
     max_t = _safe_float(data.get("max"))
     wind = _safe_float(data.get("wind"))
+
+    error_message = "Hava durumu alınamadı"
+    if err:
+        temp_str = "—"
+        feel_str = "—"
+        desc = error_message
 
     hero = {
         "icon": icon,
@@ -721,6 +727,10 @@ def build_wx_content(data: dict, city: str = "Aksaray") -> dict:
     )
     wind_str = f"{sources.fmt_tr(wind, 1)} km/sa" if wind is not None else "—"
 
+    if err:
+        min_max_str = "—"
+        wind_str = "—"
+
     detail_rows = [
         {"type": "wx_detail", "label": "Hissedilen", "val": feel_str},
         {"type": "wx_detail", "label": "En düşük / En yüksek", "val": min_max_str},
@@ -728,7 +738,7 @@ def build_wx_content(data: dict, city: str = "Aksaray") -> dict:
     ]
 
     sections = [{"title": "DETAYLAR", "rows": detail_rows}]
-    footer_note = f"open-meteo.com · {t_str}"
+    footer_note = f"{source} · {t_str}" + (" · önbellek" if stale else "")
 
     return {
         "kind": "wx",
@@ -739,6 +749,12 @@ def build_wx_content(data: dict, city: str = "Aksaray") -> dict:
         "stale": stale,
         "error": str(err) if err else None,
         "hero": hero,
+        "now": {
+            "icon": icon,
+            "desc": desc,
+            "temp": temp_str,
+            "error": error_message if err else None,
+        },
         "sections": sections,
         "footer_note": footer_note,
         "source": source,
@@ -769,17 +785,16 @@ def build_fx_content(data: dict) -> dict:
     def format_fx_change(chg: Optional[float]) -> Tuple[str, QColor]:
         if chg is None:
             return "—", COLOR_FX_FLAT
-        chg_fmt = sources.fmt_tr(chg, 2)
         if chg > 0:
-            return f"%+{chg_fmt}", COLOR_FX_UP
+            return f"%{sources.fmt_tr(chg, 2)}", COLOR_FX_UP
         if chg < 0:
-            return f"%{chg_fmt}", COLOR_FX_DOWN
-        return f"%{chg_fmt}", COLOR_FX_FLAT
+            return f"-%{sources.fmt_tr(abs(chg), 2)}", COLOR_FX_DOWN
+        return f"%{sources.fmt_tr(chg, 2)}", COLOR_FX_FLAT
 
     def format_fx_val(val: Optional[float]) -> str:
         if val is None:
             return "—"
-        return f"{sources.fmt_tr(val, 2)} ₺"
+        return f"{sources.fmt_tr(val, 2)} TL"
 
     u_chg_str, u_col = format_fx_change(usd_chg)
     e_chg_str, e_col = format_fx_change(eur_chg)
@@ -788,14 +803,14 @@ def build_fx_content(data: dict) -> dict:
     fx_rows = [
         {
             "type": "fx",
-            "label": "Dolar",
+            "label": "Dolar (USD)",
             "val": format_fx_val(usd),
             "chg": u_chg_str,
             "chg_col": u_col,
         },
         {
             "type": "fx",
-            "label": "Euro",
+            "label": "Euro (EUR)",
             "val": format_fx_val(eur),
             "chg": e_chg_str,
             "chg_col": e_col,
@@ -809,13 +824,19 @@ def build_fx_content(data: dict) -> dict:
         },
     ]
 
-    sections = [{"title": "DÖVİZ VE ALTIN", "rows": fx_rows}]
-    footer_note = f"Veri saati {t_str} · {source}"
+    if err:
+        for row in fx_rows:
+            row["val"] = "—"
+            row["chg"] = "—"
+            row["chg_col"] = COLOR_FX_FLAT
+
+    sections = [{"title": "KURLAR", "rows": fx_rows}]
+    footer_note = f"{source} · {t_str}"
 
     return {
         "kind": "fx",
-        "title": "Piyasa",
-        "badge": "Hata" if err else "Satış",
+        "title": "Döviz",
+        "badge": "Hata" if err else "Canlı",
         "badge_bg": COLOR_BADGE_ERR_BG if err else COLOR_BADGE_LIVE_BG,
         "badge_color": COLOR_BADGE_ERR_TXT if err else COLOR_BADGE_LIVE_TXT,
         "stale": stale,
@@ -1081,6 +1102,9 @@ class PopoverV2(QWidget):
     SUB_ROW_H: float = 24.0
     SUB_ROW_COUNT: int = 4
     ERROR_CARD_H: float = 69.0
+    WX_NOW_H: float = 52.0
+    WX_ROW_H: float = 24.0
+    FX_ROW_H: float = 26.0
 
     def _kit_header_block(self) -> float:
         return panel_style.PAD + panel_style.HEADER_H + panel_style.GAP
@@ -1108,6 +1132,33 @@ class PopoverV2(QWidget):
         n = len(self._sys_top_rows(content))
         return self._kit_card_base() + n * self.SUB_ROW_H
 
+    def _wx_detail_rows(self, content: dict) -> List[Dict[str, Any]]:
+        sections = content.get("sections")
+        if not isinstance(sections, list) or not sections:
+            return []
+        rows = sections[0].get("rows") if isinstance(sections[0], dict) else None
+        if not isinstance(rows, list):
+            return []
+        return [r for r in rows if isinstance(r, dict)]
+
+    def _wx_now_card_height(self) -> float:
+        return self._kit_card_base() + self.WX_NOW_H
+
+    def _wx_details_card_height(self, content: dict) -> float:
+        return self._kit_card_base() + len(self._wx_detail_rows(content)) * self.WX_ROW_H
+
+    def _fx_rows(self, content: dict) -> List[Dict[str, Any]]:
+        sections = content.get("sections")
+        if not isinstance(sections, list) or not sections:
+            return []
+        rows = sections[0].get("rows") if isinstance(sections[0], dict) else None
+        if not isinstance(rows, list):
+            return []
+        return [r for r in rows if isinstance(r, dict)]
+
+    def _fx_card_height(self, content: dict) -> float:
+        return self._kit_card_base() + len(self._fx_rows(content)) * self.FX_ROW_H
+
     def compute_height(self, content: dict) -> int:
         """Calculate dynamic popover height based on content sections and error banner."""
         kind = content.get("kind", self._kind)
@@ -1127,6 +1178,19 @@ class PopoverV2(QWidget):
             h += self._sys_card1_height()
             if self._sys_top_rows(content):
                 h += panel_style.GAP + self._sys_top_card_height(content)
+            h += panel_style.GAP + panel_style.FOOTER_H + panel_style.PAD
+            return int(math.ceil(h))
+
+        if kind == "wx":
+            h = self._kit_header_block()
+            h += self._wx_now_card_height()
+            h += panel_style.GAP + self._wx_details_card_height(content)
+            h += panel_style.GAP + panel_style.FOOTER_H + panel_style.PAD
+            return int(math.ceil(h))
+
+        if kind == "fx":
+            h = self._kit_header_block()
+            h += self._fx_card_height(content)
             h += panel_style.GAP + panel_style.FOOTER_H + panel_style.PAD
             return int(math.ceil(h))
 
@@ -1226,7 +1290,7 @@ class PopoverV2(QWidget):
             QRectF(anchor_rect_global) if anchor_rect_global is not None else None
         )
         self._content = build_content(kind, content_dict, **kwargs)
-        self._kit_motion = kind in ("claude", "sys")
+        self._kit_motion = kind in ("claude", "sys", "wx", "fx")
 
         if self._kit_motion:
             panel_w = int(panel_style.WIDTH[kind])
@@ -1452,11 +1516,7 @@ class PopoverV2(QWidget):
 
     def mouseMoveEvent(self, event) -> None:
         pos = event.position()
-        cur_kind = self._content.get("kind", self._kind)
-        if cur_kind in ("claude", "sys"):
-            close_rect = self._close_rect
-        else:
-            close_rect = QRectF(self.width() - 32.0, 12.0, 22.0, 22.0)
+        close_rect = self._close_rect if self._kit_motion else QRectF(self.width() - 32.0, 12.0, 22.0, 22.0)
 
         is_refresh = self._refresh_rect.contains(pos)
         is_close = close_rect.contains(pos)
@@ -1481,11 +1541,7 @@ class PopoverV2(QWidget):
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             pos = event.position()
-            cur_kind = self._content.get("kind", self._kind)
-            if cur_kind in ("claude", "sys"):
-                close_rect = self._close_rect
-            else:
-                close_rect = QRectF(self.width() - 32.0, 12.0, 22.0, 22.0)
+            close_rect = self._close_rect if self._kit_motion else QRectF(self.width() - 32.0, 12.0, 22.0, 22.0)
 
             if close_rect.contains(pos):
                 self.hide_animated()
@@ -1776,6 +1832,148 @@ class PopoverV2(QWidget):
         if btn is not None:
             self._refresh_rect = QRectF(btn)
 
+    def _paint_wx_panel(self, p: QPainter, w: float, h: float) -> None:
+        """Hava durumu paneli: ŞU AN (ikon + açıklama + büyük sıcaklık) ve DETAYLAR."""
+        ps = panel_style
+        ps.draw_panel_shell(p, QRectF(0.0, 0.0, w, h))
+        x0 = ps.PAD
+        cw = w - 2.0 * ps.PAD
+        y = ps.PAD
+        content = self._content
+        err = bool(content.get("error"))
+        now = content.get("now") if isinstance(content.get("now"), dict) else {}
+        icon_name = str(now.get("icon") or (content.get("hero") or {}).get("icon") or "cloud")
+
+        hdr = ps.draw_header(
+            p, QRectF(x0, y, cw, ps.HEADER_H), str(content.get("title") or "Hava Durumu"),
+            icon=lambda pp, r, ic=icon_name: theme.draw_weather_icon(pp, r, ic),
+            chip=content.get("badge"),
+            chip_dot=ps.DANGER if err else ps.OK,
+            close_hover=self._close_hovered,
+        )
+        if hdr.get("close") is not None:
+            self._close_rect = QRectF(hdr["close"])
+        y += ps.HEADER_H + ps.GAP
+
+        # ŞU AN kartı
+        inner = ps.draw_card(
+            p, QRectF(x0, y, cw, self._wx_now_card_height()), "Şu an")
+        row = QRectF(inner.left(), inner.top(), inner.width(), self.WX_NOW_H)
+        if err:
+            p.setFont(ps.font(13.0, QFont.Weight.DemiBold))
+            p.setPen(ps.TEXT_BODY)
+            p.drawText(row, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                       str(now.get("error") or "Hava durumu alınamadı"))
+            p.setFont(ps.f_hero(34.0))
+            p.setPen(ps.TEXT_MUTED)
+            p.drawText(row, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "—")
+        else:
+            icon_box = QRectF(row.left(), row.center().y() - 19.0, 38.0, 38.0)
+            try:
+                theme.draw_weather_icon(p, icon_box, icon_name)
+            except Exception:
+                pass
+            p.setFont(ps.font(13.0, QFont.Weight.DemiBold))
+            p.setPen(ps.TEXT)
+            desc_rect = QRectF(row.left() + 46.0, row.top(), row.width() - 46.0 - 112.0, row.height())
+            desc = QFontMetricsF(ps.font(13.0, QFont.Weight.DemiBold)).elidedText(
+                str(now.get("desc") or "—"), Qt.TextElideMode.ElideRight, desc_rect.width())
+            p.drawText(desc_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, desc)
+            p.setFont(ps.f_hero(34.0))
+            p.setPen(ps.TEXT)
+            p.drawText(QRectF(row.right() - 112.0, row.top(), 112.0, row.height()),
+                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                       str(now.get("temp") or "—"))
+        y += self._wx_now_card_height() + ps.GAP
+
+        # DETAYLAR kartı
+        detail_rows = self._wx_detail_rows(content)
+        inner = ps.draw_card(
+            p, QRectF(x0, y, cw, self._wx_details_card_height(content)), "Detaylar")
+        ry = inner.top()
+        for item in detail_rows:
+            p.setFont(ps.font(12.5, QFont.Weight.Medium))
+            p.setPen(ps.TEXT_BODY)
+            p.drawText(QRectF(inner.left(), ry, inner.width() * 0.62, self.WX_ROW_H),
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                       str(item.get("label") or "—"))
+            p.setFont(ps.font(12.5, QFont.Weight.DemiBold, tabular=True))
+            p.setPen(ps.TEXT)
+            p.drawText(QRectF(inner.right() - inner.width() * 0.36, ry, inner.width() * 0.36, self.WX_ROW_H),
+                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                       str(item.get("val") or "—"))
+            ry += self.WX_ROW_H
+        y += self._wx_details_card_height(content) + ps.GAP
+
+        fy = h - ps.PAD - ps.FOOTER_H
+        btn = ps.draw_footer(
+            p, QRectF(x0, fy, cw, ps.FOOTER_H),
+            str(content.get("footer_note") or "open-meteo.com · —"), "Yenile",
+            button_hover=self._refresh_hovered,
+        )
+        if btn is not None:
+            self._refresh_rect = QRectF(btn)
+
+    def _paint_fx_panel(self, p: QPainter, w: float, h: float) -> None:
+        """Döviz paneli: KURLAR kartında değer ve günlük değişim."""
+        ps = panel_style
+        ps.draw_panel_shell(p, QRectF(0.0, 0.0, w, h))
+        x0 = ps.PAD
+        cw = w - 2.0 * ps.PAD
+        y = ps.PAD
+        content = self._content
+        err = bool(content.get("error"))
+
+        hdr = ps.draw_header(
+            p, QRectF(x0, y, cw, ps.HEADER_H), str(content.get("title") or "Döviz"),
+            icon=draw_fx_icon,
+            chip=content.get("badge"),
+            chip_dot=ps.DANGER if err else ps.OK,
+            close_hover=self._close_hovered,
+        )
+        if hdr.get("close") is not None:
+            self._close_rect = QRectF(hdr["close"])
+        y += ps.HEADER_H + ps.GAP
+
+        rows = self._fx_rows(content)
+        inner = ps.draw_card(p, QRectF(x0, y, cw, self._fx_card_height(content)), "Kurlar")
+        ry = inner.top()
+        f_val = ps.font(12.5, QFont.Weight.DemiBold, tabular=True)
+        f_chg = ps.font(10.5, QFont.Weight.Medium, tabular=True)
+        for item in rows:
+            p.setFont(ps.font(12.5, QFont.Weight.Medium))
+            p.setPen(ps.TEXT_BODY)
+            p.drawText(QRectF(inner.left(), ry, inner.width() * 0.46, self.FX_ROW_H),
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                       str(item.get("label") or "—"))
+
+            chg = str(item.get("chg") or "—")
+            chg_col = item.get("chg_col") or COLOR_FX_FLAT
+            p.setFont(f_chg)
+            p.setPen(chg_col)
+            chg_w = QFontMetricsF(f_chg).horizontalAdvance(chg)
+            p.drawText(QRectF(inner.right() - chg_w, ry, chg_w, self.FX_ROW_H),
+                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, chg)
+
+            val = str(item.get("val") or "—")
+            p.setFont(f_val)
+            p.setPen(ps.TEXT)
+            val_right = inner.right() - chg_w - 8.0
+            val_w = QFontMetricsF(f_val).horizontalAdvance(val)
+            p.drawText(QRectF(val_right - val_w, ry, val_w, self.FX_ROW_H),
+                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, val)
+            ry += self.FX_ROW_H
+        y += self._fx_card_height(content) + ps.GAP
+
+        fy = h - ps.PAD - ps.FOOTER_H
+        btn = ps.draw_footer(
+            p, QRectF(x0, fy, cw, ps.FOOTER_H),
+            str(content.get("footer_note") or "finans.truncgil.com · —"), "Yenile",
+            button_hover=self._refresh_hovered,
+        )
+        if btn is not None:
+            self._refresh_rect = QRectF(btn)
+
     def _paint_card(self, p: QPainter) -> None:
         cur_kind = self._content.get("kind", self._kind)
         if cur_kind == "claude":
@@ -1783,6 +1981,12 @@ class PopoverV2(QWidget):
             return
         if cur_kind == "sys":
             self._paint_sys_panel(p, float(self.width()), float(self.height()))
+            return
+        if cur_kind == "wx":
+            self._paint_wx_panel(p, float(self.width()), float(self.height()))
+            return
+        if cur_kind == "fx":
+            self._paint_fx_panel(p, float(self.width()), float(self.height()))
             return
 
         w = float(self.width())
@@ -1947,7 +2151,7 @@ class PopoverV2(QWidget):
             p.drawText(
                 QRectF(w - 16 - 90, y + 2, 90, 36),
                 Qt.AlignRight | Qt.AlignVCenter,
-                hero.get("temp", "--°"),
+                hero.get("temp", "—"),
             )
 
             y += 46.0
