@@ -365,6 +365,9 @@ def get_session_key(s: Any) -> str:
 # 3. PUBLIC API
 # ==============================================================================
 
+_HIDDEN_KEYS = frozenset({"audiodg.exe"})
+
+
 def list_sessions() -> List[Dict[str, Any]]:
     """List audio sessions merged by app key.
 
@@ -462,6 +465,9 @@ def list_sessions() -> List[Dict[str, Any]]:
 
     result: List[Dict[str, Any]] = []
     for g in groups.values():
+        # Windows'un kendi ses motoru (audiodg) kullanıcı uygulaması değil, mikserde gösterilmez
+        if g["key"] in _HIDDEN_KEYS:
+            continue
         result.append({
             "key": g["key"],
             "pids": sorted(g["pids"]),

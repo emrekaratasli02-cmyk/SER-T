@@ -44,31 +44,37 @@ def test_panel_stays_on_screen():
     w.hide()
 
 
-def test_presets_turkish_and_clickable():
+def test_mixer_panel_controls():
     w = sv.VolumePopover()
-    img = QImage(w.WIDTH, w.HEIGHT, QImage.Format.Format_ARGB32_Premultiplied)
+    img = QImage(w.WIDTH, w.compute_height(), QImage.Format.Format_ARGB32_Premultiplied)
     img.fill(Qt.transparent)
     p = QPainter(img)
-    hr = media.draw_volume_slider_panel(p, QRectF(0, 0, w.WIDTH, w.HEIGHT), level=25, muted=False,
-                                        device="Speakers (Realtek(R) Audio)")
+    w._paint_card(p)
     p.end()
-    presets = hr["presets"]
-    assert [v for _, v in presets] == [25.0, 50.0, 75.0, 100.0]
-    assert hr["mute_btn"].right() < presets[0][0].left()
-    assert presets[-1][0].right() <= w.WIDTH - 12
+
+    # Check Turkish percentage formatting in source
     src = (ROOT / "media.py").read_text(encoding="utf-8")
     assert '("25%"' not in src and '("100%"' not in src
-    w._hit_rects = hr
+
+    # Mute button toggle
+    assert w._muted is False
+    mute_rect = w._hit_master_mute
+    w.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, mute_rect.center(), mute_rect.center(),
+                                  Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    assert w._muted is True
+
+    # Slider click
+    slider_rect = w._hit_master_slider
     got = []
-    w._request_volume = lambda v, force=False: got.append(v)
-    for r, _ in presets:
-        w.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, r.center(), r.center(),
-                                      Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
-    assert got == [25.0, 50.0, 75.0, 100.0], got
+    w._request_master_volume = lambda v, force=False: got.append(v)
+    w.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, slider_rect.center(), slider_rect.center(),
+                                  Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    assert len(got) == 1
+    assert 40.0 <= got[0] <= 60.0
 
 
 if __name__ == "__main__":
     test_device_names()
     test_panel_stays_on_screen()
-    test_presets_turkish_and_clickable()
+    test_mixer_panel_controls()
     print("test_volume_panel: PASS")

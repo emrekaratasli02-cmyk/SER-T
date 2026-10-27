@@ -442,146 +442,8 @@ class VolumeCoalescer(QObject):
             self._timer.start(15)
 
 
-class VolumePopover(QWidget):
-    """Sectioned acrylic glass flyout panel for master audio volume control."""
-
-    WIDTH: int = 304
-    HEIGHT: int = 126
-
-    def __init__(
-        self,
-        parent: Optional[QWidget] = None,
-        on_volume_change: Optional[Callable[[float, bool], None]] = None,
-    ) -> None:
-        super().__init__(None, Qt.Window | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFocusPolicy(Qt.StrongFocus)
-        self.setMouseTracking(True)
-        self.parent_dock = parent
-        self.on_volume_change = on_volume_change
-        self._coalescer = VolumeCoalescer(self)
-
-        self._level: float = 50.0
-        self._muted: bool = False
-        self._device: str = ""
-        self._is_dragging_slider: bool = False
-        self._hit_rects: Dict[str, QRectF] = {}
-        self.resize(self.WIDTH, self.HEIGHT)
-
-    def _request_volume(self, level: float, force: bool = False) -> None:
-        self._level = float(level)
-        if self.on_volume_change:
-            self.on_volume_change(self._level, self._muted)
-        self.update()
-        if self.parent_dock and getattr(self.parent_dock, "preview_mode", False):
-            return
-        self._coalescer.request(self._level, force=force)
-
-    def show_for(
-        self,
-        anchor_global: QRectF,
-        level: float,
-        muted: bool,
-        device: str = "",
-    ) -> None:
-        self._level = float(level)
-        self._muted = bool(muted)
-        self._device = device
-        self.resize(self.WIDTH, self.HEIGHT)
-        cx = anchor_global.center().x()
-        x = int(round(cx - self.width() / 2.0))
-        y = int(round(anchor_global.top() - self.height() - 8.0))
-        # Ekrandan taşmasın: diğer paneller gibi kullanılabilir alanın içine sıkıştır (kenardan 8 px)
-        scr = QApplication.screenAt(QPointF(cx, anchor_global.center().y()).toPoint()) or QApplication.primaryScreen()
-        if scr is not None:
-            g = scr.geometry()
-            x = max(g.left() + 8, min(x, g.right() + 1 - self.width() - 8))
-            y = max(g.top() + 8, y)
-        self.move(x, y)
-        self.show()
-        self.raise_()
-        self.activateWindow()
-        self.update()
-
-    def update_volume(self, level: float, muted: bool, device: Optional[str] = None) -> None:
-        self._level = float(level)
-        self._muted = bool(muted)
-        if device is not None:
-            self._device = device
-        self.update()
-
-    def paintEvent(self, _event) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setRenderHint(QPainter.TextAntialiasing)
-        r_card = QRectF(0.0, 0.0, float(self.width()), float(self.height()))
-        self._hit_rects = media.draw_volume_slider_panel(
-            p,
-            r_card,
-            level=self._level,
-            muted=self._muted,
-            device=self._device,
-        )
-        p.end()
-
-    def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton:
-            pos = event.position()
-            r_mute = self._hit_rects.get("mute_btn")
-            if r_mute and r_mute.contains(pos):
-                if self.parent_dock and not getattr(self.parent_dock, "preview_mode", False):
-                    sources.submit("vol_mute", media.toggle_mute)
-                self._muted = not self._muted
-                if self.on_volume_change:
-                    self.on_volume_change(self._level, self._muted)
-                self.update()
-                return
-
-            r_slider = self._hit_rects.get("slider")
-            if r_slider and r_slider.adjusted(-8.0, -8.0, 8.0, 8.0).contains(pos):
-                self._is_dragging_slider = True
-                pct = max(0.0, min(100.0, (pos.x() - r_slider.left()) / r_slider.width() * 100.0))
-                self._request_volume(pct, force=False)
-                return
-
-            # Hızlı seçim düğmeleri: konumlar çizim fonksiyonundan gelir (tek kaynak)
-            for rp, val in self._hit_rects.get("presets", []):
-                if rp.contains(pos):
-                    self._request_volume(val, force=True)
-                    return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event) -> None:
-        if self._is_dragging_slider:
-            r_slider = self._hit_rects.get("slider")
-            if r_slider:
-                pct = max(0.0, min(100.0, (event.position().x() - r_slider.left()) / r_slider.width() * 100.0))
-                self._request_volume(pct, force=False)
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton:
-            if self._is_dragging_slider:
-                self._is_dragging_slider = False
-                self._request_volume(self._level, force=True)
-        super().mouseReleaseEvent(event)
-
-    def wheelEvent(self, event) -> None:
-        diff = 2.0 if event.angleDelta().y() > 0 else -2.0
-        self._level = max(0.0, min(100.0, self._level + diff))
-        self._request_volume(self._level, force=False)
-        self.update()
-
-    def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key_Escape:
-            self.hide()
-            return
-        super().keyPressEvent(event)
-
-    def changeEvent(self, event: QEvent) -> None:
-        if event.type() == QEvent.ActivationChange and not self.isActiveWindow():
-            self.hide()
-        super().changeEvent(event)
+import volume_panel
+VolumePopover = volume_panel.VolumePopover
 
 
 class DataDispatcher(QObject):
@@ -1223,6 +1085,11 @@ class SeritDock(QWidget):
                     sources.log_err("quota_panel_set_data", exc)
             self.compute_layout_and_resize()
             self.update()
+            return
+
+        if key == "audio_sessions":
+            if self.vol_popover and self.vol_popover.isVisible():
+                self.vol_popover.update_sessions(res if isinstance(res, list) else [])
             return
 
         if key == "bright":
@@ -2170,7 +2037,7 @@ class SeritDock(QWidget):
         elif key == "vol":
             if self.vol_popover.isVisible():
                 self.vol_popover.hide()
-            else:
+            elif not hasattr(self.vol_popover, "recently_closed") or not self.vol_popover.recently_closed():
                 anchor_global = QRectF(
                     self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))),
                     rect.size(),
