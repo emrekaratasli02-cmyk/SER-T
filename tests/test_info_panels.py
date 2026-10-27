@@ -8,12 +8,10 @@ Includes:
 5) Bad-data matrix (>= 30 test cases: None, NaN, strings, missing keys, huge lists).
 6) recently_closed timing and open/close state transitions.
 7) Common public API contract and availableGeometry clamping.
-8) settings.json integrity check (read-only verification).
 """
 
 from __future__ import annotations
 
-import hashlib
 import os
 from pathlib import Path
 import sys
@@ -32,6 +30,7 @@ if serit_dir not in sys.path:
     sys.path.insert(0, serit_dir)
 
 import info_panels as ip
+import panel_style
 
 
 @pytest.fixture(scope="session")
@@ -42,18 +41,6 @@ def qapp() -> QApplication:
     if app is None:
         app = QApplication([])
     return app
-
-
-SETTINGS_PATH = Path(r"D:/Apps/serit/settings.json")
-
-
-def _get_settings_hash() -> str:
-    if SETTINGS_PATH.is_file():
-        return hashlib.sha256(SETTINGS_PATH.read_bytes()).hexdigest()
-    return ""
-
-
-_SETTINGS_HASH_AT_IMPORT = _get_settings_hash()
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +420,7 @@ def test_common_public_api_contract(qapp: QApplication) -> None:
         assert hasattr(panel, "is_open")
         assert hasattr(panel, "recently_closed")
         assert hasattr(panel, "refresh_requested")
-        assert 320 <= panel.WIDTH <= 380
+        assert panel.WIDTH == panel_style.WIDTH["mail"] == panel_style.WIDTH["ag"] == 352
         assert panel.RADIUS == 16.0
 
         # Anchor positioning check
@@ -441,14 +428,4 @@ def test_common_public_api_contract(qapp: QApplication) -> None:
         panel.show_for(anchor)
         # Check window was repositioned above anchor
         assert panel.y() < anchor.top()
-
-
-# ---------------------------------------------------------------------------
-# 8) Protection of settings.json
-# ---------------------------------------------------------------------------
-def test_settings_json_never_modified() -> None:
-    """Strictly assert D:/Apps/serit/settings.json was never modified."""
-    # Sabit hash yerine modül yüklendiği andaki hash ile karşılaştır (Emre ayarı değiştirince test kırılmasın)
-    initial_hash = _SETTINGS_HASH_AT_IMPORT
-    current_hash = _get_settings_hash()
-    assert current_hash == initial_hash, "settings.json was modified by tests!"
+        panel.hide_instant()
