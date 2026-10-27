@@ -28,12 +28,14 @@ def test_styles() -> None:
     assert 0 < band._content_w < sw, band._content_w
     img = QImage(band.size(), QImage.Format.Format_ARGB32)
     band.render(img)  # paintEvent hit_boxes'ı doldurur
-    # Kart grubunun ortalanması: sağ kenara sabitlenen tepsi kümesi hariç ortalanmış kartlar
-    card_hits = [r for r, k, _e in band.hit_boxes if not (k.startswith("tray") or k in ("bright", "vol"))]
-    xs = [r.left() for r in card_hits]
-    xe = [r.right() for r in card_hits]
-    left_gap, right_gap = min(xs), band.width() - max(xe)
-    assert abs(left_gap - right_gap) < 12, ("kart grubu ortada değil", left_gap, right_gap)
+    # Yeni Lumabar düzeninde uygulama grubu ekran ortasında, kanatlar iki yanda; saat sağ kenarda
+    apps_hits = [r for r, k, _e in band.hit_boxes if k.startswith("app_")]
+    if apps_hits:
+        app_cx = (min(r.left() for r in apps_hits) + max(r.right() for r in apps_hits)) / 2.0
+        assert abs(app_cx - (sw / 2.0)) <= 1.0, ("uygulama grubu ortada değil", app_cx, sw / 2.0)
+    # Saat sağ kenardaki tepsi kümesinin hemen soluna sabitlenir
+    clock_hits = [r for r, k, _e in band.hit_boxes if k == "clock"]
+    assert len(clock_hits) == 1, "Saat kartı bulunamadı"
 
     pill = serit_mod.SeritDock({"style": "pill", "pinned": []}, preview_mode=True)
     pill.compute_layout_and_resize(initial=True)

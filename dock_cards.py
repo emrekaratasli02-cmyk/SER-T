@@ -65,6 +65,13 @@ COLOR_CAL_RED: QColor = QColor("#FF453A")
 
 TR_DAYS_SHORT = {0: "Pzt", 1: "Sal", 2: "Çar", 3: "Per", 4: "Cum", 5: "Cmt", 6: "Paz"}
 
+CLAUDE_CARD_WIDTH: float = 182.0
+MEDIA_CARD_WIDTH: float = 314.0
+MEDIA_CARD_WIDTH_COMPACT: float = 240.0
+AG_CARD_WIDTH: float = 142.0
+MAIL_CARD_MIN_WIDTH: float = 112.0
+MAIL_CARD_MAX_WIDTH: float = 150.0
+
 
 def get_progress_bar_color(pct: float) -> QColor:
     """Select green, amber (>=70%), or red (>=90%) for usage bar."""
@@ -338,10 +345,15 @@ def draw_media_card(
     playing = bool(media_info.get("playing", True))
     draw_equalizer_tile(p, tile_rect, playing=playing)
 
-    # Title & Subtitle text column (128px wide, x = tile_right + 10px = rect.x() + 56px)
+    # Title & Subtitle text column (dynamically shrinks down to 240px compact mode)
     bx = rect.x() + 56.0
     by = rect.y() + 8.0
-    bw = 128.0
+    if rect.width() < 314.0:
+        ctrl_x = rect.right() - 104.0 - 8.0
+        bw = max(20.0, ctrl_x - 6.0 - bx)
+    else:
+        bw = 128.0
+        ctrl_x = bx + bw + 4.0
 
     title = str(media_info.get("title") or "Bilinmeyen Başlık")
     app_name = str(media_info.get("app") or "Medya")
@@ -369,7 +381,6 @@ def draw_media_card(
 
     # Controls: prev (30px circle), play/pause (32px circle), next (30px circle)
     # Gap 6px, aligned vertically
-    ctrl_x = bx + bw + 4.0
     cy = rect.center().y()
 
     r_prev = QRectF(ctrl_x, cy - 15.0, 30.0, 30.0)
@@ -452,6 +463,247 @@ def draw_media_card(
     p.restore()
 
     return {"prev": r_prev, "playpause": r_play, "next": r_next}
+
+
+# ==============================================================================
+# 2B. MAIL CARD
+# ==============================================================================
+
+_GMAIL_SVG_CACHE: Dict[Tuple[float, float], QPixmap] = {}
+
+
+def get_gmail_pixmap(target_size: float = 28.0, dpr: float = 1.0) -> Optional[QPixmap]:
+    """Render and cache Gmail official SVG logo."""
+    key = (target_size, dpr)
+    if key in _GMAIL_SVG_CACHE:
+        return _GMAIL_SVG_CACHE[key]
+
+    svg_file = APP_DIR / "assets" / "gmail.svg"
+    if not svg_file.is_file():
+        return None
+
+    try:
+        renderer = QSvgRenderer(str(svg_file))
+        if not renderer.isValid():
+            return None
+
+        px_w = max(1, int(round(target_size * dpr)))
+        px_h = max(1, int(round(target_size * dpr)))
+        pm = QPixmap(px_w, px_h)
+        pm.fill(Qt.transparent)
+        pm.setDevicePixelRatio(dpr)
+
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        # Preserve 88x66 aspect ratio (4:3) centered in square slot
+        aspect = 88.0 / 66.0
+        draw_w = target_size
+        draw_h = draw_w / aspect
+        draw_y = (target_size - draw_h) / 2.0
+        renderer.render(p, QRectF(0.0, draw_y, draw_w, draw_h))
+        p.end()
+
+        _GMAIL_SVG_CACHE[key] = pm
+        return pm
+    except Exception as exc:
+        sources.log_err("get_gmail_pixmap", exc)
+        return None
+
+
+def format_mail_card_text(mail_data: Dict[str, Any]) -> Tuple[str, str, bool, bool]:
+    """Extract (val_str, lbl_str, has_err, is_stale) from mail data."""
+    has_err = bool(mail_data.get("err")) or ("total_open" not in mail_data and "accounts" not in mail_data)
+    is_stale = bool(mail_data.get("stale", False))
+    if has_err:
+        return "—", "Mail okunamadı", True, is_stale
+
+    total_open = int(mail_data.get("total_open", 0))
+    if total_open == 0:
+        return "Yanıt yok", "Hepsi yanıtlandı", False, is_stale
+
+    val_str = f"{total_open} bekliyor"
+    accounts = mail_data.get("accounts") or []
+    parts = [f"{a.get('label', '')} {a.get('open', 0)}" for a in accounts if int(a.get("open", 0)) > 0]
+    lbl_str = " · ".join(parts) if parts else "Hepsi yanıtlandı"
+    return val_str, lbl_str, False, is_stale
+
+
+def measure_mail_card_width(mail_data: Dict[str, Any]) -> float:
+    """Measure dynamic width for mail card based on content (clamped 112..150 px)."""
+    val_str, lbl_str, _err, _stale = format_mail_card_text(mail_data)
+    f_val = theme.make_font(14.5, QFont.Weight.DemiBold, tabular=True)
+    f_lbl = theme.make_font(11.0, QFont.Weight.Normal)
+    fm_v = QFontMetricsF(f_val)
+    fm_l = QFontMetricsF(f_lbl)
+    w_text = max(fm_v.horizontalAdvance(val_str), fm_l.horizontalAdvance(lbl_str))
+    # 10px pad left + 28px logo + 8px gap + text + 10px pad right = 56px + w_text
+    w_total = 56.0 + w_text
+    return max(MAIL_CARD_MIN_WIDTH, min(MAIL_CARD_MAX_WIDTH, float(math.ceil(w_total))))
+
+
+def draw_mail_card(
+    p: QPainter,
+    rect: QRectF,
+    mail_data: Dict[str, Any],
+    hover: bool = False,
+    press_scale: float = 1.0,
+) -> None:
+    """Renders Mail card (Gmail logo + pending counts) according to mockups v6 spec."""
+    draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
+
+    val_str, lbl_str, has_err, is_stale = format_mail_card_text(mail_data)
+
+    # 28x28 Slot at left with 10px padding
+    slot_rect = QRectF(rect.x() + 10.0, rect.y() + (rect.height() - 28.0) / 2.0, 28.0, 28.0)
+    dev = p.device()
+    dpr = dev.devicePixelRatioF() if dev is not None else 1.0
+    pm = get_gmail_pixmap(28.0, dpr)
+    if pm is not None and not pm.isNull():
+        p.drawPixmap(slot_rect.topLeft(), pm)
+
+    # Body rect (x = rect.x() + 46px)
+    bx = rect.x() + 46.0
+    by = rect.y() + 8.0
+    bw = max(20.0, rect.right() - 10.0 - bx)
+
+    f_val = theme.make_font(14.5, QFont.Weight.DemiBold, tabular=True)
+    f_lbl = theme.make_font(11.0, QFont.Weight.Normal)
+
+    p.save()
+    p.setFont(f_val)
+    p.setPen(COLOR_TXT_PRIMARY)
+    p.drawText(QRectF(bx, by, bw, 18.0), Qt.AlignLeft | Qt.AlignVCenter, val_str)
+
+    p.setFont(f_lbl)
+    p.setPen(COLOR_TXT_MUTED)
+    p.drawText(QRectF(bx, by + 18.0, bw, 16.0), Qt.AlignLeft | Qt.AlignVCenter, lbl_str)
+
+    # Stale or error indicator: small amber dot top-right
+    if is_stale or has_err:
+        p.setPen(Qt.NoPen)
+        p.setBrush(COLOR_BAR_AMBER)
+        p.drawEllipse(QPointF(rect.right() - 8.0, rect.top() + 8.0), 3.0, 3.0)
+
+    p.restore()
+
+
+# ==============================================================================
+# 2C. ANTIGRAVITY QUOTA CARD
+# ==============================================================================
+
+_AG_ICON_CACHE: Dict[Tuple[float, float], QPixmap] = {}
+
+
+def get_antigravity_pixmap(target_size: float = 28.0, dpr: float = 1.0) -> Optional[QPixmap]:
+    """Load and cache high-quality downscaled Antigravity PNG icon."""
+    key = (target_size, dpr)
+    if key in _AG_ICON_CACHE:
+        return _AG_ICON_CACHE[key]
+
+    png_file = APP_DIR / "assets" / "antigravity.png"
+    if not png_file.is_file():
+        return None
+
+    try:
+        orig = QPixmap(str(png_file))
+        if orig.isNull():
+            return None
+        px = max(1, int(round(target_size * dpr)))
+        scaled = orig.scaled(px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        scaled.setDevicePixelRatio(dpr)
+        _AG_ICON_CACHE[key] = scaled
+        return scaled
+    except Exception as exc:
+        sources.log_err("get_antigravity_pixmap", exc)
+        return None
+
+
+def draw_ag_card(
+    p: QPainter,
+    rect: QRectF,
+    ag_data: Dict[str, Any],
+    hover: bool = False,
+    press_scale: float = 1.0,
+) -> None:
+    """Renders 142x52 Antigravity quota card with Claude & Gemini usage bars."""
+    draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
+
+    # 28x28 Slot at left with 8px padding
+    slot_rect = QRectF(rect.x() + 8.0, rect.y() + (rect.height() - 28.0) / 2.0, 28.0, 28.0)
+    dev = p.device()
+    dpr = dev.devicePixelRatioF() if dev is not None else 1.0
+    pm = get_antigravity_pixmap(28.0, dpr)
+    if pm is not None and not pm.isNull():
+        p.drawPixmap(slot_rect.topLeft(), pm)
+
+    bx = rect.x() + 44.0
+    bw = max(20.0, rect.right() - 10.0 - bx)
+
+    has_err = bool(ag_data.get("err")) or not ag_data.get("groups")
+
+    p.save()
+    if has_err:
+        p.setOpacity(0.65)
+        f_err = theme.make_font(10.5, QFont.Weight.Normal)
+        p.setFont(f_err)
+        p.setPen(COLOR_TXT_MUTED)
+        p.drawText(QRectF(bx, rect.y(), bw, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, "Antigravity okunamadı")
+        p.setOpacity(1.0)
+        p.setPen(Qt.NoPen)
+        p.setBrush(COLOR_BAR_AMBER)
+        p.drawEllipse(QPointF(rect.right() - 8.0, rect.top() + 8.0), 3.0, 3.0)
+        p.restore()
+        return
+
+    groups = ag_data.get("groups") or []
+    # Claude = group labelled 'Claude'
+    claude_grp = next((g for g in groups if str(g.get("label", "")).lower() == "claude"), None)
+    used_claude = float(claude_grp.get("used", 0.0)) if claude_grp else 0.0
+
+    # Gemini = max 'used' among groups whose label starts with 'Gemini'
+    gemini_grps = [g for g in groups if str(g.get("label", "")).startswith("Gemini")]
+    used_gemini = max((float(g.get("used", 0.0)) for g in gemini_grps), default=0.0) if gemini_grps else 0.0
+
+    f_lbl = theme.make_font(10.5, QFont.Weight.Normal)
+    f_pct = theme.make_font(10.5, QFont.Weight.DemiBold, tabular=True)
+
+    rows_data = [
+        ("Claude", used_claude, rect.y() + 10.0),
+        ("Gemini", used_gemini, rect.y() + 28.0),
+    ]
+
+    lbl_w = 34.0
+    pct_w = 26.0
+    bar_x = bx + lbl_w + 5.0
+    bar_w = max(10.0, bw - lbl_w - pct_w - 10.0)
+    pct_x = bar_x + bar_w + 5.0
+
+    for name, used_val, row_y in rows_data:
+        p.setFont(f_lbl)
+        p.setPen(COLOR_TXT_MUTED)
+        p.drawText(QRectF(bx, row_y, lbl_w, 14.0), Qt.AlignLeft | Qt.AlignVCenter, name)
+
+        # 4px bar track
+        bar_rect = QRectF(bar_x, row_y + 5.0, bar_w, 4.0)
+        p.setPen(Qt.NoPen)
+        p.setBrush(COLOR_BAR_TRACK)
+        p.drawRoundedRect(bar_rect, 2.0, 2.0)
+
+        # Bar fill
+        fill_w = max(0.0, min(bar_w, bar_w * (used_val / 100.0)))
+        if fill_w > 0.0:
+            fill_col = get_progress_bar_color(used_val)
+            p.setBrush(fill_col)
+            p.drawRoundedRect(QRectF(bar_x, row_y + 5.0, fill_w, 4.0), 2.0, 2.0)
+
+        # Percentage
+        p.setFont(f_pct)
+        p.setPen(COLOR_TXT_PRIMARY)
+        pct_str = f"%{int(round(used_val))}"
+        p.drawText(QRectF(pct_x, row_y, pct_w, 14.0), Qt.AlignRight | Qt.AlignVCenter, pct_str)
+
+    p.restore()
 
 
 # ==============================================================================

@@ -124,23 +124,19 @@ def test_tray_cluster_shrinking() -> None:
     dock._tray_items = [{"name": f"app_{i}"} for i in range(10)]
     dock.resize(1000, 64)
 
-    # Simulate wide content (e.g. content_w = 800)
-    # Screen width = 1000, right_edge = 986
-    # x0 = (1000 - 800) / 2 = 100
-    # card_group_right = 100 + 800 = 900
-    # Available right space = 986 - (900 + 12) = 74px
-    # Tray cluster with 0 icons = 9 + 96 = 105px > 74px -> shrinks to 0 icons!
-    dock._content_w = 800.0
+    # Simulate tight space (media playing on 1000px screen)
+    dock._now_playing_info = {"title": "Test Song", "app": "Music"}
     img = QImage(1000, 64, QImage.Format.Format_ARGB32)
     dock.render(img)
 
     tray_hits = [e for r, k, e in dock.hit_boxes if k == "tray_icon"]
     assert len(tray_hits) == 0, f"Expected 0 tray icons due to tight space, got {len(tray_hits)}"
 
-    # Now simulate generous width (content_w = 400 on 1536px band)
+    # Now simulate generous width (no media on 1536px band)
+    dock._now_playing_info = None
     dock.resize(1536, 64)
-    dock._content_w = 400.0
-    dock.render(img)
+    img_wide = QImage(1536, 64, QImage.Format.Format_ARGB32)
+    dock.render(img_wide)
     tray_hits_wide = [e for r, k, e in dock.hit_boxes if k == "tray_icon"]
     assert len(tray_hits_wide) == 7, f"Expected 7 tray icons with ample space, got {len(tray_hits_wide)}"
     print("[PASS] Tray cluster icon count shrinking verified.")

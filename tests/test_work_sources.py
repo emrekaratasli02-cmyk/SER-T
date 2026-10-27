@@ -621,3 +621,175 @@ def test_live_read_only_telemetry() -> None:
         )
 
     print("---------------------------------------\n")
+
+
+# ---------------------------------------------------------------------------
+# 5) Unit Tests: Auto Sender Rules and Filtering (Synthetic Only)
+# ---------------------------------------------------------------------------
+def test_is_auto_sender_local_parts() -> None:
+    """Verify local-part regex patterns for automated notification mailboxes."""
+    auto_senders = [
+        "noreply@example.com",
+        "No-Reply@company.org",
+        "donotreply@service.io",
+        "do-not-reply@portal.net",
+        "notification@app.com",
+        "notifications@system.com",
+        "mailer-daemon@relay.com",
+        "appleid@example.org",
+        "account@corp.com",
+        "accounts@auth.com",
+        "security@platform.com",
+        "alerts@monitor.com",
+        "alert@status.com",
+        "newsletter@digest.com",
+        "NoReply+123@support.com",
+        "Security-Alert@host.com",
+    ]
+    for s in auto_senders:
+        assert ws.is_auto_sender(s) is True, f"Expected {s} to be auto"
+        assert ws.is_auto_sender(f"Bot <{s}>") is True, f"Expected Bot <{s}> to be auto"
+
+
+def test_is_auto_sender_known_domains_and_addrs() -> None:
+    """Verify exact known domains and addresses."""
+    known_auto = [
+        "appleid@apple.com",
+        "account@nvidia.com",
+        "admin@accounts.google.com",
+        "update@mail.instagram.com",
+        "info@notification.mail.instagram.com",
+        "security@facebookmail.com",
+        "messages@linkedin.com",
+        "noreply@email.marketing.com",
+        "news@email.store.com",
+    ]
+    for s in known_auto:
+        assert ws.is_auto_sender(s) is True, f"Expected {s} to be auto"
+
+
+def test_is_auto_sender_human_senders() -> None:
+    """Verify human and corporate collaborator addresses are strictly NOT classified as auto."""
+    human_senders = [
+        "fle@is-dba.com",
+        "hello@team-brain.com",
+        "hello@lumen-research.com",
+        "john.doe@dentsu.com",
+        "jane.smith@havasmedia.com",
+        "colleague@integralads.com",
+        "emre@example.com",
+        "client.contact@agency.com",
+    ]
+    for s in human_senders:
+        assert ws.is_auto_sender(s) is False, f"Expected human sender {s} to NOT be auto"
+        assert ws.is_auto_sender(f"Human Person <{s}>") is False
+
+
+def test_is_auto_sender_custom_ignores() -> None:
+    """Verify custom user ignore substrings from settings.json."""
+    custom_list = ["custombot", "dailyreport"]
+    assert ws.is_auto_sender("sender@custombot.org", custom_list) is True
+    assert ws.is_auto_sender("dailyreport-archive@corp.com", custom_list) is True
+    assert ws.is_auto_sender("regular@corp.com", custom_list) is False
+
+
+def test_fetch_mail_waiting_auto_filtering_synthetic(tmp_path: Path) -> None:
+    """Verify that automated emails are flagged and excluded from open counts."""
+    mail_dir = tmp_path / "mail-filter-test"
+    mail_dir.mkdir()
+
+    # Synthetic IAS: 1 human open, 1 human closed, 1 auto notification
+    ias_data = {
+        "hesap": "ias",
+        "adres": "test@ias.example.com",
+        "olusturma": "2026-10-27T10:00:00+03:00",
+        "bekleyen": [
+            {
+                "kimden": "Müşteri Temsilcisi <musteri@corp.com>",
+                "konu": "Proje Raporu",
+                "bekleme_saat": 20,
+                "okunmamis": False,
+                "kapanis_tahmini": False,
+            },
+            {
+                "kimden": "Eski İş Arkadaşı <arkadas@havasmedia.com>",
+                "konu": "Eski Konu",
+                "bekleme_saat": 5,
+                "okunmamis": False,
+                "kapanis_tahmini": True,
+            },
+            {
+                "kimden": "Bildirim Sistemi <noreply@ias.example.com>",
+                "konu": "Sistem Güncellemesi",
+                "bekleme_saat": 50,
+                "okunmamis": True,
+                "kapanis_tahmini": False,
+            },
+        ],
+    }
+
+    # Synthetic Kişisel: 1 human open, 2 auto (Apple + NVIDIA)
+    kisisel_data = {
+        "hesap": "kisisel02",
+        "adres": "test@gmail.com",
+        "olusturma": "2026-10-27T10:00:00+03:00",
+        "bekleyen": [
+            {
+                "kimden": "Dost Kişi <fle@is-dba.com>",
+                "konu": "Kahve Randevusu",
+                "bekleme_saat": 15,
+                "okunmamis": True,
+                "kapanis_tahmini": False,
+            },
+            {
+                "kimden": "Apple <appleid@apple.com>",
+                "konu": "Hesap Özeti",
+                "bekleme_saat": 100,
+                "okunmamis": False,
+                "kapanis_tahmini": False,
+            },
+            {
+                "kimden": "NVIDIA <account@nvidia.com>",
+                "konu": "Güvenlik Kodu",
+                "bekleme_saat": 80,
+                "okunmamis": True,
+                "kapanis_tahmini": False,
+            },
+        ],
+    }
+
+    # Synthetic Logaritma: empty
+    logaritma_data = {
+        "hesap": "logaritma",
+        "adres": "test@logaritma.com",
+        "olusturma": "2026-10-27T10:00:00+03:00",
+        "bekleyen": [],
+    }
+
+    (mail_dir / "ias.json").write_text(json.dumps(ias_data), encoding="utf-8")
+    (mail_dir / "kisisel02.json").write_text(json.dumps(kisisel_data), encoding="utf-8")
+    (mail_dir / "logaritma.json").write_text(json.dumps(logaritma_data), encoding="utf-8")
+
+    res = ws.fetch_mail_waiting(mail_dir=mail_dir)
+
+    assert "err" not in res
+    assert res["total_open"] == 2  # 1 from IAS, 1 from Kişisel
+    assert res["hidden_auto"] == 3  # 1 from IAS, 2 from Kişisel
+    assert res["oldest_h"] == 20  # Max of open human items: 20 and 15 (auto's 50, 100, 80 excluded)
+
+    accs = {a["key"]: a for a in res["accounts"]}
+    assert accs["ias"]["open"] == 1
+    assert accs["ias"]["hidden_auto"] == 1
+    assert accs["kisisel02"]["open"] == 1
+    assert accs["kisisel02"]["hidden_auto"] == 2
+    assert accs["logaritma"]["open"] == 0
+    assert accs["logaritma"]["hidden_auto"] == 0
+
+    # Verify item contents and privacy
+    for a in res["accounts"]:
+        for it in a["items"]:
+            assert "ozet" not in it
+            assert "message_id" not in it
+            assert "body" not in it
+            assert "auto" in it
+

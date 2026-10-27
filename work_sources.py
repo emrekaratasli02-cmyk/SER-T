@@ -17,6 +17,7 @@ import email.utils
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import threading
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -203,6 +204,94 @@ def shorten_ag_label(raw_label: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Automated Mail Filter (Notification / Transactional Email Filtering)
+# ---------------------------------------------------------------------------
+AUTO_LOCAL_REGEX = re.compile(
+    r"^(?:noreply|no-reply|donotreply|do-not-reply|notifications?|mailer-daemon|appleid|accounts?|security|alerts?|newsletter)(?:[-_.+].*)?$",
+    re.IGNORECASE,
+)
+
+KNOWN_AUTO_ADDRS = {
+    "appleid@apple.com",
+    "account@nvidia.com",
+}
+
+KNOWN_AUTO_DOMAINS = {
+    "accounts.google.com",
+    "mail.instagram.com",
+    "facebookmail.com",
+    "linkedin.com",
+}
+
+
+def extract_sender_address(kimden: Any) -> str:
+    """Extract clean lowercase email address from sender string."""
+    if not kimden:
+        return ""
+    text = str(kimden).strip()
+    _, addr = email.utils.parseaddr(text)
+    if addr:
+        return addr.strip().lower()
+    m = re.search(r"[\w\.-]+@[\w\.-]+", text)
+    if m:
+        return m.group(0).strip().lower()
+    return ""
+
+
+def is_auto_sender(kimden: Any, ignore_substrings: Optional[List[str]] = None) -> bool:
+    """Determine whether an email is an automated notification based on sender address.
+
+    Checks:
+    1) Local part matches noreply / no-reply / donotreply / do-not-reply /
+       notification(s) / mailer-daemon / appleid / account(s) / security / alerts / newsletter
+    2) Known exact addresses/domains (appleid@apple.com, account@nvidia.com,
+       accounts.google.com, *.mail.instagram.com, *.facebookmail.com, *.linkedin.com, *@email.*)
+    3) Optional user ignore substrings from settings.json ('mail_ignore_senders')
+
+    Preserves human senders (e.g. fle@is-dba.com, hello@team-brain.com,
+    hello@lumen-research.com, people at dentsu/havas/integralads).
+    """
+    addr = extract_sender_address(kimden)
+    if not addr:
+        return False
+
+    local_part, _, domain = addr.partition("@")
+
+    if AUTO_LOCAL_REGEX.match(local_part):
+        return True
+
+    if addr in KNOWN_AUTO_ADDRS:
+        return True
+
+    if domain in KNOWN_AUTO_DOMAINS or any(domain.endswith("." + d) for d in KNOWN_AUTO_DOMAINS):
+        return True
+
+    if domain.startswith("email.") or domain == "email":
+        return True
+
+    if ignore_substrings:
+        for s in ignore_substrings:
+            if s and str(s).lower() in addr:
+                return True
+
+    return False
+
+
+def _get_mail_ignore_senders() -> List[str]:
+    """Read optional 'mail_ignore_senders' list from settings.json (read-only)."""
+    try:
+        settings_file = SERIT_DIR / "settings.json"
+        if settings_file.is_file():
+            data = json.loads(settings_file.read_text(encoding="utf-8"))
+            val = data.get("mail_ignore_senders")
+            if isinstance(val, list):
+                return [str(s).strip().lower() for s in val if s]
+    except Exception:
+        pass
+    return []
+
+
+# ---------------------------------------------------------------------------
 # 1) fetch_mail_waiting
 # ---------------------------------------------------------------------------
 _MAIL_CACHE_LOCK = threading.Lock()
@@ -223,6 +312,7 @@ def fetch_mail_waiting(mail_dir: Optional[Union[str, Path]] = None) -> Dict[str,
             return {
                 "accounts": [],
                 "total_open": 0,
+                "hidden_auto": 0,
                 "oldest_h": None,
                 "scanned_at": None,
                 "stale": True,
@@ -247,6 +337,7 @@ def fetch_mail_waiting(mail_dir: Optional[Union[str, Path]] = None) -> Dict[str,
         accounts: List[Dict[str, Any]] = []
         warnings: List[str] = []
         newest_scan_dt: Optional[dt.datetime] = None
+        user_ignores = _get_mail_ignore_senders()
 
         # Check _durum.json for latest scan timestamp
         durum_file = base_dir / "_durum.json"
@@ -290,12 +381,18 @@ def fetch_mail_waiting(mail_dir: Optional[Union[str, Path]] = None) -> Dict[str,
             raw_items = data.get("bekleyen") or []
             cleaned_items: List[Dict[str, Any]] = []
             open_count = 0
+            auto_count = 0
 
             for it in raw_items:
                 if not isinstance(it, dict):
                     continue
+                raw_kimden = it.get("kimden")
+                is_auto = is_auto_sender(raw_kimden, user_ignores)
                 kapanis_tahmini = bool(it.get("kapanis_tahmini", False))
-                if not kapanis_tahmini:
+
+                if is_auto:
+                    auto_count += 1
+                elif not kapanis_tahmini:
                     open_count += 1
 
                 try:
@@ -308,19 +405,25 @@ def fetch_mail_waiting(mail_dir: Optional[Union[str, Path]] = None) -> Dict[str,
 
                 # Strictly keep only allowed keys, NEVER ozet or message_id or body
                 cleaned_item = {
-                    "kimden": clean_sender_name(it.get("kimden")),
+                    "kimden": clean_sender_name(raw_kimden),
                     "konu": str(it.get("konu") or "").strip(),
                     "bekleme_saat": bekleme_saat,
                     "okunmamis": bool(it.get("okunmamis", False)),
                     "kapanis_tahmini": kapanis_tahmini,
+                    "auto": is_auto,
                     "rol": str(it.get("rol") or "").strip(),
                     "thread_id": thread_id,
                     "url": url,
                 }
                 cleaned_items.append(cleaned_item)
 
-            # Sort items: open first (kapanis_tahmini == False), then by bekleme_saat desc
-            cleaned_items.sort(key=lambda x: (1 if x["kapanis_tahmini"] else 0, -x["bekleme_saat"]))
+            # Sort items: active open first (not kapanis_tahmini and not auto), then kapanis_tahmini, then auto; by bekleme_saat desc
+            cleaned_items.sort(
+                key=lambda x: (
+                    2 if x["auto"] else (1 if x["kapanis_tahmini"] else 0),
+                    -x["bekleme_saat"],
+                )
+            )
 
             accounts.append({
                 "key": key,
@@ -328,17 +431,19 @@ def fetch_mail_waiting(mail_dir: Optional[Union[str, Path]] = None) -> Dict[str,
                 "adres": adres,
                 "scanned_at": scanned_at_iso,
                 "open": open_count,
+                "hidden_auto": auto_count,
                 "items": cleaned_items,
             })
 
         total_open = sum(a["open"] for a in accounts)
+        total_hidden_auto = sum(a.get("hidden_auto", 0) for a in accounts)
 
-        # Oldest waiting hours among open items
+        # Oldest waiting hours among open items (excluding auto and closed)
         open_hours = [
             it["bekleme_saat"]
             for a in accounts
             for it in a["items"]
-            if not it.get("kapanis_tahmini")
+            if not it.get("kapanis_tahmini") and not it.get("auto")
         ]
         oldest_h = max(open_hours) if open_hours else None
 
@@ -355,6 +460,7 @@ def fetch_mail_waiting(mail_dir: Optional[Union[str, Path]] = None) -> Dict[str,
         result: Dict[str, Any] = {
             "accounts": accounts,
             "total_open": total_open,
+            "hidden_auto": total_hidden_auto,
             "oldest_h": oldest_h,
             "scanned_at": overall_scanned_iso,
             "stale": stale,
