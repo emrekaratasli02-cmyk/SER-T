@@ -139,8 +139,10 @@ def format_reset_display(
                 return f"{m} dk"
         else:
             tz_tr = getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))
-            # En yakın dakikaya yuvarla: Anthropic 05:59:59.79 UTC veriyor, '08:59' değil '09:00' görünsün
-            local_dt = (target_dt + dt.timedelta(seconds=30)).astimezone(tz_tr)
+            # Anthropic sıfırlamayı 05:59:59.79 UTC verir: yalnızca 59. saniyedeki değerler yukarı
+            # yuvarlanır ('Cmt 09:00'); diğerleri kesilir (Antigravity 16:40:xx -> 'Per 16:40').
+            bump = dt.timedelta(seconds=1) if target_dt.second >= 59 else dt.timedelta(0)
+            local_dt = (target_dt + bump).astimezone(tz_tr)
             w_idx = local_dt.weekday()
             w_str = TR_DAYS_SHORT.get(w_idx, "")
             return f"{w_str} {local_dt.hour:02d}:{local_dt.minute:02d}".strip()
