@@ -155,6 +155,10 @@ def test_missing_values_show_dash_and_empty_ring():
     assert content["session"] is None and content["week"] is None
     assert ps.pct(content["session"]) == "—"
     assert content["session_meta"] == "Sıfırlanır: —"
+    # Ek kullanım bilinmiyorsa uydurma "Kapalı" değil None ("—") olmalı
+    assert content["extra_usage"] is None
+    assert build_claude_content(dict(CLAUDE_MISSING, extra_usage=False))["extra_usage"] is False
+    assert build_claude_content(dict(CLAUDE_MISSING, extra_usage=True))["extra_usage"] is True
 
     sys_content = build_sys_content({"cpu": None, "ram": None, "disk_c": None})
     assert sys_content["cpu_meta"] == "—"

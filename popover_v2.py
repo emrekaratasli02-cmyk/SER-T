@@ -563,7 +563,9 @@ def build_claude_content(data: dict) -> dict:
         "week_meta": w_ring_meta,
         "extra_rows": extra_rows,
         "subscribed_at": data.get("subscribed_at"),
-        "extra_usage": bool(data.get("extra_usage", False)),
+        # None = veri yok -> panelde "—" (uydurma "Kapalı" gösterme)
+        "extra_usage": (None if data.get("extra_usage") is None
+                        else bool(data.get("extra_usage"))),
         "sub_rows": sub_rows,
         "stale": stale,
         "error": str(err) if err else None,
