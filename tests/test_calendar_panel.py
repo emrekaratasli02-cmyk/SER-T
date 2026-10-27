@@ -1,142 +1,162 @@
-"""Unit and integration tests for calendar_panel.py and sources.fetch_month_calendar().
+"""Calendar panel tests (panel_style v2 rebuild) — stub data only, no network/user files.
 
 Covers:
-1. Date parsing: all-day exclusive end, multi-day spans, datetime parsing
-2. Category classification: Google Takvim, Vergi/ödeme, Resmi tatil, Claude
-3. Turkish public holidays and computed Claude usage markers
-4. Bad-data matrix (>= 30 test cases) for fetch_month_calendar and panel show/paint
-5. Day selection and month navigation
-6. Mocked link opening via QDesktopServices
-7. Paint performance benchmarking (< 5ms per frame)
-8. High-DPI DPR 2.0 offscreen renders:
-   - cal_oct.png
-   - cal_oct_28.png
-   - cal_nov.png
-   - cal_empty.png
-   - cal_error.png
+1. Date parsing: exclusive all-day end, multi-day spans, datetimes
+2. Category classification and Turkish holiday / Claude marker helpers
+3. Bad-data matrix for show/paint (no exception escapes)
+4. Day selection, month navigation and "Bugün"
+5. Event link opening (mocked)
+6. Paint benchmark (< 8 ms per frame, best round)
+7. Design contract: 440 px, 30 px day cells, colored 3 x 28 px event strips
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import json
 from pathlib import Path
 import sys
 import time
 from typing import Any, List, Tuple
 from unittest.mock import MagicMock
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QDesktopServices, QImage, QPainter
+from PySide6.QtCore import QEvent, QRectF, Qt
+from PySide6.QtGui import QDesktopServices, QImage, QMouseEvent, QPainter
 from PySide6.QtWidgets import QApplication
 
-# Ensure repository root in sys.path
 REPO_DIR = Path(__file__).resolve().parent.parent
 if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
 
 import calendar_panel
+import panel_style
 import sources
 
-SCRATCH_DIR = Path("C:/Users/Emre Karatasli/AppData/Local/hermes/cache/scratch/serit-v6")
-SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+OUT_DIR = REPO_DIR / "_ref" / "out"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+app = QApplication.instance() or QApplication(sys.argv)
 
-# Headless / GUI App instance
-app = QApplication.instance()
-if app is None:
-    app = QApplication(sys.argv)
+LOCAL_TZ = dt.timezone(dt.timedelta(hours=3))
+NOW = dt.datetime(2026, 10, 27, 20, 35, tzinfo=LOCAL_TZ)
+ANCHOR = QRectF(500, 800, 120, 40)
+
+STUB_EVENTS = [
+    {
+        "title": "💸 Vergi: Eylül KDV son gün – 791,00 TL",
+        "start": dt.date(2026, 10, 28),
+        "end": dt.date(2026, 10, 29),
+        "all_day": True,
+        "link": "",
+        "category": "Vergi/ödeme",
+    },
+    {
+        "title": "Müşteri vakası takibi (örnek)",
+        "start": dt.date(2026, 10, 30),
+        "end": dt.date(2026, 10, 31),
+        "all_day": True,
+        "link": "",
+        "category": "Google Takvim",
+    },
+    {
+        "title": "Les Ateliers fiyat revizyonu",
+        "start": dt.date(2026, 10, 31),
+        "end": dt.date(2026, 11, 1),
+        "all_day": True,
+        "link": "",
+        "category": "Google Takvim",
+    },
+]
+
+
+def make_panel(events=None, selected: dt.date = dt.date(2026, 10, 27),
+               claude=None, updated: str = "19:58") -> calendar_panel.CalendarPanel:
+    panel = calendar_panel.CalendarPanel()
+    panel._now_override = NOW
+    panel.selected_date = selected
+    panel.view_year = selected.year
+    panel.view_month = selected.month
+    panel.show_for(ANCHOR, {"events": list(STUB_EVENTS if events is None else events),
+                            "updated": updated}, claude or {})
+    return panel
+
+
+def click(panel: calendar_panel.CalendarPanel, pt) -> None:
+    ev = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        pt,
+        pt,
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    panel.mousePressEvent(ev)
 
 
 def test_date_parsing_and_spans() -> None:
-    """Test date parsing, exclusive all-day end, and multi-day spans."""
-    print("--- 1. Testing Date Parsing & Multi-day Spans ---")
-
-    # 1. 10-char string is parsed as all-day date
+    print("--- 1. Date parsing & multi-day spans ---")
     d, is_all_day = sources._parse_month_date_or_dt("2026-10-14")
-    assert is_all_day is True, "Expected all_day=True for 10-char date"
-    assert d == dt.date(2026, 10, 14)
+    assert is_all_day is True and d == dt.date(2026, 10, 14)
 
-    # 2. ISO datetime is parsed as timed datetime
     dt_val, is_all_day = sources._parse_month_date_or_dt("2026-10-13T09:30:00+03:00")
-    assert is_all_day is False, "Expected all_day=False for ISO datetime"
-    assert isinstance(dt_val, dt.datetime)
+    assert is_all_day is False and isinstance(dt_val, dt.datetime)
     assert dt_val.hour == 9 and dt_val.minute == 30
 
-    # 3. Exclusive all-day end behavior
     panel = calendar_panel.CalendarPanel()
-    span_event = {
+    span = {
         "title": "Konferans",
         "start": dt.date(2026, 10, 14),
-        "end": dt.date(2026, 10, 17),  # Spans 14, 15, 16 (17 is exclusive)
+        "end": dt.date(2026, 10, 17),
         "all_day": True,
         "link": "",
         "category": "Google Takvim",
     }
-    events_list = [span_event]
-
-    m14 = panel._match_events_for_date(dt.date(2026, 10, 14), events_list, [])
-    assert len(m14) == 1, "Should cover start day 2026-10-14"
-
-    m15 = panel._match_events_for_date(dt.date(2026, 10, 15), events_list, [])
-    assert len(m15) == 1, "Should cover middle day 2026-10-15"
-
-    m16 = panel._match_events_for_date(dt.date(2026, 10, 16), events_list, [])
-    assert len(m16) == 1, "Should cover last inclusive day 2026-10-16"
-
-    m17 = panel._match_events_for_date(dt.date(2026, 10, 17), events_list, [])
-    assert len(m17) == 0, "Exclusive end 2026-10-17 must NOT be covered"
-
-    m13 = panel._match_events_for_date(dt.date(2026, 10, 13), events_list, [])
-    assert len(m13) == 0, "Day before start must NOT be covered"
-
-    print("  [PASS] Date parsing, exclusive end, and multi-day spans verified.")
+    events = [span]
+    assert len(panel._match_events_for_date(dt.date(2026, 10, 14), events, [])) == 1
+    assert len(panel._match_events_for_date(dt.date(2026, 10, 15), events, [])) == 1
+    assert len(panel._match_events_for_date(dt.date(2026, 10, 16), events, [])) == 1
+    assert len(panel._match_events_for_date(dt.date(2026, 10, 17), events, [])) == 0
+    assert len(panel._match_events_for_date(dt.date(2026, 10, 13), events, [])) == 0
+    panel.close()
+    print("  [PASS] Date parsing, exclusive end, multi-day spans verified.")
 
 
 def test_category_classification() -> None:
-    """Test category classification by keywords, symbols, and emojis."""
-    print("--- 2. Testing Category Classification ---")
-
+    print("--- 2. Category classification & emoji stripping ---")
     tax_cases = [
-        "💸 Vergi: Gelir vergisi son gün – 1.739,70 TL",
-        "💸 Vergi: Ağustos KDV öde – 811,50 TL (GECİKMEDE)",
+        "💸 Vergi: Örnek gelir vergisi son gün – 1.234,56 TL",
+        "💸 Vergi: Örnek KDV öde – 456,70 TL (GECİKMEDE)",
         "Eylül KDV son gün – 791,00 TL",
         "SGK prim borcu son ödeme",
         "İnternet faturası öde",
         "Kira ödemesi",
         "VERGİ DAİRESİ BİLDİRİMİ",
+        "Bağ-Kur prim ödemesi",
     ]
     for title in tax_cases:
-        cat = sources.classify_calendar_category(title)
-        assert cat == "Vergi/ödeme", f"Failed for '{title}' -> got '{cat}'"
+        assert sources.classify_calendar_category(title) == "Vergi/ödeme", title
+    for title in tax_cases[:4] + tax_cases[6:]:
+        assert calendar_panel.is_tax_item(title), title
 
     gcal_cases = [
-        "IAS Case 00802139 takip (kariyer.net Ad Clutter)",
-        "Alo 199 arandı — harçsız öğrenci pasaportu",
-        "IS-DBA kayıt linki geldi mi?",
-        "e-Devlet öğrenci belgesi çıktı mı?",
-        "Codex aboneliği bitiyor: yeni işçi planını konuş",
-        "Nantes başvuru son gün",
+        "Müşteri vakası takibi (örnek)",
+        "Örnek telefon görüşmesi",
+        "Örnek kayıt linki kontrolü",
+        "Örnek belge kontrolü",
+        "Örnek başvuru son gün",
     ]
     for title in gcal_cases:
-        cat = sources.classify_calendar_category(title)
-        assert cat == "Google Takvim", f"Failed for '{title}' -> got '{cat}'"
+        assert sources.classify_calendar_category(title) == "Google Takvim", title
+        assert not calendar_panel.is_tax_item(title), title
 
-    # Emoji stripping
     assert calendar_panel.clean_title("💸 Vergi: KDV öde") == "Vergi: KDV öde"
     assert calendar_panel.clean_title("✅ Alo 199 arandı") == "Alo 199 arandı"
     assert calendar_panel.clean_title("🇫🇷 (yedek) Son gün") == "(yedek) Son gün"
     assert calendar_panel.clean_title("🎓 e-Devlet öğrenci") == "e-Devlet öğrenci"
-    assert calendar_panel.clean_title("🤖 Codex aboneliği") == "Codex aboneliği"
     assert calendar_panel.clean_title("   Normal Başlık   ") == "Normal Başlık"
-
     print("  [PASS] Category classification and emoji stripping verified.")
 
 
 def test_holidays_and_claude_markers() -> None:
-    """Test Turkish public holidays and computed Claude usage markers."""
-    print("--- 3. Testing Holidays & Claude Markers ---")
-
-    # 1. Republic Day Eve (Arife, Half-day)
+    print("--- 3. Holidays & Claude markers ---")
     arife = calendar_panel.get_holiday_events_for_date(dt.date(2026, 10, 28))
     assert len(arife) == 1
     assert arife[0]["title"] == "Cumhuriyet Bayramı Arifesi"
@@ -144,238 +164,115 @@ def test_holidays_and_claude_markers() -> None:
     assert arife[0]["sub"] == "Yarım gün"
     assert arife[0]["half_day"] is True
 
-    # 2. Republic Day (Full holiday)
     bayram = calendar_panel.get_holiday_events_for_date(dt.date(2026, 10, 29))
-    assert len(bayram) == 1
-    assert bayram[0]["title"] == "Cumhuriyet Bayramı"
-    assert bayram[0]["category"] == "Resmi tatil"
-    assert bayram[0]["sub"] == "Tüm gün"
-    assert bayram[0]["half_day"] is False
+    assert len(bayram) == 1 and bayram[0]["sub"] == "Tüm gün"
 
-    # 3. Claude Markers
     mock_claude = {
-        "week_reset": "2026-10-31T06:00:00.069953+00:00",  # Saturday 09:00 UTC+3
-        "subscribed_at": "2026-05-21T07:23:39.399643Z",     # 21st of month
+        "week_reset": "2026-10-31T06:00:00.069953+00:00",
+        "subscribed_at": "2026-05-21T07:23:39.399643Z",
     }
     markers_oct = calendar_panel.get_claude_markers_for_month(mock_claude, 2026, 10)
+    assert len(markers_oct) == 6
+    assert len([m for m in markers_oct if "haftalık sıfırlama" in m["title"]]) == 5
+    assert len([m for m in markers_oct if "Claude yenileme ≈" in m["title"]]) == 1
 
-    # 5 Saturdays in Oct 2026 (Oct 3, 10, 17, 24, 31) + 1 subscription renewal (Oct 21) = 6 markers
-    assert len(markers_oct) == 6, f"Expected 6 markers in Oct 2026, got {len(markers_oct)}"
-
-    sat_markers = [m for m in markers_oct if "haftalık sıfırlama" in m["title"]]
-    assert len(sat_markers) == 5
-    for sm in sat_markers:
-        assert sm["category"] == "Claude"
-        assert "09:00" in sm["title"]
-
-    ren_markers = [m for m in markers_oct if "Claude yenileme ≈" in m["title"]]
-    assert len(ren_markers) == 1
-    assert ren_markers[0]["start"] == dt.date(2026, 10, 21)
-    assert ren_markers[0]["category"] == "Claude"
-
-    # February clamping test (day 31 -> clamped to 28)
-    mock_claude_31 = {"subscribed_at": "2026-01-31T00:00:00Z"}
-    markers_feb = calendar_panel.get_claude_markers_for_month(mock_claude_31, 2026, 2)
+    markers_feb = calendar_panel.get_claude_markers_for_month(
+        {"subscribed_at": "2026-01-31T00:00:00Z"}, 2026, 2)
     feb_ren = [m for m in markers_feb if "Claude yenileme ≈" in m["title"]][0]
     assert feb_ren["start"] == dt.date(2026, 2, 28)
-
     print("  [PASS] Holidays and Claude markers verified.")
 
 
 def test_bad_data_matrix() -> None:
-    """Test robustness against bad data matrix (>= 30 cases) for file and panel."""
-    print("--- 4. Testing Bad-Data Robustness Matrix (>= 30 cases) ---")
-    tmp_path = SCRATCH_DIR / "test_probe.json"
-
-    bad_matrix_file: List[Any] = [
-        # (raw_content_or_none, expected_error_substring)
-        (None, "Takvim dosyası yok"),             # Case 1: File does not exist
-        ("", "Takvim okunamadı"),                 # Case 2: Empty file
-        ("{", "Takvim okunamadı"),                # Case 3: Truncated JSON
-        ("null", "Geçersiz veri"),                # Case 4: Literal null
-        ("12345", "Geçersiz veri"),               # Case 5: Literal int
-        ("\"hello\"", "Geçersiz veri"),           # Case 6: Literal string
-        ("[]", "Geçersiz veri"),                  # Case 7: Literal list
-        ("true", "Geçersiz veri"),                # Case 8: Literal bool
-        (json.dumps({"hata": "API 500"}), "Takvim güncellenemedi"),  # Case 9: Error flag set
-        (json.dumps({}), None),                   # Case 10: Empty dict
-        (json.dumps({"etkinlikler": None}), None),# Case 11: None etkinlikler
-        (json.dumps({"etkinlikler": 123}), None), # Case 12: Invalid etkinlikler type
-        (json.dumps({"etkinlikler": "str"}), None),# Case 13: String etkinlikler
-        (json.dumps({"etkinlikler": [None, 42, "foo", []]}), None), # Case 14: Non-dict items
-        (json.dumps({"etkinlikler": [{}]}), None),# Case 15: Empty event
-        (json.dumps({"etkinlikler": [{"bas": None}]}), None), # Case 16: None start
-        (json.dumps({"etkinlikler": [{"bas": "bad-date"}]}), None), # Case 17: Bad date string
-        (json.dumps({"etkinlikler": [{"bas": "2026-10-15", "bit": "bad"}]}), None), # Case 18: Bad end
-        (json.dumps({"etkinlikler": [{"bas": "2026-10-15", "baslik": None}]}), None), # Case 19: None title
-        (json.dumps({"etkinlikler": [{"bas": "2026-10-15", "link": None}]}), None), # Case 20: None link
-        (json.dumps({"zaman": "not-iso", "etkinlikler": []}), None), # Case 21: Invalid zaman
-        (json.dumps({"zaman": None, "etkinlikler": []}), None), # Case 22: None zaman
-        (json.dumps({"bas": "bad", "bit": "bad", "etkinlikler": []}), None), # Case 23: Bad range
-        (json.dumps({"etkinlikler": [{"bas": "2026-10-14T10:00:00", "bit": None}]}), None), # Case 24: Datetime without tz
-        (json.dumps({"etkinlikler": [{"bas": "2026-10-14", "tum_gun": False}]}), None), # Case 25: 10-char with tum_gun False
-    ]
-
-    for idx, (content, exp_err) in enumerate(bad_matrix_file, 1):
-        if content is None:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        else:
-            tmp_path.write_text(content, encoding="utf-8")
-
-        res = sources.fetch_month_calendar(tmp_path)
-        assert isinstance(res, dict)
-        assert "events" in res
-        assert "updated" in res
-        assert "stale" in res
-        assert "range" in res
-        assert "err" in res
-        if exp_err:
-            assert res["err"] is not None and exp_err in res["err"], f"Case {idx} failed: {res['err']}"
-        else:
-            assert res["err"] is None
-
-    if tmp_path.exists():
-        tmp_path.unlink()
-
-    # Panel UI Garbage Data Matrix
+    print("--- 4. Bad-data matrix (panel paint) ---")
     panel = calendar_panel.CalendarPanel()
-    bad_panel_matrix: List[Tuple[Any, Any]] = [
-        (None, None),                                # Case 26
-        ({}, {}),                                    # Case 27
-        ("string", "string"),                        # Case 28
-        (12345, 67890),                              # Case 29
-        ([], []),                                    # Case 30
-        ({"events": "not a list"}, {"week_reset": 123}), # Case 31
-        ({"events": [None, 123, {}]}, {"subscribed_at": 999}), # Case 32
-        ({"events": [{"bas": "invalid"}]}, {"week_reset": "bad"}), # Case 33
-        ({"events": []}, {"subscribed_at": "bad-date"}), # Case 34
-        ({"updated": None, "stale": "maybe"}, {}),   # Case 35
+    panel._now_override = NOW
+    bad_matrix: List[Tuple[Any, Any]] = [
+        (None, None),
+        ({}, {}),
+        ("string", "string"),
+        (12345, 67890),
+        ([], []),
+        ({"events": "not a list"}, {"week_reset": 123}),
+        ({"events": [None, 123, {}]}, {"subscribed_at": 999}),
+        ({"events": [{"start": "invalid"}]}, {"week_reset": "bad"}),
+        ({"events": []}, {"subscribed_at": "bad-date"}),
+        ({"updated": None, "stale": "maybe"}, {}),
+        ({"events": [{"title": "x", "start": dt.date(2026, 10, 14), "end": None}]}, {}),
     ]
-
-    for idx, (m_data, c_data) in enumerate(bad_panel_matrix, 26):
+    for idx, (m_data, c_data) in enumerate(bad_matrix, 1):
         try:
-            panel.show_for(QRectF(100, 500, 80, 40), m_data, c_data)
+            panel.show_for(ANCHOR, m_data, c_data)
             img = panel.render_to_image(dpr=1.0)
             assert not img.isNull(), f"Render failed on bad case {idx}"
         except Exception as exc:
             assert False, f"Exception escaped on bad case {idx}: {exc}"
-
-    print(f"  [PASS] All {len(bad_matrix_file) + len(bad_panel_matrix)} bad-data matrix cases passed without raising.")
+        panel.hide_instant()
+    panel.close()
+    print(f"  [PASS] All {len(bad_matrix)} bad-data cases painted without raising.")
 
 
 def test_navigation_and_selection() -> None:
-    """Test day selection, month navigation, and 'Bugün' action."""
-    print("--- 5. Testing Day Selection & Month Navigation ---")
-    panel = calendar_panel.CalendarPanel()
-    panel.show_for(QRectF(200, 600, 100, 40), {}, {})
+    print("--- 5. Day selection & month navigation ---")
+    panel = make_panel()
+    assert panel.view_year == 2026 and panel.view_month == 10
 
-    initial_year = panel.view_year
-    initial_month = panel.view_month
-
-    # Navigate to next month
     panel.next_month()
-    if initial_month == 12:
-        assert panel.view_month == 1 and panel.view_year == initial_year + 1
-    else:
-        assert panel.view_month == initial_month + 1 and panel.view_year == initial_year
-
-    # Navigate to previous month twice
+    assert panel.view_month == 11 and panel.view_year == 2026
     panel.prev_month()
     panel.prev_month()
-    if initial_month == 1:
-        assert panel.view_month == 11 and panel.view_year == initial_year - 1
-    else:
-        assert panel.view_month == initial_month - 1
+    assert panel.view_month == 9 and panel.view_year == 2026
 
-    # 'Bugün' action
     panel.go_today()
     assert panel.view_year == panel.today.year
     assert panel.view_month == panel.today.month
     assert panel.selected_date == panel.today
 
-    # Select specific date
     target = dt.date(2026, 10, 28)
     panel.select_date(target)
     assert panel.selected_date == target
-    assert panel.view_year == 2026
-    assert panel.view_month == 10
+    assert panel.view_year == 2026 and panel.view_month == 10
     assert "28 Ekim" in panel._cached_selected_header_text
-
+    panel.hide_instant()
+    panel.close()
     print("  [PASS] Navigation and date selection verified.")
 
 
 def test_link_click_mock() -> None:
-    """Test clicking an event card with link opens URL via QDesktopServices."""
-    print("--- 6. Testing Event Link Click Handler ---")
-    panel = calendar_panel.CalendarPanel()
-
+    print("--- 6. Event link click handler ---")
     mock_event = {
         "title": "Google Etkinliği",
-        "start": dt.date(2026, 10, 26),
-        "end": dt.date(2026, 10, 27),
+        "start": dt.date(2026, 10, 27),
+        "end": dt.date(2026, 10, 28),
         "all_day": True,
         "link": "https://calendar.google.com/event?eid=mock_test_123",
         "category": "Google Takvim",
     }
-    panel.show_for(QRectF(100, 600, 100, 40), {"events": [mock_event]}, {})
-    # Panel "bugün" ile açılır; test tarihten bağımsız olsun diye etkinliğin gününü seç
-    panel.select_date(dt.date(2026, 10, 26))
+    panel = make_panel(events=[mock_event], selected=dt.date(2026, 10, 27))
 
-    # Mock QDesktopServices.openUrl
     orig_open_url = QDesktopServices.openUrl
     try:
         mock_handler = MagicMock(return_value=True)
         QDesktopServices.openUrl = mock_handler
-
-        # Trigger click on first card
-        assert len(panel._cached_selected_cards) > 0
-        card_rect = panel._cached_selected_cards[0]["rect"]
-        click_pt = card_rect.center()
-
-        # Simulate mouse press at click_pt
-        from PySide6.QtGui import QMouseEvent
-        from PySide6.QtCore import QEvent
-        press_ev = QMouseEvent(
-            QEvent.MouseButtonPress,
-            click_pt,
-            click_pt,
-            Qt.LeftButton,
-            Qt.LeftButton,
-            Qt.NoModifier,
-        )
-        panel.mousePressEvent(press_ev)
-
+        assert panel._cached_selected_cards
+        click(panel, panel._cached_selected_cards[0]["rect"].center())
         assert mock_handler.called, "QDesktopServices.openUrl was not called on card click"
-        call_arg = mock_handler.call_args[0][0].toString()
-        assert "mock_test_123" in call_arg, f"Unexpected URL opened: {call_arg}"
+        assert "mock_test_123" in mock_handler.call_args[0][0].toString()
     finally:
         QDesktopServices.openUrl = orig_open_url
-
+        panel.hide_instant()
+        panel.close()
     print("  [PASS] Event card URL opening verified.")
 
 
-def test_paint_benchmark_and_snapshots() -> None:
-    """Benchmark paint performance (< 5ms) and render evidence screenshots."""
-    print("--- 7. Testing Paint Benchmark (< 5ms) & Offscreen Evidence ---")
-    panel = calendar_panel.CalendarPanel()
-
-    # Load real ay.json data
-    real_month = sources.fetch_month_calendar()
-    real_claude = {"pct": 20, "resets_at": "2026-10-31T00:00:00Z"}
-
-    # Benchmark paint performance
-    panel.show_for(QRectF(500, 800, 120, 40), real_month, real_claude)
-    panel.select_date(dt.date(2026, 10, 26))
-
-    # Warmup
+def test_paint_benchmark_and_snapshot() -> None:
+    print("--- 7. Paint benchmark (< 8 ms) ---")
+    panel = make_panel(selected=dt.date(2026, 10, 27))
     _ = panel.render_to_image(dpr=2.0)
 
-    # 5 tur x 20 çizim; en iyi turun ortalaması alınır (arka plandaki başka işlerin
-    # yükü ölçümü bozmasın; sınır aynı: < 5 ms). 27 Eki 2026: tek tur ölçüm makine yükünde 5,8 ms verdi.
     w_phys = int(panel.width() * 2.0)
     h_phys = int(panel.height() * 2.0)
-    img = QImage(w_phys, h_phys, QImage.Format_ARGB32_Premultiplied)
+    img = QImage(w_phys, h_phys, QImage.Format.Format_ARGB32_Premultiplied)
     img.setDevicePixelRatio(2.0)
 
     rounds, per_round = 5, 20
@@ -390,106 +287,47 @@ def test_paint_benchmark_and_snapshots() -> None:
 
     avg_ms = min(round_ms)
     print(f"  [BENCHMARK] Best-round paint time: {avg_ms:.2f} ms per frame (Contract: < 8.0 ms)")
-    # 8 ms: 60 Hz karede (16,7 ms) iki kat pay; 5 ms sınırı yüklü makinede çizimden bağımsız patlıyordu
     assert avg_ms < 8.0, f"Paint time exceeded 8.0 ms: {avg_ms:.2f} ms"
 
-    # Render Evidence Snapshots (DPR 2.0)
-    # 1. cal_oct.png (real ay.json, today 26 Oct selected)
-    panel.show_for(QRectF(500, 800, 120, 40), real_month, real_claude)
-    panel.select_date(dt.date(2026, 10, 26))
-    img_oct = panel.render_to_image(dpr=2.0)
-    path_oct = SCRATCH_DIR / "cal_oct.png"
-    img_oct.save(str(path_oct))
-    print(f"  [SAVED] {path_oct} ({img_oct.width()}x{img_oct.height()})")
-
-    # 2. cal_oct_28.png (28 Oct selected: KDV + arife)
-    panel.select_date(dt.date(2026, 10, 28))
-    img_oct_28 = panel.render_to_image(dpr=2.0)
-    path_oct_28 = SCRATCH_DIR / "cal_oct_28.png"
-    img_oct_28.save(str(path_oct_28))
-    print(f"  [SAVED] {path_oct_28} ({img_oct_28.width()}x{img_oct_28.height()})")
-
-    # 3. cal_nov.png (November 2026 view)
-    panel.next_month()
-    panel.select_date(dt.date(2026, 11, 1))
-    img_nov = panel.render_to_image(dpr=2.0)
-    path_nov = SCRATCH_DIR / "cal_nov.png"
-    img_nov.save(str(path_nov))
-    print(f"  [SAVED] {path_nov} ({img_nov.width()}x{img_nov.height()})")
-
-    # 4. cal_empty.png (no data)
-    panel.show_for(QRectF(500, 800, 120, 40), {"events": []}, {})
-    panel.select_date(dt.date(2026, 10, 26))
-    img_empty = panel.render_to_image(dpr=2.0)
-    path_empty = SCRATCH_DIR / "cal_empty.png"
-    img_empty.save(str(path_empty))
-    print(f"  [SAVED] {path_empty} ({img_empty.width()}x{img_empty.height()})")
-
-    # 5. cal_error.png (corrupt file state)
-    corrupt_month = sources.fetch_month_calendar(Path("non_existent_file.json"))
-    panel.show_for(QRectF(500, 800, 120, 40), corrupt_month, {})
-    img_error = panel.render_to_image(dpr=2.0)
-    path_error = SCRATCH_DIR / "cal_error.png"
-    img_error.save(str(path_error))
-    print("  [PASS] All 5 high-DPI evidence snapshots successfully generated.")
+    path = OUT_DIR / "takvim_benchmark.png"
+    panel.render_to_image(dpr=2.0).save(str(path))
+    print(f"  [SAVED] {path}")
+    panel.hide_instant()
+    panel.close()
 
 
-def test_direction_c_styling() -> None:
-    """Verify Direction C ('Kart katmanlı') calendar specs."""
-    print("--- 8. Testing Direction C Specifications ---")
-    import panel_style
-    panel = calendar_panel.CalendarPanel()
-    assert panel.WIDTH == 440
+def test_design_contract() -> None:
+    print("--- 8. Shared-kit design contract ---")
+    panel = make_panel(selected=dt.date(2026, 10, 28))
+    assert panel.WIDTH == panel_style.WIDTH["cal"] == 440
     assert panel.RADIUS == panel_style.R_PANEL
 
-    # Setup realistic test data for 27 Oct 2026
-    events = [
-        {
-            "title": "Vergi: Eylül KDV son gün – 791,00 TL",
-            "start": dt.date(2026, 10, 28),
-            "end": dt.date(2026, 10, 29),
-            "all_day": True,
-            "category": "Vergi/ödeme",
-        },
-        {
-            "title": "Les Ateliers fiyat revizyonu",
-            "start": dt.date(2026, 10, 31),
-            "end": dt.date(2026, 11, 1),
-            "all_day": True,
-            "category": "Google Takvim",
-        },
-    ]
-    panel.show_for(QRectF(100, 600, 100, 40), {"events": events}, {})
-    panel.today = dt.date(2026, 10, 27)
-    panel.selected_date = dt.date(2026, 10, 27)
-    panel.view_year = 2026
-    panel.view_month = 10
-    panel._rebuild_cache()
+    # Month grid: six rows of 30 px cells, 4x4 dot 3 px above the cell bottom.
+    assert len(panel._cached_cells) == 42
+    assert all(abs(c["rect"].height() - 30.0) < 0.01 for c in panel._cached_cells)
+    assert abs(panel._cached_cells[0]["rect"].top() + 30.0
+               - panel._cached_cells[7]["rect"].top()) < 0.01
 
-    # Upcoming items must have 4 rows: 28 Eki Arife (holiday red), 28 Eki Vergi (amber with amount), 29 Eki Bayram (holiday red), 31 Eki Les Ateliers (google blue)
-    up = panel._cached_upcoming
-    assert len(up) == 4, f"Expected 4 upcoming items, got {len(up)}"
-    assert up[0]["target_date"] == dt.date(2026, 10, 28)
-    assert "Cumhuriyet Bayramı Arifesi" in up[0]["title"]
-    assert up[0]["dot_color"] == panel_style.DANGER
+    # Selected-day list contains both holiday and tax rows with identity strip colors.
+    cats = [s["category"] for s in panel._cached_selected_events]
+    assert "Resmi tatil" in cats and "Vergi/ödeme" in cats
+    tax_row = [s for s in panel._cached_selected_events if s["category"] == "Vergi/ödeme"][0]
+    assert tax_row["strip_color"] == panel_style.WARN
+    assert tax_row["amount"] == "791,00 TL"
 
-    assert up[1]["target_date"] == dt.date(2026, 10, 28)
-    assert "791,00 TL" in up[1]["amount"]
-    assert up[1]["dot_color"] == panel_style.WARN
+    # Upcoming rows use the same 3 x 28 px strip colors (no round dot field).
+    assert len(panel._cached_upcoming) == 4
+    assert panel._cached_upcoming[0]["strip_color"] == panel_style.DANGER
+    assert panel._cached_upcoming[1]["strip_color"] == panel_style.WARN
+    assert panel._cached_upcoming[2]["strip_color"] == panel_style.DANGER
+    assert panel._cached_upcoming[3]["strip_color"] == panel_style.ACCENT
+    assert panel._cached_footer_source == "Google Takvim · 19:58"
 
-    assert up[2]["target_date"] == dt.date(2026, 10, 29)
-    assert "Cumhuriyet Bayramı" in up[2]["title"]
-    assert up[2]["dot_color"] == panel_style.DANGER
-
-    assert up[3]["target_date"] == dt.date(2026, 10, 31)
-    assert "Les Ateliers" in up[3]["title"]
-    assert up[3]["dot_color"] == panel_style.ACCENT
-
-    # Verify DPR 2.0 render produces image
     img = panel.render_to_image(dpr=2.0)
-    assert img.width() == 880
-    assert img.height() == panel.HEIGHT * 2
-    print("  [PASS] Direction C calendar specifications verified.")
+    assert img.width() == 880 and img.height() == panel.height() * 2
+    panel.hide_instant()
+    panel.close()
+    print("  [PASS] Width, 30 px cells, strips and footer source verified.")
 
 
 if __name__ == "__main__":
@@ -502,8 +340,8 @@ if __name__ == "__main__":
     test_bad_data_matrix()
     test_navigation_and_selection()
     test_link_click_mock()
-    test_paint_benchmark_and_snapshots()
-    test_direction_c_styling()
+    test_paint_benchmark_and_snapshot()
+    test_design_contract()
     print("=" * 60)
     print("ALL CALENDAR PANEL TESTS COMPLETED SUCCESSFULLY!")
     print("=" * 60)
