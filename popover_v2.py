@@ -53,7 +53,7 @@ except ImportError:
     import theme
     import winapi
 
-LOG_PATH = Path("D:/Apps/serit/serit.log")
+from logpath import LOG_PATH
 
 
 def _log(msg: str) -> None:
@@ -380,8 +380,8 @@ def build_claude_content(data: dict) -> dict:
     stale = bool(data.get("stale", False))
     err = data.get("err")
 
-    raw_plan = str(data.get("plan") or "Max")
-    plan = raw_plan if raw_plan.startswith("Max") else raw_plan.capitalize()
+    raw_plan = str(data.get("plan") or "").strip()
+    plan = raw_plan if raw_plan.startswith("Max") else (raw_plan.capitalize() if raw_plan else "")
 
     s_num = _safe_float(data.get("session"))
     w_num = _safe_float(data.get("week"))
@@ -465,7 +465,7 @@ def build_claude_content(data: dict) -> dict:
     return {
         "kind": "claude",
         "title": "Claude",
-        "badge": plan if not err else "Hata",
+        "badge": "Hata" if err else (plan if plan else None),
         "badge_bg": COLOR_BADGE_ERR_BG if err else COLOR_BADGE_CLAUDE_BG,
         "badge_color": COLOR_BADGE_ERR_TXT if err else COLOR_BADGE_CLAUDE_TXT,
         "stale": stale,

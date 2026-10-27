@@ -828,23 +828,47 @@ def draw_market_card(
     """Renders 160x52 Market card with Dolar and Gram altın rows."""
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
 
-    usd = fx_data.get("usd") or {}
-    gold = fx_data.get("gold") or {}
+    raw_usd = fx_data.get("usd")
+    if isinstance(raw_usd, dict):
+        usd_rate = raw_usd.get("buying") or raw_usd.get("rate")
+        usd_delta = raw_usd.get("change") or raw_usd.get("usd_chg")
+    else:
+        usd_rate = raw_usd
+        usd_delta = fx_data.get("usd_chg")
 
-    usd_rate = usd.get("buying") or usd.get("rate") or 49.77
-    usd_delta = usd.get("change") or 0.14
+    raw_gold = fx_data.get("gold")
+    if isinstance(raw_gold, dict):
+        gold_rate = raw_gold.get("buying") or raw_gold.get("rate")
+        gold_delta = raw_gold.get("change") or raw_gold.get("gold_chg")
+    else:
+        gold_rate = raw_gold
+        gold_delta = fx_data.get("gold_chg")
 
-    gold_rate = gold.get("buying") or gold.get("rate") or 6419.0
-    gold_delta = gold.get("change") or 0.54
+    usd_rate_f = sources._safe_float(usd_rate, None)
+    usd_delta_f = sources._safe_float(usd_delta, None)
+    gold_rate_f = sources._safe_float(gold_rate, None)
+    gold_delta_f = sources._safe_float(gold_delta, None)
 
-    usd_val_str = sources.fmt_tr(usd_rate, dec=2)
-    gold_val_str = sources.fmt_tr(gold_rate, dec=0 if gold_rate > 100 else 2)
+    usd_val_str = sources.fmt_tr(usd_rate_f, dec=2) if (usd_rate_f is not None and usd_rate_f > 0) else "—"
+    gold_val_str = (
+        sources.fmt_tr(gold_rate_f, dec=0 if gold_rate_f > 100 else 2)
+        if (gold_rate_f is not None and gold_rate_f > 0)
+        else "—"
+    )
 
-    usd_up = usd_delta >= 0.0
-    gold_up = gold_delta >= 0.0
+    if usd_delta_f is not None:
+        usd_up = usd_delta_f >= 0.0
+        usd_d_str = f"▲%{sources.fmt_tr(abs(usd_delta_f), dec=2)}" if usd_up else f"▼%{sources.fmt_tr(abs(usd_delta_f), dec=2)}"
+    else:
+        usd_up = True
+        usd_d_str = "—"
 
-    usd_d_str = f"▲%{sources.fmt_tr(abs(usd_delta), dec=2)}" if usd_up else f"▼%{sources.fmt_tr(abs(usd_delta), dec=2)}"
-    gold_d_str = f"▲%{sources.fmt_tr(abs(gold_delta), dec=2)}" if gold_up else f"▼%{sources.fmt_tr(abs(gold_delta), dec=2)}"
+    if gold_delta_f is not None:
+        gold_up = gold_delta_f >= 0.0
+        gold_d_str = f"▲%{sources.fmt_tr(abs(gold_delta_f), dec=2)}" if gold_up else f"▼%{sources.fmt_tr(abs(gold_delta_f), dec=2)}"
+    else:
+        gold_up = True
+        gold_d_str = "—"
 
     f_sub = theme.make_font(11.0, QFont.Weight.Normal)
     f_lbl = theme.make_font(12.0, QFont.Weight.DemiBold, tabular=True)
@@ -863,7 +887,10 @@ def draw_market_card(
 
     # Right portion
     p.setFont(f_delta)
-    p.setPen(COLOR_BAR_GREEN if usd_up else COLOR_BAR_RED)
+    if usd_delta_f is None:
+        p.setPen(COLOR_TXT_MUTED)
+    else:
+        p.setPen(COLOR_BAR_GREEN if usd_up else COLOR_BAR_RED)
     fm_d = QFontMetricsF(f_delta)
     dw1 = fm_d.horizontalAdvance(usd_d_str)
     p.drawText(QRectF(bx + bw - dw1, by, dw1, 16.0), Qt.AlignRight | Qt.AlignVCenter, usd_d_str)
@@ -881,7 +908,10 @@ def draw_market_card(
     p.drawText(QRectF(bx, by2, 70.0, 16.0), Qt.AlignLeft | Qt.AlignVCenter, "Gram altın")
 
     p.setFont(f_delta)
-    p.setPen(COLOR_BAR_GREEN if gold_up else COLOR_BAR_RED)
+    if gold_delta_f is None:
+        p.setPen(COLOR_TXT_MUTED)
+    else:
+        p.setPen(COLOR_BAR_GREEN if gold_up else COLOR_BAR_RED)
     dw2 = fm_d.horizontalAdvance(gold_d_str)
     p.drawText(QRectF(bx + bw - dw2, by2, dw2, 16.0), Qt.AlignRight | Qt.AlignVCenter, gold_d_str)
 
@@ -910,6 +940,8 @@ def parse_calendar_event(cal_data: Dict[str, Any]) -> Tuple[str, str, str]:
              Line 2 = title, Line 3 = time range or 'Tüm gün'
       - If no events: ('TAKVİM', 'Bugün boş', '')
     """
+    if cal_data.get("err"):
+        return ("TAKVİM", "Takvim okunamadı", "")
     events = cal_data.get("events") or []
     nxt = cal_data.get("next")
     if not nxt and events:
@@ -996,7 +1028,6 @@ def draw_calendar_card(
     pad_x = 12.0
     bx = rect.x() + pad_x
     bw = rect.width() - pad_x * 2.0
-    by = rect.y() + 6.0
 
     fm_l = QFontMetricsF(f_lbl)
     fm_s = QFontMetricsF(f_sub)
@@ -1004,21 +1035,35 @@ def draw_calendar_card(
     elided_l3 = fm_s.elidedText(line3, Qt.ElideRight, bw) if line3 else ""
 
     p.save()
-    # Line 1: when in red
-    p.setFont(f_when)
-    p.setPen(COLOR_CAL_RED)
-    p.drawText(QRectF(bx, by, bw, 14.0), Qt.AlignLeft | Qt.AlignVCenter, when)
-
-    # Line 2: title
-    p.setFont(f_lbl)
-    p.setPen(COLOR_TXT_PRIMARY)
-    p.drawText(QRectF(bx, by + 14.0, bw, 16.0), Qt.AlignLeft | Qt.AlignVCenter, elided_l2)
-
-    # Line 3: detail
     if elided_l3:
+        # 3-line layout: when (14px) + title (16px) + detail (14px) = 44px
+        by = rect.y() + (rect.height() - 44.0) / 2.0
+        # Line 1: when in red
+        p.setFont(f_when)
+        p.setPen(COLOR_CAL_RED)
+        p.drawText(QRectF(bx, by, bw, 14.0), Qt.AlignLeft | Qt.AlignVCenter, when)
+
+        # Line 2: title
+        p.setFont(f_lbl)
+        p.setPen(COLOR_TXT_PRIMARY)
+        p.drawText(QRectF(bx, by + 14.0, bw, 16.0), Qt.AlignLeft | Qt.AlignVCenter, elided_l2)
+
+        # Line 3: detail
         p.setFont(f_sub)
         p.setPen(COLOR_TXT_MUTED)
-        p.drawText(QRectF(bx, by + 28.0, bw, 14.0), Qt.AlignLeft | Qt.AlignVCenter, elided_l3)
+        p.drawText(QRectF(bx, by + 30.0, bw, 14.0), Qt.AlignLeft | Qt.AlignVCenter, elided_l3)
+    else:
+        # 2-line layout: vertically centered in 52px card (14px + 2px gap + 16px = 32px)
+        by = rect.y() + (rect.height() - 32.0) / 2.0
+        # Line 1: when in red
+        p.setFont(f_when)
+        p.setPen(COLOR_CAL_RED)
+        p.drawText(QRectF(bx, by, bw, 14.0), Qt.AlignLeft | Qt.AlignVCenter, when)
+
+        # Line 2: title
+        p.setFont(f_lbl)
+        p.setPen(COLOR_TXT_PRIMARY)
+        p.drawText(QRectF(bx, by + 16.0, bw, 16.0), Qt.AlignLeft | Qt.AlignVCenter, elided_l2)
 
     p.restore()
 
@@ -1192,7 +1237,7 @@ def draw_clock_v1(
 def draw_clock_block(
     p: QPainter,
     rect: QRectF,
-    temp_str: str = "12°",
+    temp_str: Optional[str] = None,
     hover: bool = False,
     press_scale: float = 1.0,
     wx_icon: str = "cloud",

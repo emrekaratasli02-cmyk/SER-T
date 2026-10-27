@@ -35,7 +35,7 @@ Features:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -199,6 +199,8 @@ class ActionMenu(QWidget):
     PADDING_VERT: float = 8.0
     HEADER_HEIGHT: float = 40.0
     DIVIDER_HEIGHT: float = 9.0  # 4px gap + 1px hairline + 4px gap
+    SEPARATOR_HEIGHT: float = 9.0
+    TITLE_HEIGHT: float = 22.0
 
     action_chosen = Signal(str)
 
@@ -222,8 +224,9 @@ class ActionMenu(QWidget):
         # Actions list
         self._actions: List[Dict[str, Any]] = []
 
-        # Interactive states
+        # Interactive states & scrolling
         self._hover_idx: int = -1
+        self._scroll_y: float = 0.0
         self._armed_action_id: Optional[str] = None
         self._anchor_global: Optional[QRectF] = None
 
@@ -266,36 +269,83 @@ class ActionMenu(QWidget):
         self.update()
 
     def set_actions(self, actions: List[Dict[str, Any]]) -> None:
-        """Configure list of action items.
+        """Configure list of action items, separators, and section titles.
 
-        Each action dict contains:
-            id: str
-            text: str
-            icon: 'open' | 'stop' | 'settings' | None
-            danger: bool (default False)
-            enabled: bool (default True)
-            hint: str (default '')
-            confirm: bool (default False)
+        Each item dict can be:
+            1. An action row:
+                id: str
+                text: str
+                icon: 'open' | 'stop' | 'settings' | None
+                danger: bool (default False)
+                enabled: bool (default True)
+                hint: str (default '')
+                confirm: bool (default False)
+                checked: bool (draws a check mark on the right, default False)
+                group: str (radio style; draw a filled dot for selected one)
+                callback: callable (invoked on action trigger)
+            2. A separator row:
+                type: 'separator'
+            3. A section title:
+                type: 'title'
+                text: str
         """
         clean_actions: List[Dict[str, Any]] = []
         if isinstance(actions, list):
             for a in actions:
                 if not isinstance(a, dict):
                     continue
-                clean_actions.append({
-                    "id": str(a.get("id") or ""),
-                    "text": str(a.get("text") or ""),
-                    "icon": a.get("icon"),
-                    "danger": bool(a.get("danger", False)),
-                    "enabled": bool(a.get("enabled", True)),
-                    "hint": str(a.get("hint") or ""),
-                    "confirm": bool(a.get("confirm", False)),
-                })
+                row_type = a.get("type")
+                if row_type == "separator":
+                    clean_actions.append({"type": "separator"})
+                elif row_type == "title":
+                    clean_actions.append({
+                        "type": "title",
+                        "text": str(a.get("text") or "").strip(),
+                    })
+                else:
+                    item_dict: Dict[str, Any] = {
+                        "type": "action",
+                        "id": str(a.get("id") or ""),
+                        "text": str(a.get("text") or ""),
+                        "icon": a.get("icon"),
+                        "danger": bool(a.get("danger", False)),
+                        "enabled": bool(a.get("enabled", True)),
+                        "hint": str(a.get("hint") or ""),
+                        "confirm": bool(a.get("confirm", False)),
+                        "checked": bool(a.get("checked", False)),
+                    }
+                    if "group" in a and a["group"] is not None:
+                        item_dict["group"] = str(a["group"])
+                    if "callback" in a and callable(a["callback"]):
+                        item_dict["callback"] = a["callback"]
+                    clean_actions.append(item_dict)
         self._actions = clean_actions
         self._hover_idx = -1
+        self._scroll_y = 0.0
         self._disarm()
         self.updateGeometry()
         self.update()
+
+    def _row_height(self, action: Dict[str, Any]) -> float:
+        t = action.get("type", "action")
+        if t == "separator":
+            return self.SEPARATOR_HEIGHT
+        if t == "title":
+            return self.TITLE_HEIGHT
+        return self.ROW_HEIGHT
+
+    def _row_y_offsets(self) -> List[Tuple[float, float]]:
+        has_header = bool(self._title or self._subtitle or self._header_icon)
+        curr_y = self.PADDING_VERT
+        if has_header:
+            curr_y += self.HEADER_HEIGHT + self.DIVIDER_HEIGHT
+
+        offsets: List[Tuple[float, float]] = []
+        for act in self._actions:
+            rh = self._row_height(act)
+            offsets.append((curr_y, curr_y + rh))
+            curr_y += rh + self.ROW_GAP
+        return offsets
 
     def compute_height(self) -> int:
         """Compute total menu height based on content."""
@@ -305,11 +355,13 @@ class ActionMenu(QWidget):
             h += self.HEADER_HEIGHT + self.DIVIDER_HEIGHT
         n_rows = len(self._actions)
         if n_rows > 0:
-            h += n_rows * self.ROW_HEIGHT + (n_rows - 1) * self.ROW_GAP
+            for act in self._actions:
+                h += self._row_height(act)
+            h += (n_rows - 1) * self.ROW_GAP
         return int(round(h))
 
     def show_at(self, anchor_global: QRectF) -> None:
-        """Position menu above anchor, 8px gap, centered, clamped inside availableGeometry."""
+        """Position menu relative to anchor, clamped inside availableGeometry with scrolling if needed."""
         try:
             if anchor_global is not None:
                 try:
@@ -319,39 +371,52 @@ class ActionMenu(QWidget):
             else:
                 self._anchor_global = None
 
-            h = self.compute_height()
-            self.resize(self.WIDTH, h)
-
+            content_h = self.compute_height()
+            h = content_h
             dpr = 1.0
+
+            screen = None
             if self._anchor_global is not None:
+                center_pt = self._anchor_global.center().toPoint()
+                screen = QGuiApplication.screenAt(center_pt)
+            if screen is None:
+                screen = QGuiApplication.primaryScreen()
+
+            if screen is not None:
+                geom = screen.availableGeometry()
+                dpr = screen.devicePixelRatio()
+                margin = 8
+                max_allowed_h = geom.height() - margin * 2
+                if h > max_allowed_h:
+                    h = max_allowed_h
+
+            self.resize(self.WIDTH, h)
+            self._scroll_y = 0.0
+
+            if self._anchor_global is not None and screen is not None:
+                geom = screen.availableGeometry()
+                margin = 8
                 center_x = self._anchor_global.center().x()
                 target_x = int(round(center_x - self.width() / 2.0))
                 target_y = int(round(self._anchor_global.top() - self.height() - 8))
 
-                center_pt = self._anchor_global.center().toPoint()
-                screen = QGuiApplication.screenAt(center_pt) or QGuiApplication.primaryScreen()
+                min_x = geom.left() + margin
+                max_x = geom.right() - self.width() - margin
+                if max_x >= min_x:
+                    target_x = max(min_x, min(max_x, target_x))
+                else:
+                    target_x = min_x
 
-                if screen is not None:
-                    geom = screen.availableGeometry()
-                    dpr = screen.devicePixelRatio()
-                    margin = 8
-                    min_x = geom.left() + margin
-                    max_x = geom.right() - self.width() - margin
-                    if max_x >= min_x:
-                        target_x = max(min_x, min(max_x, target_x))
+                min_y = geom.top() + margin
+                max_y = geom.bottom() - self.height() - margin
+                if target_y < min_y:
+                    below_y = int(round(self._anchor_global.bottom() + 8))
+                    if below_y + self.height() <= geom.bottom() - margin:
+                        target_y = below_y
                     else:
-                        target_x = min_x
-
-                    min_y = geom.top() + margin
-                    max_y = geom.bottom() - self.height() - margin
-                    if target_y < min_y:
-                        below_y = int(round(self._anchor_global.bottom() + 8))
-                        if below_y + self.height() <= geom.bottom() - margin:
-                            target_y = below_y
-                        else:
-                            target_y = min_y
-                    elif target_y > max_y:
-                        target_y = max_y
+                        target_y = min_y
+                elif target_y > max_y:
+                    target_y = max_y
 
                 self.move(target_x, target_y)
 
@@ -410,6 +475,8 @@ class ActionMenu(QWidget):
     def render_to_image(self, dpr: float = 2.0) -> QImage:
         """Render current action menu view offscreen to a high-DPI ARGB32 QImage."""
         try:
+            if not self.isVisible():
+                self.resize(self.WIDTH, self.compute_height())
             w_phys = max(1, int(round(self.width() * dpr)))
             h_phys = max(1, int(round(self.height() * dpr)))
             img = QImage(w_phys, h_phys, QImage.Format.Format_ARGB32_Premultiplied)
@@ -478,6 +545,45 @@ class ActionMenu(QWidget):
             log_err("ActionMenu.changeEvent", exc)
         super().changeEvent(event)
 
+    def wheelEvent(self, event) -> None:
+        try:
+            content_h = self.compute_height()
+            max_scroll = max(0.0, float(content_h - self.height()))
+            if max_scroll > 0.0:
+                delta = event.angleDelta().y()
+                step = (delta / 120.0) * 40.0
+                self._scroll_y = max(0.0, min(max_scroll, self._scroll_y - step))
+                self._hover_idx = self._row_at(event.position().y())
+                self.update()
+                event.accept()
+                return
+        except Exception as exc:
+            log_err("ActionMenu.wheelEvent", exc)
+        super().wheelEvent(event)
+
+    def _ensure_row_visible(self, idx: int) -> None:
+        content_h = self.compute_height()
+        max_scroll = max(0.0, float(content_h - self.height()))
+        if max_scroll <= 0.0 or not (0 <= idx < len(self._actions)):
+            return
+        offsets = self._row_y_offsets()
+        if idx >= len(offsets):
+            return
+        top, bottom = offsets[idx]
+        has_header = bool(self._title or self._subtitle or self._header_icon)
+        rows_start_y = self.PADDING_VERT
+        if has_header:
+            rows_start_y += self.HEADER_HEIGHT + self.DIVIDER_HEIGHT
+        vis_h = self.height() - rows_start_y - self.PADDING_VERT
+
+        rel_top = top - rows_start_y
+        rel_bottom = bottom - rows_start_y
+
+        if rel_top < self._scroll_y:
+            self._scroll_y = max(0.0, float(rel_top))
+        elif rel_bottom > self._scroll_y + vis_h:
+            self._scroll_y = min(max_scroll, float(rel_bottom - vis_h))
+
     def leaveEvent(self, event: QEvent) -> None:
         self._hover_idx = -1
         self._disarm()
@@ -496,11 +602,13 @@ class ActionMenu(QWidget):
             if n > 0:
                 step = -1 if key == Qt.Key.Key_Up else 1
                 curr = self._hover_idx if self._hover_idx >= 0 else (-1 if step > 0 else n)
-                # Find next enabled row
+                # Find next enabled action row (skip separators, titles, and disabled rows)
                 for i in range(1, n + 1):
                     cand = (curr + step * i) % n
-                    if self._actions[cand].get("enabled", True):
+                    act = self._actions[cand]
+                    if act.get("type", "action") == "action" and act.get("enabled", True):
                         self._hover_idx = cand
+                        self._ensure_row_visible(cand)
                         self.update()
                         break
             event.accept()
@@ -530,33 +638,39 @@ class ActionMenu(QWidget):
         super().mousePressEvent(event)
 
     def _row_at(self, y: float) -> int:
-        has_header = bool(self._title or self._subtitle or self._header_icon)
-        start_y = self.PADDING_VERT
-        if has_header:
-            start_y += self.HEADER_HEIGHT + self.DIVIDER_HEIGHT
-
-        for i in range(len(self._actions)):
-            row_top = start_y + i * (self.ROW_HEIGHT + self.ROW_GAP)
-            row_bottom = row_top + self.ROW_HEIGHT
-            if row_top <= y <= row_bottom:
-                return i
+        eff_y = y + self._scroll_y
+        offsets = self._row_y_offsets()
+        for i, (top, bottom) in enumerate(offsets):
+            if top <= eff_y <= bottom:
+                act = self._actions[i]
+                if act.get("type", "action") == "action":
+                    return i
+                return -1
         return -1
 
     def _trigger_row(self, idx: int) -> None:
         if not (0 <= idx < len(self._actions)):
             return
         action = self._actions[idx]
+        if action.get("type", "action") != "action":
+            return
         if not action.get("enabled", True):
             return
 
         act_id = action.get("id", "")
         needs_confirm = action.get("confirm", False)
+        cb = action.get("callback")
 
         if needs_confirm:
             if self._armed_action_id == act_id:
                 # Confirmed! Emit and close
                 self._disarm()
                 self.action_chosen.emit(act_id)
+                if callable(cb):
+                    try:
+                        cb()
+                    except Exception as exc:
+                        log_err("ActionMenu.callback", exc)
                 self.hide_animated()
             else:
                 # First click: Arm
@@ -566,6 +680,11 @@ class ActionMenu(QWidget):
         else:
             self._disarm()
             self.action_chosen.emit(act_id)
+            if callable(cb):
+                try:
+                    cb()
+                except Exception as exc:
+                    log_err("ActionMenu.callback", exc)
             self.hide_animated()
 
     # -----------------------------------------------------------------------
@@ -623,12 +742,62 @@ class ActionMenu(QWidget):
             p.drawLine(QPointF(self.PADDING_HORIZ + 4.0, curr_y), QPointF(w - (self.PADDING_HORIZ + 4.0), curr_y))
             curr_y += 5.0
 
-        # 5. Action Rows
-        for i, action in enumerate(self._actions):
-            row_rect = QRectF(self.PADDING_HORIZ, curr_y, w - self.PADDING_HORIZ * 2, self.ROW_HEIGHT)
-            self._draw_row(p, row_rect, action, is_hover=(i == self._hover_idx))
-            curr_y += self.ROW_HEIGHT + self.ROW_GAP
+        # Scrollable rows area
+        content_h = self.compute_height()
+        max_scroll = max(0.0, float(content_h - h))
+        rows_start_y = curr_y
+        rows_clip_h = max(0.0, h - rows_start_y - self.PADDING_VERT)
 
+        p.save()
+        if max_scroll > 0.0:
+            p.setClipRect(QRectF(0.0, rows_start_y, w, rows_clip_h))
+            p.translate(0.0, -self._scroll_y)
+
+        # 5. Action rows, separators, titles
+        offsets = self._row_y_offsets()
+        for i, action in enumerate(self._actions):
+            if i >= len(offsets):
+                break
+            top, bottom = offsets[i]
+            row_rect = QRectF(self.PADDING_HORIZ, top, w - self.PADDING_HORIZ * 2, bottom - top)
+            row_type = action.get("type", "action")
+            if row_type == "separator":
+                self._draw_separator(p, row_rect)
+            elif row_type == "title":
+                self._draw_title(p, row_rect, action.get("text", ""))
+            else:
+                self._draw_row(p, row_rect, action, is_hover=(i == self._hover_idx))
+
+        p.restore()
+
+        # 6. Scrollbar thumb if content is taller than menu height
+        if max_scroll > 0.0 and rows_clip_h > 24.0:
+            thumb_h = max(24.0, (h / content_h) * rows_clip_h)
+            thumb_y = rows_start_y + (self._scroll_y / max_scroll) * (rows_clip_h - thumb_h)
+            p.save()
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 45))
+            p.drawRoundedRect(QRectF(w - 5.0, thumb_y, 3.0, thumb_h), 1.5, 1.5)
+            p.restore()
+
+        p.restore()
+
+    def _draw_separator(self, p: QPainter, rect: QRectF) -> None:
+        p.save()
+        cy = rect.center().y()
+        p.setPen(QPen(COLOR_HAIRLINE, 1.0))
+        p.drawLine(QPointF(self.PADDING_HORIZ + 4.0, cy), QPointF(self.width() - (self.PADDING_HORIZ + 4.0), cy))
+        p.restore()
+
+    def _draw_title(self, p: QPainter, rect: QRectF, title_text: str) -> None:
+        p.save()
+        p.setFont(self.f_sub)
+        p.setPen(COLOR_TEXT_MUTED)
+        fm = QFontMetricsF(self.f_sub)
+        avail_w = rect.width() - 16.0
+        elided = fm.elidedText(title_text, Qt.TextElideMode.ElideRight, max(0.0, avail_w))
+        t_rect = QRectF(rect.left() + 8.0, rect.top(), max(0.0, avail_w), rect.height())
+        p.drawText(t_rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), elided)
         p.restore()
 
     def _draw_header(self, p: QPainter, rect: QRectF) -> None:
@@ -726,13 +895,37 @@ class ActionMenu(QWidget):
         # Sebep zaten başlığın alt satırında yazıyorsa tekrar etme (eylem metni kesilmesin)
         if hint_text and hint_text.strip() == str(self._subtitle or "").strip():
             hint_text = ""
-        avail_w = rect.right() - 8.0 - inset_x
+        # Indicator resolution: radio dot or checkmark
+        is_radio = bool(action.get("group"))
+        is_checked = bool(action.get("checked"))
+        indicator_w = 20.0 if (is_radio or is_checked) else 0.0
+
+        if is_radio:
+            if is_checked:
+                p.save()
+                p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(fg_color)
+                p.drawEllipse(QPointF(rect.right() - 14.0, cy), 3.5, 3.5)
+                p.restore()
+        elif is_checked:
+            p.save()
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            pen = QPen(fg_color, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            cx = rect.right() - 14.0
+            p.drawLine(QPointF(cx - 4.5, cy), QPointF(cx - 1.5, cy + 3.0))
+            p.drawLine(QPointF(cx - 1.5, cy + 3.0), QPointF(cx + 4.5, cy - 3.5))
+            p.restore()
+
+        avail_w = rect.right() - 8.0 - indicator_w - inset_x
 
         if hint_text:
             p.setFont(self.f_hint)
             fm_h = QFontMetricsF(self.f_hint)
             hint_w = fm_h.horizontalAdvance(hint_text)
-            hint_rect = QRectF(rect.right() - 8.0 - hint_w, rect.top(), hint_w, rect.height())
+            hint_rect = QRectF(rect.right() - 8.0 - indicator_w - hint_w, rect.top(), hint_w, rect.height())
             p.setPen(COLOR_TEXT_MUTED)
             p.drawText(hint_rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight), hint_text)
             avail_w -= (hint_w + 8.0)

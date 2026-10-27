@@ -43,6 +43,7 @@ class FakeProcess:
         username: Optional[str] = None,
         ppid: int = 1,
         children: Optional[List["FakeProcess"]] = None,
+        create_time: float = 1000.0,
     ) -> None:
         self.pid = pid
         self._name = name
@@ -51,6 +52,7 @@ class FakeProcess:
         self._username = username or getpass.getuser()
         self._ppid = ppid
         self._children = children or []
+        self._create_time = create_time
         self.info = {
             "pid": self.pid,
             "name": self._name,
@@ -60,6 +62,9 @@ class FakeProcess:
         }
         self.terminated = False
         self.killed = False
+
+    def create_time(self) -> float:
+        return self._create_time
 
     def name(self) -> str:
         return self._name
@@ -349,6 +354,114 @@ class TestTrayActionsUnit(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(res["killed"], 0)
         self.assertEqual(res["survivors"], 0)
+
+    @patch("tray_actions.psutil.process_iter")
+    def test_blacklist_and_crafted_items_match_nothing(self, mock_iter: MagicMock) -> None:
+        """Crafted items named 'AutoHotkey', tooltip 'user settings', name 'python' must match NOTHING."""
+        py_exe = r"C:\Python312\python.exe"
+        ahk_exe = r"C:\AutoHotkey\AutoHotkey64.exe"
+        curr_user = getpass.getuser()
+
+        p_py = FakeProcess(
+            pid=7001,
+            exe=py_exe,
+            cmdline=[py_exe, r"C:\Users\Emre Karatasli\AppData\Local\Programs\script.py"],
+            username=curr_user,
+        )
+        p_ahk = FakeProcess(
+            pid=7002,
+            exe=ahk_exe,
+            cmdline=[ahk_exe, r"C:\Users\Emre Karatasli\AppData\Local\user_settings.ahk"],
+            username=curr_user,
+        )
+        mock_iter.return_value = [p_py, p_ahk]
+
+        crafted_cases = [
+            {"name": "AutoHotkey", "exe": ahk_exe},
+            {"name": "SomeApp", "tooltip": "user settings", "exe": ahk_exe},
+            {"name": "python", "exe": py_exe},
+            {"name": "pythonw", "tooltip": "settings", "exe": py_exe},
+            {"name": "programs", "tooltip": "users local appdata", "exe": py_exe},
+        ]
+        for item in crafted_cases:
+            res = tray_actions.resolve_processes(item)
+            self.assertFalse(res["ok"], f"Crafted item {item} should not match anything! Got: {res}")
+            self.assertEqual(res["pids"], [])
+
+    @patch("tray_actions.psutil.Process")
+    @patch("tray_actions.resolve_processes")
+    def test_pid_reuse_simulation(
+        self,
+        mock_resolve: MagicMock,
+        mock_proc_cls: MagicMock,
+    ) -> None:
+        """If create_time changes between resolve and end_task, process must NOT be killed."""
+        target_exe = r"C:\app.exe"
+        item = {"name": "TestApp", "exe": target_exe}
+        mock_resolve.return_value = {
+            "ok": True,
+            "entries": [tray_actions.ProcessEntry(5555, 1000.0)],
+            "pids": [5555],
+            "roots": [5555],
+            "count": 1,
+            "label": "App · 1 işlem",
+            "reason": None,
+        }
+
+        # The process now has a different create_time (e.g. 2000.0), simulating PID reuse
+        reused_proc = FakeProcess(pid=5555, exe=target_exe, create_time=2000.0)
+        mock_proc_cls.return_value = reused_proc
+
+        res = tray_actions.end_task(item)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["killed"], 0)
+        self.assertFalse(reused_proc.terminated)
+        self.assertFalse(reused_proc.killed)
+
+    @patch("tray_actions._get_self_pids", return_value=set())
+    @patch("tray_actions.psutil.wait_procs")
+    @patch("tray_actions.psutil.Process")
+    @patch("tray_actions.resolve_processes")
+    def test_audit_logging_to_temp_file(
+        self,
+        mock_resolve: MagicMock,
+        mock_proc_cls: MagicMock,
+        mock_wait: MagicMock,
+        mock_self: MagicMock,
+    ) -> None:
+        """end_task writes exactly formatted audit lines to LOG_PATH without full cmdlines."""
+        import tempfile
+        target_exe = r"C:\app.exe"
+        item = {"name": "AuditApp", "exe": target_exe}
+        mock_resolve.return_value = {
+            "ok": True,
+            "entries": [tray_actions.ProcessEntry(4444, 1000.0)],
+            "pids": [4444],
+            "roots": [4444],
+            "count": 1,
+            "label": "AuditApp · 1 işlem",
+            "reason": None,
+        }
+        p = FakeProcess(pid=4444, exe=target_exe, create_time=1000.0)
+        mock_proc_cls.return_value = p
+        mock_wait.return_value = ([p], [])
+
+        with tempfile.NamedTemporaryFile("w+", delete=False, encoding="utf-8") as tf:
+            temp_log = Path(tf.name)
+
+        old_log = tray_actions.LOG_PATH
+        try:
+            tray_actions.LOG_PATH = temp_log
+            res = tray_actions.end_task(item)
+            self.assertTrue(res["ok"])
+            content = temp_log.read_text(encoding="utf-8")
+            self.assertIn("[tray_actions.end_task] AuditApp: kapatıldı 1 (PID 4444 app.exe), hayatta kalan 0, atlanan 0 (yok)", content)
+        finally:
+            tray_actions.LOG_PATH = old_log
+            try:
+                temp_log.unlink()
+            except Exception:
+                pass
 
 
 class TestTrayActionsRealE2E(unittest.TestCase):

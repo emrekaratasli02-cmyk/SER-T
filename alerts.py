@@ -231,6 +231,7 @@ class AlertEngine:
 
         eval_time = time.time() if now is None else float(now)
         new_alerts: List[Alert] = []
+        dirty: bool = False
 
         # ----------------------------------------------------------------------
         # Rule 1 & 2: Claude Session & Weekly Rules
@@ -265,6 +266,7 @@ class AlertEngine:
                     )
                     self._fired_ids[aid_95] = eval_time
                     self._fired_ids[aid_80] = eval_time
+                    dirty = True
             # Threshold >= 80% (and < 95%)
             elif session >= 80.0:
                 aid_80 = f"claude_session_80_{period_sess}"
@@ -286,6 +288,7 @@ class AlertEngine:
                         )
                     )
                     self._fired_ids[aid_80] = eval_time
+                    dirty = True
 
             # Claude weekly >= 80% (period = week_reset)
             week_raw = claude.get("week", 0.0)
@@ -312,6 +315,7 @@ class AlertEngine:
                         )
                     )
                     self._fired_ids[aid_week] = eval_time
+                    dirty = True
 
         # ----------------------------------------------------------------------
         # Rule 3: FX Market Daily Changes (|change| thresholds)
@@ -321,7 +325,7 @@ class AlertEngine:
             dt_now = dt.datetime.fromtimestamp(eval_time, sources.LOCAL_TZ)
             today_str = dt_now.strftime("%Y-%m-%d")
             updated_raw = str(fx.get("updated", "") or "").strip()
-            source_time = updated_raw if updated_raw else dt_now.strftime("%H:%M")
+            source_time = updated_raw
 
             # USD: |daily change| >= 1.0%
             usd_val = float(fx.get("usd", 0.0) or 0.0)
@@ -332,7 +336,8 @@ class AlertEngine:
                 if aid_usd not in self._fired_ids:
                     dir_tr = "artış" if usd_chg > 0 else "düşüş"
                     title = f"Dolar %{sources.fmt_tr(abs(usd_chg), 2)} {dir_tr}"
-                    body = f"1 USD = {sources.fmt_tr(usd_val, 2)} TL · Güncelleme: {source_time}"
+                    upd_suffix = f" · Güncelleme: {source_time}" if source_time else ""
+                    body = f"1 USD = {sources.fmt_tr(usd_val, 2)} TL{upd_suffix}"
                     accent = "#78DC96" if usd_chg > 0 else "#FF6E6E"
                     new_alerts.append(
                         Alert(
@@ -344,6 +349,7 @@ class AlertEngine:
                         )
                     )
                     self._fired_ids[aid_usd] = eval_time
+                    dirty = True
 
             # EUR: |daily change| >= 1.0%
             eur_val = float(fx.get("eur", 0.0) or 0.0)
@@ -354,7 +360,8 @@ class AlertEngine:
                 if aid_eur not in self._fired_ids:
                     dir_tr = "artış" if eur_chg > 0 else "düşüş"
                     title = f"Euro %{sources.fmt_tr(abs(eur_chg), 2)} {dir_tr}"
-                    body = f"1 EUR = {sources.fmt_tr(eur_val, 2)} TL · Güncelleme: {source_time}"
+                    upd_suffix = f" · Güncelleme: {source_time}" if source_time else ""
+                    body = f"1 EUR = {sources.fmt_tr(eur_val, 2)} TL{upd_suffix}"
                     accent = "#78DC96" if eur_chg > 0 else "#FF6E6E"
                     new_alerts.append(
                         Alert(
@@ -366,6 +373,7 @@ class AlertEngine:
                         )
                     )
                     self._fired_ids[aid_eur] = eval_time
+                    dirty = True
 
             # Gram Altın: |daily change| >= 2.0%
             gold_val = float(fx.get("gold", 0.0) or 0.0)
@@ -376,7 +384,8 @@ class AlertEngine:
                 if aid_gold not in self._fired_ids:
                     dir_tr = "artış" if gold_chg > 0 else "düşüş"
                     title = f"Gram Altın %{sources.fmt_tr(abs(gold_chg), 2)} {dir_tr}"
-                    body = f"1 g = {sources.fmt_tr(gold_val, 2)} TL · Güncelleme: {source_time}"
+                    upd_suffix = f" · Güncelleme: {source_time}" if source_time else ""
+                    body = f"1 g = {sources.fmt_tr(gold_val, 2)} TL{upd_suffix}"
                     accent = "#78DC96" if gold_chg > 0 else "#FF6E6E"
                     new_alerts.append(
                         Alert(
@@ -388,6 +397,7 @@ class AlertEngine:
                         )
                     )
                     self._fired_ids[aid_gold] = eval_time
+                    dirty = True
 
         # ----------------------------------------------------------------------
         # Rule 4: System RAM Rule (>=92% for 3 samples spaced >=55s, period = hour)
@@ -401,10 +411,12 @@ class AlertEngine:
             if ram >= 92.0:
                 if not self._ram_high_timestamps:
                     self._ram_high_timestamps.append(eval_time)
+                    dirty = True
                 else:
                     last_t = self._ram_high_timestamps[-1]
                     if (eval_time - last_t) >= 55.0:
                         self._ram_high_timestamps.append(eval_time)
+                        dirty = True
 
                 if len(self._ram_high_timestamps) >= 3:
                     dt_now = dt.datetime.fromtimestamp(eval_time, sources.LOCAL_TZ)
@@ -426,13 +438,17 @@ class AlertEngine:
                             )
                         )
                         self._fired_ids[aid_ram] = eval_time
-            else:
+                        dirty = True
+            elif self._ram_high_timestamps:
                 # Streak broken when RAM drops below threshold
                 self._ram_high_timestamps.clear()
+                dirty = True
 
         # Enqueue newly generated alerts
-        for alert in new_alerts:
-            self._queue.append(alert)
+        if new_alerts:
+            for alert in new_alerts:
+                self._queue.append(alert)
+            dirty = True
 
         # ----------------------------------------------------------------------
         # Global Quiet Rule: At most 1 toast per 120s, queue the rest
@@ -446,8 +462,10 @@ class AlertEngine:
                 toast_alert = self._queue.pop(0)
                 self._last_toast_time = eval_time
                 delivered.append(toast_alert)
+                dirty = True
 
-        self._save_state()
+        if dirty:
+            self._save_state()
         return delivered
 
 

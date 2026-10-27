@@ -7,6 +7,7 @@ auto-hide control.
 
 from __future__ import annotations
 
+import collections
 import datetime
 import os
 from pathlib import Path
@@ -59,7 +60,10 @@ ABS_AUTOHIDE = 1
 WCA_ACCENT_POLICY = 19
 ACCENT_ENABLE_ACRYLICBLURBEHIND = 4
 
-LOG_PATH = Path("D:/Apps/serit/serit.log")
+try:
+    from logpath import LOG_PATH
+except ImportError:
+    LOG_PATH = Path("D:/Apps/serit/serit.log")
 
 
 # --- Win32 Structures ---
@@ -448,7 +452,7 @@ def group_by_app(windows: list[dict]) -> list[dict]:
     return result
 
 
-_ICON_CACHE: dict[tuple[str, int], QPixmap] = {}
+_ICON_CACHE: collections.OrderedDict[tuple[str, int], QPixmap] = collections.OrderedDict()
 
 
 def app_icon(exe: str, size: int = 64) -> QPixmap:
@@ -468,6 +472,7 @@ def app_icon(exe: str, size: int = 64) -> QPixmap:
         size,
     )
     if norm_key in _ICON_CACHE:
+        _ICON_CACHE.move_to_end(norm_key)
         return _ICON_CACHE[norm_key]
 
     try:
@@ -478,6 +483,9 @@ def app_icon(exe: str, size: int = 64) -> QPixmap:
         if pix.isNull():
             return QPixmap()
         _ICON_CACHE[norm_key] = pix
+        _ICON_CACHE.move_to_end(norm_key)
+        if len(_ICON_CACHE) > 128:
+            _ICON_CACHE.popitem(last=False)
         return pix
     except Exception as e:
         _log(f"app_icon error for '{exe}': {e}")
@@ -586,11 +594,16 @@ def taskbar_autohide_get() -> bool:
 
 
 def taskbar_autohide_set(enable: bool) -> None:
-    """Enable or disable Windows taskbar auto-hide."""
+    """Enable or disable Windows taskbar auto-hide while preserving other flags (e.g. ABS_ALWAYSONTOP)."""
     try:
         abd = APPBARDATA()
         abd.cbSize = ctypes.sizeof(APPBARDATA)
-        abd.lParam = ABS_AUTOHIDE if enable else 0
+        state = shell32.SHAppBarMessage(ABM_GETSTATE, ctypes.byref(abd))
+        if enable:
+            new_state = state | ABS_AUTOHIDE
+        else:
+            new_state = state & ~ABS_AUTOHIDE
+        abd.lParam = new_state
         shell32.SHAppBarMessage(ABM_SETSTATE, ctypes.byref(abd))
     except Exception as e:
         _log(f"taskbar_autohide_set error: {e}")

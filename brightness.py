@@ -35,6 +35,14 @@ _cached_monitors: List[Dict[str, Any]] = []
 _last_enum_time: float = 0.0
 
 
+# ---------------------------------------------------------------------------
+# Rate-limiting state for PowerShell fallback
+# ---------------------------------------------------------------------------
+_last_ps_query_time: float = 0.0
+_last_ps_set_time: float = 0.0
+_PS_RETRY_INTERVAL_SEC: float = 300.0  # 5 minutes
+
+
 def _log_err(source: str, exc: Exception) -> None:
     """Log an exception through sources.log_err if available, never raising."""
     try:
@@ -240,7 +248,7 @@ def _query_wmi_brightness_com() -> Tuple[List[Dict[str, Any]], Set[str]]:
 
 
 def _query_wmi_brightness_powershell() -> Tuple[List[Dict[str, Any]], Set[str]]:
-    """PowerShell fallback for reading WmiMonitorBrightness with a 3-second timeout."""
+    """PowerShell fallback for reading WmiMonitorBrightness with a 6-second timeout."""
     monitors: List[Dict[str, Any]] = []
     wmi_keys: Set[str] = set()
     cmd = [
@@ -256,7 +264,7 @@ def _query_wmi_brightness_powershell() -> Tuple[List[Dict[str, Any]], Set[str]]:
             cmd,
             capture_output=True,
             text=True,
-            timeout=3.0,
+            timeout=6.0,
             creationflags=CREATE_NO_WINDOW,
         )
         if proc.returncode == 0 and proc.stdout.strip():
@@ -287,11 +295,15 @@ def _query_wmi_brightness_powershell() -> Tuple[List[Dict[str, Any]], Set[str]]:
 
 
 def _query_wmi_monitors() -> Tuple[List[Dict[str, Any]], Set[str], Dict[str, str]]:
-    """Query internal WMI monitor info, falling back to PowerShell if COM fails."""
+    """Query internal WMI monitor info, falling back to PowerShell only if COM fails."""
+    global _last_ps_query_time
     edid_names = _query_wmi_monitor_ids_com()
     monitors, wmi_keys = _query_wmi_brightness_com()
     if not monitors:
-        monitors, wmi_keys = _query_wmi_brightness_powershell()
+        now = time.monotonic()
+        if now - _last_ps_query_time >= _PS_RETRY_INTERVAL_SEC:
+            _last_ps_query_time = now
+            monitors, wmi_keys = _query_wmi_brightness_powershell()
     return monitors, wmi_keys, edid_names
 
 
@@ -550,6 +562,7 @@ def set_level(monitor_id: str, level: int) -> bool:
 
 def _set_wmi_level(monitor_id: str, level: int) -> bool:
     """Set brightness on internal WMI display."""
+    global _last_ps_set_time
     target_inst = monitor_id[4:] if monitor_id.startswith("wmi:") else monitor_id
 
     # 1. Try COM interface
@@ -557,36 +570,43 @@ def _set_wmi_level(monitor_id: str, level: int) -> bool:
         try:
             import comtypes.client
             loc = comtypes.client.CreateObject("WbemScripting.SWbemLocator")
-            svc = loc.ConnectServer(".", "root\\wmi")
+            svc = loc.ConnectServer(".", r"root\wmi")
             for item in svc.ExecQuery("SELECT * FROM WmiMonitorBrightnessMethods"):
                 inst = item.Properties_("InstanceName").Value
                 if not target_inst or target_inst.upper() in inst.upper() or inst.upper() in target_inst.upper():
-                    item.WmiSetBrightness(1, level)
+                    meth = item.Methods_("WmiSetBrightness")
+                    in_params = meth.InParameters.SpawnInstance_()
+                    in_params.Properties_.Item("Timeout").Value = 1
+                    in_params.Properties_.Item("Brightness").Value = level
+                    item.ExecMethod_("WmiSetBrightness", in_params)
                     _update_cached_level(monitor_id, level)
                     return True
         except Exception as exc:
             _log_err("brightness_set_wmi_com", exc)
 
-    # 2. Fallback to PowerShell CIM with 3-second timeout
-    try:
-        clean_inst = target_inst.replace("'", "''").replace("\\", "\\\\")
-        ps_script = (
-            f"$m = Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightnessMethods | "
-            f"Where-Object {{ $_.InstanceName -like '*{clean_inst}*' }} | Select-Object -First 1; "
-            f"if ($m) {{ Invoke-CimMethod -InputObject $m -MethodName WmiSetBrightness -Arguments @{{Brightness = [byte]{level}; Timeout = [uint32]1}} }} "
-            f"else {{ (Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightnessMethods | Select-Object -First 1).WmiSetBrightness(1, {level}) }}"
-        )
-        proc = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_script],
-            capture_output=True,
-            timeout=3.0,
-            creationflags=CREATE_NO_WINDOW,
-        )
-        if proc.returncode == 0:
-            _update_cached_level(monitor_id, level)
-            return True
-    except Exception as exc:
-        _log_err("brightness_set_wmi_ps", exc)
+    # 2. Fallback to PowerShell CIM with 6-second timeout (rate-limited to max once per 5 min)
+    now = time.monotonic()
+    if now - _last_ps_set_time >= _PS_RETRY_INTERVAL_SEC:
+        _last_ps_set_time = now
+        try:
+            clean_inst = target_inst.replace("'", "''").replace("\\", "\\\\")
+            ps_script = (
+                f"$m = Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightnessMethods | "
+                f"Where-Object {{ $_.InstanceName -like '*{clean_inst}*' }} | Select-Object -First 1; "
+                f"if ($m) {{ Invoke-CimMethod -InputObject $m -MethodName WmiSetBrightness -Arguments @{{Brightness = [byte]{level}; Timeout = [uint32]1}} }} "
+                f"else {{ (Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightnessMethods | Select-Object -First 1).WmiSetBrightness(1, {level}) }}"
+            )
+            proc = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                capture_output=True,
+                timeout=6.0,
+                creationflags=CREATE_NO_WINDOW,
+            )
+            if proc.returncode == 0:
+                _update_cached_level(monitor_id, level)
+                return True
+        except Exception as exc:
+            _log_err("brightness_set_wmi_ps", exc)
 
     return False
 

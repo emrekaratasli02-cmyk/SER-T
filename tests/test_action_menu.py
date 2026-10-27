@@ -262,6 +262,53 @@ class TestActionMenuInteractions(unittest.TestCase):
         # Must be positioned above anchor.top()
         self.assertLessEqual(self.menu.y() + self.menu.height(), anchor.top() + 8.0)
 
+    def test_checked_and_radio_rendering(self) -> None:
+        """Verify checked items and radio group items render cleanly to high-DPI image."""
+        self.menu.set_actions([
+            {"id": "check1", "text": "Checked Item", "checked": True},
+            {"id": "check2", "text": "Unchecked Item", "checked": False},
+            {"type": "separator"},
+            {"id": "radio1", "text": "Radio 1", "group": "g", "checked": True},
+            {"id": "radio2", "text": "Radio 2", "group": "g", "checked": False},
+            {"type": "title", "text": "Section Title"},
+        ])
+        img = self.menu.render_to_image(dpr=2.0)
+        self.assertFalse(img.isNull())
+        self.assertEqual(img.devicePixelRatio(), 2.0)
+
+    def test_navigation_skips_separators_and_titles(self) -> None:
+        """Keyboard Up/Down must skip non-interactive separator and title rows."""
+        self.menu.set_actions([
+            {"type": "title", "text": "Title 1"},
+            {"id": "act0", "text": "Action 0"},
+            {"type": "separator"},
+            {"id": "act1", "text": "Action 1"},
+            {"type": "separator"},
+            {"type": "title", "text": "Title 2"},
+        ])
+        # Down from initial (-1) lands on act0 (index 1)
+        ev_down = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
+        self.menu.keyPressEvent(ev_down)
+        self.assertEqual(self.menu._hover_idx, 1)
+
+        # Down from act0 skips separator and lands on act1 (index 3)
+        self.menu.keyPressEvent(ev_down)
+        self.assertEqual(self.menu._hover_idx, 3)
+
+        # Down from act1 wraps around skipping title2 and title1 back to act0 (index 1)
+        self.menu.keyPressEvent(ev_down)
+        self.assertEqual(self.menu._hover_idx, 1)
+
+    def test_action_callback(self) -> None:
+        """Verify callback attached to action dict executes upon trigger."""
+        called = []
+        self.menu.set_actions([
+            {"id": "call_me", "text": "Test", "callback": lambda: called.append(True)},
+        ])
+        self.menu._trigger_row(0)
+        self.assertEqual(called, [True])
+        self.assertEqual(self.chosen_actions, ["call_me"])
+
 
 if __name__ == "__main__":
     unittest.main()

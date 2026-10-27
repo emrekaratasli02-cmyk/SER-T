@@ -19,7 +19,6 @@ import ctypes
 import ctypes.wintypes as w
 import datetime
 import os
-from pathlib import Path
 import threading
 import time
 from typing import Dict, List, Optional, Tuple, Union
@@ -66,7 +65,7 @@ __all__ = [
 # 0. LOGGING & CONSTANTS
 # ==============================================================================
 
-LOG_PATH = Path("D:/Apps/serit/serit.log")
+from logpath import LOG_PATH
 
 _last_log_msg: str = ""
 _last_log_time: float = 0.0

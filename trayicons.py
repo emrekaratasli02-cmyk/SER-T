@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Union
 import winreg
 
 import psutil
-from PySide6.QtCore import QFileInfo, QPointF, QRectF, Qt, QUrl
+from PySide6.QtCore import QPointF, QRectF, Qt, QUrl
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -44,7 +44,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
 )
-from PySide6.QtWidgets import QApplication, QFileIconProvider
+from PySide6.QtWidgets import QApplication
 
 # Optional imports from serit package
 try:
@@ -66,10 +66,26 @@ COLOR_TEXT_MUTED = getattr(theme, "COLOR_TEXT_MUTED", QColor(255, 255, 255, int(
 COLOR_CHIP_HOVER = getattr(theme, "COLOR_CHIP_HOVER", QColor(255, 255, 255, int(255 * 0.12)))
 COLOR_INDICATOR_PROMOTED = QColor("#60B5FF")
 
-LOG_PATH = Path("D:/Apps/serit/serit.log")
+try:
+    from logpath import LOG_PATH
+except ImportError:
+    LOG_PATH = Path("D:/Apps/serit/serit.log")
 
 user32 = ctypes.windll.user32
 ole32 = ctypes.windll.ole32
+shell32 = ctypes.windll.shell32
+
+shell32.ExtractIconExW.argtypes = [
+    wintypes.LPCWSTR,
+    ctypes.c_int,
+    ctypes.POINTER(wintypes.HICON),
+    ctypes.POINTER(wintypes.HICON),
+    wintypes.UINT,
+]
+shell32.ExtractIconExW.restype = wintypes.UINT
+
+user32.DestroyIcon.argtypes = [wintypes.HICON]
+user32.DestroyIcon.restype = wintypes.BOOL
 
 # Explicit 64-bit argument and return types for user32 and ole32 Win32 APIs
 WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -531,93 +547,127 @@ def _crop_transparent_borders(img: QImage) -> QImage:
         return img
 
 
-def get_tray_icons(items: List[Dict[str, Any]]) -> Dict[str, QPixmap]:
-    """Load or extract high-DPI QPixmap icons for the provided tray items.
+def get_tray_images(items: List[Dict[str, Any]]) -> Dict[str, QImage]:
+    """Load or extract high-DPI QImage icons for the provided tray items.
 
-    GUI-thread only: creates and returns QPixmap objects.
+    Worker-thread safe: strictly returns QImage objects without creating
+    QPixmap instances or using GUI widgets (QFileIconProvider).
     """
-    _get_qapp()
-    provider = QFileIconProvider()
-    icons: Dict[str, QPixmap] = {}
+    images: Dict[str, QImage] = {}
 
     for it in items:
         name = it.get("name", "")
         exe = it.get("exe", "")
         icon_bytes = it.get("icon_bytes")
-        pm = QPixmap()
+        img = QImage()
 
         # 1. Dedicated custom icon files (e.g. Dikte)
         if "dikte" in name.lower():
             known_dikte_ico = "D:/Apps/dikte/dikte.ico"
             if os.path.exists(known_dikte_ico):
-                pm = QFileIconProvider().icon(QFileInfo(known_dikte_ico)).pixmap(64, 64)
+                cand = QImage(known_dikte_ico)
+                if not cand.isNull():
+                    img = cand
 
         # 2. Dynamic tray status snapshots (e.g. PowerToys Awake coffee cup status)
-        if pm.isNull() and "awake" in name.lower() and icon_bytes:
+        if img.isNull() and "awake" in name.lower() and icon_bytes:
             try:
-                img = QImage()
-                if img.loadFromData(icon_bytes):
-                    pm = QPixmap.fromImage(img)
+                cand = QImage()
+                if cand.loadFromData(icon_bytes):
+                    img = cand
             except Exception:
                 pass
 
         # 3. WindowsApps package assets (e.g. WhatsApp, Store apps)
-        if pm.isNull() and exe and "windowsapps" in exe.lower():
+        if img.isNull() and exe and "windowsapps" in exe.lower():
             try:
                 pkg_dir = os.path.dirname(os.path.dirname(exe)) if os.path.basename(os.path.dirname(exe)).lower() == "app" else os.path.dirname(exe)
                 assets_dir = os.path.join(pkg_dir, "Assets")
                 if os.path.isdir(assets_dir):
-                    for cand in [
+                    for cand_name in [
                         "AppList.targetsize-256.png",
                         "AppList.targetsize-256_altform-unplated.png",
                         "AppList.scale-200.png",
                         "logo.ico",
                         "StoreLogo.scale-200.png",
                     ]:
-                        cand_path = os.path.join(assets_dir, cand)
+                        cand_path = os.path.join(assets_dir, cand_name)
                         if os.path.exists(cand_path):
-                            cand_pm = QPixmap(cand_path)
-                            if not cand_pm.isNull() and cand_pm.width() >= 32:
-                                pm = cand_pm
+                            cand_img = QImage(cand_path)
+                            if not cand_img.isNull() and cand_img.width() >= 32:
+                                img = cand_img
                                 break
             except Exception:
                 pass
 
-        # 4. High-resolution executable icon (up to 256x256)
-        if pm.isNull() and exe and os.path.exists(exe):
+        # 4. High-resolution executable icon extraction via ctypes ExtractIconExW
+        if img.isNull() and exe and os.path.exists(exe):
             exe_name = os.path.basename(exe).lower()
             if "python" not in exe_name:
                 try:
-                    ico = provider.icon(QFileInfo(exe))
-                    pm_hi = ico.pixmap(64, 64)
-                    if not pm_hi.isNull() and pm_hi.width() >= 32:
-                        pm = pm_hi
+                    large = wintypes.HICON()
+                    small = wintypes.HICON()
+                    res = shell32.ExtractIconExW(exe, 0, ctypes.byref(large), ctypes.byref(small), 1)
+                    if res > 0 and large.value:
+                        cand = QImage.fromHICON(large.value)
+                        if not cand.isNull():
+                            img = cand
+                    if large.value:
+                        user32.DestroyIcon(large)
+                    if small.value:
+                        user32.DestroyIcon(small)
                 except Exception:
                     pass
 
-        # 4. Fallback to raw PNG IconSnapshot cached in Windows registry
-        if pm.isNull() and icon_bytes and isinstance(icon_bytes, bytes):
+        # 5. Fallback to raw PNG IconSnapshot cached in Windows registry
+        if img.isNull() and icon_bytes and isinstance(icon_bytes, bytes):
             try:
-                img = QImage()
-                if img.loadFromData(icon_bytes):
-                    pm = QPixmap.fromImage(img)
+                cand = QImage()
+                if cand.loadFromData(icon_bytes):
+                    img = cand
             except Exception:
                 pass
 
-        # 5. Last resort: Standard executable file icon
-        if pm.isNull() and exe and os.path.exists(exe):
+        # 6. Fallback to small icon from ExtractIconExW
+        if img.isNull() and exe and os.path.exists(exe):
             try:
-                pm = provider.icon(QFileInfo(exe)).pixmap(32, 32)
+                large = wintypes.HICON()
+                small = wintypes.HICON()
+                res = shell32.ExtractIconExW(exe, 0, ctypes.byref(large), ctypes.byref(small), 1)
+                h = small.value or large.value
+                if h:
+                    cand = QImage.fromHICON(h)
+                    if not cand.isNull():
+                        img = cand
+                if large.value:
+                    user32.DestroyIcon(large)
+                if small.value:
+                    user32.DestroyIcon(small)
             except Exception:
                 pass
 
         # Normalize boundaries (trim disproportionate transparent margins from legacy icons)
-        if not pm.isNull():
-            cropped_img = _crop_transparent_borders(pm.toImage())
-            pm = QPixmap.fromImage(cropped_img)
+        if not img.isNull():
+            img = _crop_transparent_borders(img)
 
-        icons[name] = pm
+        images[name] = img
 
+    return images
+
+
+def get_tray_icons(items: List[Dict[str, Any]]) -> Dict[str, QPixmap]:
+    """Load or extract high-DPI QPixmap icons for the provided tray items.
+
+    GUI-thread only: creates and returns QPixmap objects. Kept for backward compatibility.
+    """
+    _get_qapp()
+    images = get_tray_images(items)
+    icons: Dict[str, QPixmap] = {}
+    for name, img in images.items():
+        if img is not None and not img.isNull():
+            icons[name] = QPixmap.fromImage(img)
+        else:
+            icons[name] = QPixmap()
     return icons
 
 

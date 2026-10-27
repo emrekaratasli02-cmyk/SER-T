@@ -151,10 +151,14 @@ def test_set_level_clamping_and_mocks():
     assert brightness.set_level("wmi:test", "invalid") is False
 
     # Mock WMI set_level
-    mock_wmi_method = MagicMock()
+    mock_meth = MagicMock()
+    mock_in_params = MagicMock()
+    mock_prop_item = MagicMock()
+    mock_in_params.Properties_.Item.return_value = mock_prop_item
+    mock_meth.InParameters.SpawnInstance_.return_value = mock_in_params
     mock_item = MagicMock()
     mock_item.Properties_.return_value.Value = "DISPLAY\\CMN1556\\test"
-    mock_item.WmiSetBrightness = mock_wmi_method
+    mock_item.Methods_.return_value = mock_meth
 
     mock_svc = MagicMock()
     mock_svc.ExecQuery.return_value = [mock_item]
@@ -167,17 +171,18 @@ def test_set_level_clamping_and_mocks():
         # Test upper clamp (150 -> 100)
         ok1 = brightness.set_level("wmi:DISPLAY\\CMN1556\\test", 150)
         assert ok1 is True
-        mock_wmi_method.assert_called_with(1, 100)
+        mock_item.ExecMethod_.assert_called_with("WmiSetBrightness", mock_in_params)
+        assert mock_prop_item.Value == 100
 
         # Test lower clamp (-25 -> 0)
         ok2 = brightness.set_level("wmi:DISPLAY\\CMN1556\\test", -25)
         assert ok2 is True
-        mock_wmi_method.assert_called_with(1, 0)
+        assert mock_prop_item.Value == 0
 
         # Test float rounding (42.6 -> 43)
         ok3 = brightness.set_level("wmi:DISPLAY\\CMN1556\\test", 42.6)
         assert ok3 is True
-        mock_wmi_method.assert_called_with(1, 43)
+        assert mock_prop_item.Value == 43
 
     # Mock DDC set_level
     with patch.object(brightness, "_set_ddc_level", return_value=True) as mock_ddc_set:

@@ -14,7 +14,7 @@ import httpx
 import psutil
 
 CRED_PATH = Path.home() / ".claude" / ".credentials.json"
-LOG_PATH = Path("D:/Apps/serit/serit.log")
+from logpath import CLAUDE_CACHE, LOG_PATH
 
 _EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=3)
 _IN_FLIGHT: set[str] = set()
@@ -204,9 +204,45 @@ def log_err(source: str, exc: Exception) -> None:
 
 
 def tr_num(s: Any) -> float:
-    """Convert Turkish formatted number string (e.g. '6.423,18' or '%0,14') to float."""
+    """Convert Turkish or plain formatted number string or numeric value to float.
+
+    Rules:
+      - Numeric types (int, float) pass through directly (NaN/Inf return 0.0).
+      - Strings with commas: Turkish format, e.g. '6.397,04' -> 6397.04, '49,77' -> 49.77.
+        Dots are removed as thousands separators, comma replaced by dot.
+      - Strings without commas:
+          - Multiple dots (e.g. '1.234.567'): dots removed as thousands separators.
+          - Exactly one dot:
+              - Ambiguous case: if exactly 3 digits follow the dot (e.g. '1.234'),
+                treated as thousands separator only when no comma is present (returns 1234.0).
+              - Otherwise (e.g. <=2 decimals like '49.77', or >3 decimals):
+                treated as standard decimal point (returns 49.77).
+          - No dots: plain integer string.
+      - Returns 0.0 on invalid string or conversion error.
+    """
+    if s is None:
+        return 0.0
+    if isinstance(s, (int, float)):
+        if math.isnan(s) or math.isinf(s):
+            return 0.0
+        return float(s)
+
     try:
-        clean = str(s).strip().replace(".", "").replace(",", ".").replace("%", "")
+        clean = str(s).strip().replace("%", "")
+        if not clean:
+            return 0.0
+
+        if "," in clean:
+            clean = clean.replace(".", "").replace(",", ".")
+        elif "." in clean:
+            dot_count = clean.count(".")
+            if dot_count > 1:
+                clean = clean.replace(".", "")
+            else:
+                parts = clean.split(".")
+                if len(parts[1]) == 3 and parts[1].isdigit():
+                    clean = parts[0] + parts[1]
+
         val = float(clean)
         if math.isnan(val) or math.isinf(val):
             return 0.0
@@ -246,7 +282,7 @@ def fetch_media() -> Dict[str, Any]:
         vol = media.get_volume()
     except Exception as exc:
         log_err("fetch_media_vol", exc)
-        vol = {"level": 50, "muted": False, "device": ""}
+        vol = {"level": 0, "muted": False, "device": ""}
 
     return {"np": np, "vol": vol}
 
@@ -285,7 +321,6 @@ def reset_clock(iso: str) -> str:
     return f"{loc.day} {m} {loc.hour:02d}:{loc.minute:02d}"
 
 
-CLAUDE_CACHE = Path("D:/Apps/serit/claude_cache.json")  # sadece kullanım yüzdeleri, token YOK
 _claude_cooldown_until = 0.0
 
 
@@ -382,8 +417,8 @@ def _fetch_claude_live() -> Dict[str, Any]:
         session_raw = fh.get("utilization")
         week_raw = sd.get("utilization")
 
-        session_val = _safe_float(session_raw, 0.0)
-        week_val = _safe_float(week_raw, 0.0)
+        session_val = _safe_float(session_raw, None)
+        week_val = _safe_float(week_raw, None)
 
         # Read subscription metadata from ~/.claude.json (same as Lumabar)
         sub_since = ""
@@ -410,12 +445,12 @@ def _fetch_claude_live() -> Dict[str, Any]:
         extra_enabled = bool(extra_obj.get("is_enabled", False)) if isinstance(extra_obj, dict) else False
 
         return {
-            "session": session_val if session_val is not None else 0.0,
+            "session": session_val,
             "session_reset": str(fh.get("resets_at", "") or ""),
-            "week": week_val if week_val is not None else 0.0,
+            "week": week_val,
             "week_reset": str(sd.get("resets_at", "") or ""),
             "opus": opus_val,
-            "plan": tier_label or "Max 5x",
+            "plan": tier_label or "",
             "subscribed_at": sub_since,
             "extra_usage": extra_enabled,
             "source": "Anthropic · Claude Code girişi",
@@ -538,18 +573,18 @@ def fetch_system() -> Dict[str, Any]:
         vm = psutil.virtual_memory()
         disk = psutil.disk_usage("C:/")
 
-        cpu = _safe_float(psutil.cpu_percent(None), 0.0)
-        ram = _safe_float(vm.percent, 0.0)
-        ram_used = _safe_float(vm.used / (1024**3), 0.0)
-        ram_total = _safe_float(vm.total / (1024**3), 0.0)
-        disk_c = _safe_float(disk.percent, 0.0)
+        cpu = _safe_float(psutil.cpu_percent(None), None)
+        ram = _safe_float(vm.percent, None)
+        ram_used = _safe_float(vm.used / (1024**3), None)
+        ram_total = _safe_float(vm.total / (1024**3), None)
+        disk_c = _safe_float(disk.percent, None)
 
         return {
-            "cpu": cpu if cpu is not None else 0.0,
-            "ram": ram if ram is not None else 0.0,
-            "ram_used_gb": ram_used if ram_used is not None else 0.0,
-            "ram_total_gb": ram_total if ram_total is not None else 0.0,
-            "disk_c": disk_c if disk_c is not None else 0.0,
+            "cpu": cpu,
+            "ram": ram,
+            "ram_used_gb": ram_used,
+            "ram_total_gb": ram_total,
+            "disk_c": disk_c,
             "source": "Bu bilgisayar",
         }
     except Exception as exc:
@@ -595,6 +630,25 @@ class Store:
 # (her 15 dk, 07-23) 02 takvimini salt-okunur çekip bu dosyaya yazıyor. Biz sadece dosyayı okuruz.
 CALENDAR_JSON = Path("C:/Users/Emre Karatasli/AppData/Local/hermes/takvim-02/yakin.json")
 CALENDAR_MONTH_JSON = Path("C:/Users/Emre Karatasli/AppData/Local/hermes/takvim-02/ay.json")
+
+_LAST_GOOD_CALENDAR: Optional[Dict[str, Any]] = None
+_LAST_GOOD_MONTH_CALENDAR: Optional[Dict[str, Any]] = None
+
+
+def _safe_read_json_file(path: Path) -> Tuple[Optional[Any], Optional[Exception]]:
+    """Read and parse JSON file, retrying once after 150ms on JSONDecodeError."""
+    try:
+        text = path.read_text(encoding="utf-8")
+        return json.loads(text), None
+    except json.JSONDecodeError:
+        time.sleep(0.15)
+        try:
+            text = path.read_text(encoding="utf-8")
+            return json.loads(text), None
+        except json.JSONDecodeError as retry_exc:
+            return None, retry_exc
+    except Exception as exc:
+        return None, exc
 
 
 def classify_calendar_category(title: Any) -> str:
@@ -646,19 +700,31 @@ def fetch_month_calendar(
          'range': (date_from, date_to),
          'err': str|None}
     """
+    global _LAST_GOOD_MONTH_CALENDAR
     target_path = path or CALENDAR_MONTH_JSON
-    try:
-        raw = json.loads(target_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {
-            "events": [],
-            "updated": "",
-            "stale": True,
-            "range": (None, None),
-            "err": "Takvim dosyası yok",
-        }
-    except (OSError, ValueError) as exc:
-        log_err("month_calendar_read", exc)
+    raw, err = _safe_read_json_file(target_path)
+    if err is not None:
+        if isinstance(err, FileNotFoundError):
+            return {
+                "events": [],
+                "updated": "",
+                "stale": True,
+                "range": (None, None),
+                "err": "Takvim dosyası yok",
+            }
+        if isinstance(err, json.JSONDecodeError):
+            if _LAST_GOOD_MONTH_CALENDAR is not None:
+                res = dict(_LAST_GOOD_MONTH_CALENDAR)
+                res["stale"] = True
+                return res
+            return {
+                "events": [],
+                "updated": "",
+                "stale": True,
+                "range": (None, None),
+                "err": "Takvim okunamadı",
+            }
+        log_err("month_calendar_read", err)
         return {
             "events": [],
             "updated": "",
@@ -746,13 +812,15 @@ def fetch_month_calendar(
 
         events.sort(key=_sort_key)
 
-        return {
+        res = {
             "events": events,
             "updated": updated_str,
             "stale": stale,
             "range": data_range,
             "err": None,
         }
+        _LAST_GOOD_MONTH_CALENDAR = dict(res)
+        return res
     except Exception as exc:
         log_err("month_calendar_parse", exc)
         return {
@@ -778,12 +846,19 @@ def _parse_event_time(s: Any) -> Optional[dt.datetime]:
 
 def fetch_calendar(now: Optional[dt.datetime] = None) -> Dict[str, Any]:
     """Döner: {'next': {...}|None, 'events': [...], 'updated': 'HH:MM', 'source': ...} veya {'err': ...}."""
-    try:
-        raw = json.loads(CALENDAR_JSON.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {"err": "Takvim dosyası yok"}
-    except (OSError, ValueError) as exc:
-        log_err("calendar", exc)
+    global _LAST_GOOD_CALENDAR
+    raw, err = _safe_read_json_file(CALENDAR_JSON)
+    if err is not None:
+        if isinstance(err, FileNotFoundError):
+            return {"err": "Takvim dosyası yok"}
+        if isinstance(err, json.JSONDecodeError):
+            if _LAST_GOOD_CALENDAR is not None:
+                res = dict(_LAST_GOOD_CALENDAR)
+                res["stale"] = True
+                res["stale_file"] = True
+                return res
+            return {"err": "Takvim okunamadı"}
+        log_err("calendar", err)
         return {"err": "Takvim okunamadı"}
     if not isinstance(raw, dict):
         return {"err": "Geçersiz veri"}
@@ -806,11 +881,17 @@ def fetch_calendar(now: Optional[dt.datetime] = None) -> Dict[str, Any]:
             if isinstance(end_raw, dt.datetime):
                 end = end_raw if end_raw.tzinfo else end_raw.replace(tzinfo=LOCAL_TZ)
             else:
-                end = _parse_event_time(end_raw) or start
+                end = _parse_event_time(end_raw)
 
-            if start is None or (end and end <= now):
-                continue  # geçmiş etkinlik veya geçersiz başlangıç
             all_day = bool(e.get("tum_gun")) or (isinstance(start_raw, str) and len(start_raw) == 10)
+            if start is None:
+                continue
+            if end is None:
+                end = (start + dt.timedelta(days=1)) if all_day else (start + dt.timedelta(hours=1))
+
+            if end <= now:
+                continue  # geçmiş etkinlik veya geçersiz başlangıç
+
             events.append({
                 "title": str(e.get("baslik") or "(başlıksız)"),
                 "start": start,
@@ -818,25 +899,27 @@ def fetch_calendar(now: Optional[dt.datetime] = None) -> Dict[str, Any]:
                 "all_day": all_day,
                 "where": str(e.get("yer") or ""),
                 "link": str(e.get("link") or ""),
-                "now": start <= now,
+                "now": start <= now < end,
             })
         events.sort(key=lambda x: x["start"])
         timed = [x for x in events if not x["all_day"]]
         nxt = (timed or events or [None])[0]
-        return {
+        res = {
             "next": nxt,
             "events": events,
             "updated": upd.strftime("%H:%M") if upd else "",
             "stale_file": bool(upd and (now - upd).total_seconds() > 3 * 3600),
             "source": "Google Takvim (kişisel 02)",
         }
+        _LAST_GOOD_CALENDAR = dict(res)
+        return res
     except Exception as exc:
         log_err("calendar_parse", exc)
         return {"err": "Takvim okunamadı"}
 
 
 def event_when(ev: Any, now: Optional[dt.datetime] = None) -> str:
-    """'şimdi', '35 dk sonra', '2 sa 10 dk sonra', 'yarın 09:30', 'Çar 28 Eki', 'bugün'."""
+    """'şimdi', '35 dk sonra', '2 sa 10 dk sonra', 'yarın 09:30', 'Çar 28 Eki', 'bugün', 'bitti'."""
     try:
         if not isinstance(ev, dict):
             return ""
@@ -850,12 +933,25 @@ def event_when(ev: Any, now: Optional[dt.datetime] = None) -> str:
             st = st.replace(tzinfo=LOCAL_TZ)
         if now.tzinfo is None:
             now = now.replace(tzinfo=LOCAL_TZ)
-        days = (st.date() - now.date()).days
-        if ev.get("now") and not ev.get("all_day"):
-            return "şimdi"
+
+        end = ev.get("end")
+        if isinstance(end, str):
+            end = _parse_event_time(end)
+        if isinstance(end, dt.datetime) and end.tzinfo is None:
+            end = end.replace(tzinfo=LOCAL_TZ)
+
         if ev.get("all_day"):
+            days = (st.date() - now.date()).days
             days = max(days, 0)
             return "bugün" if days == 0 else ("yarın" if days == 1 else f"{st.day} {TR_MONTHS.get(st.month, '')}")
+
+        # Timed events
+        if end and end <= now:
+            return "bitti"
+        if st <= now:
+            return "şimdi"
+
+        days = (st.date() - now.date()).days
         mins = int((st - now).total_seconds() // 60)
         if days == 0 and mins < 60:
             return f"{max(mins, 1)} dk sonra"

@@ -20,11 +20,12 @@ Pure Python, worker-thread safe, never raises exceptions to callers.
 
 from __future__ import annotations
 
+import datetime
 import getpass
 import os
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 
 import psutil
 
@@ -33,6 +34,21 @@ try:
     from sources import log_err
 except ImportError:
     def log_err(source: str, exc: Exception) -> None:
+        pass
+
+try:
+    from logpath import LOG_PATH
+except ImportError:
+    LOG_PATH = Path("D:/Apps/serit/serit.log")
+
+
+def _log_audit(msg: str) -> None:
+    """Audit logger for end_task actions."""
+    try:
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(f"{now_str} {msg}\n")
+    except Exception:
         pass
 
 try:
@@ -63,6 +79,77 @@ GENERIC_HOSTS: Set[str] = {
     "pwsh.exe",
     "cmd.exe",
 }
+
+# Blacklist of generic words that must never be used to identify processes
+BLACKLIST_WORDS: Set[str] = {
+    "python",
+    "pythonw",
+    "py",
+    "autohotkey",
+    "autohotkey64",
+    "autohotkey32",
+    "node",
+    "java",
+    "javaw",
+    "cmd",
+    "powershell",
+    "pwsh",
+    "wscript",
+    "cscript",
+    "users",
+    "user",
+    "appdata",
+    "local",
+    "programs",
+    "program",
+    "files",
+    "windows",
+    "system32",
+    "scripts",
+    "venv",
+    "apps",
+    "tools",
+    "bin",
+    "lib",
+    "exe",
+    "setting",
+    "settings",
+}
+
+try:
+    _curr_u = getpass.getuser().lower().strip()
+    if _curr_u:
+        BLACKLIST_WORDS.add(_curr_u)
+        for _part in re.split(r"[\s_.-]+", _curr_u):
+            if _part:
+                BLACKLIST_WORDS.add(_part)
+except Exception:
+    pass
+
+
+class ProcessEntry(NamedTuple):
+    """Entry holding (pid, create_time). Supports 2-tuple unpacking (pid, create_time),
+    attribute access (.pid, .create_time), and dict-like key access."""
+
+    pid: int
+    create_time: float = 0.0
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key == "pid":
+            return self.pid
+        if key == "create_time":
+            return self.create_time
+        return default
+
+    def __getitem__(self, item: Any) -> Any:
+        if isinstance(item, str):
+            if item == "pid":
+                return self.pid
+            if item == "create_time":
+                return self.create_time
+            raise KeyError(item)
+        return tuple.__getitem__(self, item)
+
 
 # Known token mappings for common apps running under generic hosts
 TOKEN_MAP: Dict[str, List[str]] = {
@@ -124,7 +211,9 @@ def _is_generic_host(exe_path: str) -> bool:
 
 
 def _derive_tokens(item: Dict[str, Any]) -> List[str]:
-    """Derive distinctive tokens from item fields (name, tooltip, clean name)."""
+    """Derive distinctive tokens from item fields (name, tooltip, clean name),
+    filtering out generic blacklisted words.
+    """
     tokens: Set[str] = set()
     raw_name = str(item.get("name") or "").lower()
     raw_tip = str(item.get("tooltip") or "").lower()
@@ -138,7 +227,10 @@ def _derive_tokens(item: Dict[str, Any]) -> List[str]:
 
     for k, v in TOKEN_MAP.items():
         if k in raw_name or k in raw_tip or k in raw_full or k in clean_name:
-            tokens.update(v)
+            for mapped in v:
+                m_clean = mapped.lower().strip()
+                if m_clean and m_clean not in BLACKLIST_WORDS:
+                    tokens.add(m_clean)
 
     for text in (clean_name, raw_name, raw_tip, raw_full):
         if not text:
@@ -146,10 +238,47 @@ def _derive_tokens(item: Dict[str, Any]) -> List[str]:
         words = re.findall(r"[a-zA-Z0-9_\-\.]{4,}", text)
         for w in words:
             w_clean = re.sub(r"^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$", "", w).lower()
-            if len(w_clean) >= 4:
+            if len(w_clean) >= 4 and w_clean not in BLACKLIST_WORDS:
                 tokens.add(w_clean)
 
     return list(tokens)
+
+
+def _match_generic_host_arguments(cmdline: List[str], tokens: List[str]) -> bool:
+    """Match tokens only against script arguments (cmdline[1:]),
+    comparing against each argument's file stem and its parent folder name (lowercase),
+    by equality (or token == stem without extension), never substring of the whole line.
+    """
+    if not cmdline or len(cmdline) < 2 or not tokens:
+        return False
+
+    valid_tokens = {tok for tok in tokens if tok and tok not in BLACKLIST_WORDS}
+    if not valid_tokens:
+        return False
+
+    for arg in cmdline[1:]:
+        if not arg or not isinstance(arg, str):
+            continue
+        clean_arg = arg.strip('\'"')
+        if not clean_arg:
+            continue
+        try:
+            p = Path(clean_arg)
+            stem = p.stem.lower()
+            parent_name = p.parent.name.lower()
+        except Exception:
+            norm = clean_arg.replace("\\", "/").rstrip("/")
+            parts = norm.split("/")
+            stem = parts[-1].rsplit(".", 1)[0].lower() if parts else ""
+            parent_name = parts[-2].lower() if len(parts) >= 2 else ""
+
+        for tok in valid_tokens:
+            if tok == stem:
+                return True
+            if parent_name and parent_name not in BLACKLIST_WORDS and tok == parent_name:
+                return True
+
+    return False
 
 
 def _get_self_pids() -> Set[int]:
@@ -234,6 +363,7 @@ def resolve_processes(item: Any) -> Dict[str, Any]:
     """
     empty_result = {
         "ok": False,
+        "entries": [],
         "pids": [],
         "roots": [],
         "count": 0,
@@ -252,6 +382,7 @@ def resolve_processes(item: Any) -> Dict[str, Any]:
         if _is_windows_system(raw_exe):
             return {
                 "ok": False,
+                "entries": [],
                 "pids": [],
                 "roots": [],
                 "count": 0,
@@ -289,21 +420,10 @@ def resolve_processes(item: Any) -> Dict[str, Any]:
 
                 any_exe_match = True
 
-                # Check generic host cmdline match
+                # Check generic host script arguments match
                 if is_gen:
                     p_cmd = p.info.get("cmdline") or []
-                    cmd_str = " ".join(p_cmd).lower()
-                    matched_token = False
-                    for tok in tokens:
-                        if tok in cmd_str:
-                            matched_token = True
-                            break
-                    # Special Dikte watchdog rule: include watchdog under D:/Apps/dikte
-                    if not matched_token and ("dikte" in tokens or "bekci" in tokens):
-                        if "d:/apps/dikte" in cmd_str or "d:\\apps\\dikte" in cmd_str or "bekci" in cmd_str:
-                            matched_token = True
-
-                    if not matched_token:
+                    if not _match_generic_host_arguments(p_cmd, tokens):
                         continue
 
                 # Check protected status
@@ -330,6 +450,7 @@ def resolve_processes(item: Any) -> Dict[str, Any]:
             if protected_count > 0:
                 return {
                     "ok": False,
+                    "entries": [],
                     "pids": [],
                     "roots": [],
                     "count": 0,
@@ -339,6 +460,7 @@ def resolve_processes(item: Any) -> Dict[str, Any]:
             if other_user_or_system or (any_exe_match and not is_gen):
                 return {
                     "ok": False,
+                    "entries": [],
                     "pids": [],
                     "roots": [],
                     "count": 0,
@@ -393,10 +515,23 @@ def resolve_processes(item: Any) -> Dict[str, Any]:
         final_roots.sort()
         count = len(sorted_pids)
 
+        entries: List[ProcessEntry] = []
+        for pid in sorted_pids:
+            proc = full_process_map.get(pid)
+            ct = 0.0
+            if proc:
+                try:
+                    if hasattr(proc, "create_time") and callable(proc.create_time):
+                        ct = proc.create_time()
+                except Exception:
+                    pass
+            entries.append(ProcessEntry(pid, ct))
+
         label = f"{clean_name} · {count} işlem"
 
         return {
             "ok": True,
+            "entries": entries,
             "pids": sorted_pids,
             "roots": final_roots,
             "count": count,
@@ -413,23 +548,65 @@ def end_task(item: Any, timeout: float = 3.0) -> Dict[str, Any]:
     """Safely terminate all processes associated with a tray item.
 
     Re-resolves processes dynamically (never trusts stale PIDs).
+    Re-checks create_time and exe right before terminate and kill to prevent PID reuse race.
     Terminates children first, waits up to timeout seconds.
     Escalates to kill() on any survivors, waits up to 1.0 second more.
     Never kills anything outside resolve_processes().
+    Logs an audit line on each execution.
     Worker-thread safe, never raises.
     """
+    clean_name = ""
+    try:
+        if tray_panel and hasattr(tray_panel, "clean_tray_name"):
+            clean_name = tray_panel.clean_tray_name(item)
+    except Exception:
+        pass
+    if not clean_name:
+        raw_exe_val = item.get("exe") if isinstance(item, dict) else ""
+        clean_name = str((item.get("name") if isinstance(item, dict) else "") or (Path(raw_exe_val).stem if raw_exe_val else "Bilinmeyen"))
+
+    kapatildi_list: List[str] = []
+    hayatta_kalan_list: List[str] = []
+    atlanan_list: List[str] = []
+    proc_base_exe: Dict[int, str] = {}
+
     try:
         resolved = resolve_processes(item)
         if not resolved.get("ok"):
+            reason_str = resolved.get("reason") or "İşlem bulunamadı"
+            _log_audit(f"[tray_actions.end_task] {clean_name}: kapatıldı 0 (), hayatta kalan 0, atlanan 0 ({reason_str})")
             return {
                 "ok": False,
                 "killed": 0,
                 "survivors": 0,
-                "reason": resolved.get("reason") or "İşlem bulunamadı",
+                "reason": reason_str,
             }
 
+        entries = resolved.get("entries") or []
         pids = resolved.get("pids") or []
-        if not pids:
+        expected_meta: Dict[int, float] = {}
+        target_pids: List[int] = []
+
+        if entries:
+            for entry in entries:
+                try:
+                    if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+                        pid_val = int(entry[0])
+                        ct_val = float(entry[1])
+                        expected_meta[pid_val] = ct_val
+                        target_pids.append(pid_val)
+                except Exception:
+                    pass
+
+        if not target_pids:
+            for p in pids:
+                if isinstance(p, (tuple, list)):
+                    target_pids.append(int(p[0]))
+                else:
+                    target_pids.append(int(p))
+
+        if not target_pids:
+            _log_audit(f"[tray_actions.end_task] {clean_name}: kapatıldı 0 (), hayatta kalan 0, atlanan 0 (hedef işlem yok)")
             return {
                 "ok": True,
                 "killed": 0,
@@ -437,22 +614,60 @@ def end_task(item: Any, timeout: float = 3.0) -> Dict[str, Any]:
                 "reason": None,
             }
 
+        raw_exe = item.get("exe") if isinstance(item, dict) else ""
+        target_exe = _norm_path(raw_exe) if raw_exe else ""
+
         # Build set of self and protected PIDs to strictly prevent harming system
         self_pids = _get_self_pids()
 
         procs: Dict[int, psutil.Process] = {}
-        for pid in pids:
+        for pid in target_pids:
             if pid in self_pids:
+                atlanan_list.append(f"PID {pid}: Şerit korumalı işlem")
                 continue
             try:
                 p = psutil.Process(pid)
-                is_prot, _ = _is_protected_proc(p, self_pids)
-                if not is_prot:
-                    procs[pid] = p
+                is_prot, prot_reason = _is_protected_proc(p, self_pids)
+                if is_prot:
+                    atlanan_list.append(f"PID {pid}: {prot_reason or 'korumalı işlem'}")
+                    continue
+
+                exp_ct = expected_meta.get(pid, 0.0)
+                if exp_ct > 0:
+                    try:
+                        if abs(p.create_time() - exp_ct) > 0.05:
+                            atlanan_list.append(f"PID {pid}: create_time uyuşmazlığı")
+                            continue
+                    except Exception:
+                        atlanan_list.append(f"PID {pid}: create_time okunamadı")
+                        continue
+
+                p_exe = ""
+                if target_exe:
+                    try:
+                        p_exe = p.exe() if callable(getattr(p, "exe", None)) else ""
+                        if p_exe and _norm_path(p_exe) != target_exe:
+                            atlanan_list.append(f"PID {pid}: exe uyuşmazlığı")
+                            continue
+                    except Exception:
+                        atlanan_list.append(f"PID {pid}: exe okunamadı")
+                        continue
+
+                if not p_exe:
+                    try:
+                        p_exe = p.exe() if callable(getattr(p, "exe", None)) else ""
+                    except Exception:
+                        pass
+                base_name = Path(p_exe).name if p_exe else "exe"
+                procs[pid] = p
+                proc_base_exe[pid] = base_name
+
             except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
+                atlanan_list.append(f"PID {pid}: erişilemedi/yok")
 
         if not procs:
+            atlanan_str = "; ".join(atlanan_list) if atlanan_list else "yok"
+            _log_audit(f"[tray_actions.end_task] {clean_name}: kapatıldı 0 (), hayatta kalan 0, atlanan {len(atlanan_list)} ({atlanan_str})")
             return {
                 "ok": True,
                 "killed": 0,
@@ -466,9 +681,26 @@ def end_task(item: Any, timeout: float = 3.0) -> Dict[str, Any]:
             p for pid, p in procs.items() if pid in roots_set
         ]
 
+        def _check_safe_to_act(proc: psutil.Process) -> bool:
+            try:
+                exp_ct = expected_meta.get(proc.pid, 0.0)
+                if exp_ct > 0:
+                    if abs(proc.create_time() - exp_ct) > 0.05:
+                        return False
+                if target_exe:
+                    p_e = proc.exe() if callable(getattr(proc, "exe", None)) else ""
+                    if p_e and _norm_path(p_e) != target_exe:
+                        return False
+                return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+                return False
+
         # 1. Terminate all (children first)
         for p in ordered_procs:
             try:
+                if not _check_safe_to_act(p):
+                    atlanan_list.append(f"PID {p.pid}: işlem değişti")
+                    continue
                 p.terminate()
             except psutil.NoSuchProcess:
                 pass
@@ -481,6 +713,9 @@ def end_task(item: Any, timeout: float = 3.0) -> Dict[str, Any]:
         if alive:
             for p in alive:
                 try:
+                    if not _check_safe_to_act(p):
+                        atlanan_list.append(f"PID {p.pid}: işlem değişti")
+                        continue
                     p.kill()
                 except psutil.NoSuchProcess:
                     pass
@@ -489,23 +724,37 @@ def end_task(item: Any, timeout: float = 3.0) -> Dict[str, Any]:
 
             gone2, alive2 = psutil.wait_procs(alive, timeout=1.0)
             survivors_count = len(alive2)
+            survivors_set = set(alive2)
         else:
             survivors_count = 0
+            survivors_set = set()
 
-        total_initial = len(procs)
-        killed_count = total_initial - survivors_count
+        for pid, p in procs.items():
+            base = proc_base_exe.get(pid, "exe")
+            if p in survivors_set:
+                hayatta_kalan_list.append(f"PID {pid} {base}")
+            else:
+                kapatildi_list.append(f"PID {pid} {base}")
+
+        N = len(kapatildi_list)
+        M = len(hayatta_kalan_list)
+        K = len(atlanan_list)
+        kapatildi_str = ", ".join(kapatildi_list)
+        atlanan_str = "; ".join(atlanan_list) if atlanan_list else "yok"
+
+        _log_audit(f"[tray_actions.end_task] {clean_name}: kapatıldı {N} ({kapatildi_str}), hayatta kalan {M}, atlanan {K} ({atlanan_str})")
 
         if survivors_count > 0:
             return {
                 "ok": False,
-                "killed": killed_count,
+                "killed": N,
                 "survivors": survivors_count,
                 "reason": f"{survivors_count} işlem sonlandırılamadı",
             }
 
         return {
             "ok": True,
-            "killed": killed_count,
+            "killed": N,
             "survivors": 0,
             "reason": None,
         }

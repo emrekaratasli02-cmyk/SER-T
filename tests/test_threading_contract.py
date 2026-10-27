@@ -74,7 +74,7 @@ def test_static_threading_contract():
             if target:
                 is_preview = any(s[0] == "func" and s[1] == "render_preview" for s in self.scope_stack)
                 is_worker_lambda = any(s[0] == "lambda" for s in self.scope_stack)
-                is_inner_worker_fn = any(s[0] == "func" and s[1] in ("_apply", "_worker") for s in self.scope_stack)
+                is_inner_worker_fn = any(s[0] == "func" and s[1] in ("_apply", "_worker", "_fetch_tray_worker") for s in self.scope_stack)  # _fetch_tray_worker yalnız sources.submit havuzunda çalışır
                 if is_preview or is_worker_lambda or is_inner_worker_fn:
                     self.allowed.append((node.lineno, target, [s[1] for s in self.scope_stack]))
                 else:

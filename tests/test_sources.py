@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sources import (
     REFRESH,
     Store,
+    event_when,
     fetch_claude,
     fetch_fx,
     fetch_system,
@@ -24,11 +25,29 @@ from sources import (
 
 
 def test_helpers():
-    # tr_num tests
-    assert tr_num("49,7644") == 49.7644
-    assert tr_num("6.423,18") == 6423.18
-    assert tr_num("%0,14") == 0.14
-    assert tr_num("%-0,20") == -0.20
+    # tr_num table tests
+    tr_num_cases = [
+        (49.77, 49.77),
+        ("49.77", 49.77),
+        ("6.397,04", 6397.04),
+        ("49,77", 49.77),
+        ("1.234", 1234.0),
+        ("-1.234", -1234.0),
+        ("1.234.567", 1234567.0),
+        ("%0,14", 0.14),
+        ("%-0,20", -0.20),
+        ("49,7644", 49.7644),
+        (None, 0.0),
+        ("nan", 0.0),
+        ("inf", 0.0),
+        ("invalid_string", 0.0),
+        (100, 100.0),
+        ("12.3", 12.3),
+        ("3.14159", 3.14159),
+    ]
+    for inp, exp in tr_num_cases:
+        actual = tr_num(inp)
+        assert abs(actual - exp) < 1e-6, f"tr_num({inp!r}) returned {actual}, expected {exp}"
 
     # fmt_tr tests
     assert fmt_tr(6423.18, 2) == "6.423,18"
@@ -97,11 +116,26 @@ def test_store():
 def test_live_fetches():
     print("--- LIVE FETCH CALLS ---")
 
-    print("\n1. fetch_claude:")
-    claude = fetch_claude()
-    # Redact any accidental secret if present (though sources.py never includes tokens)
-    clean_claude = {k: v for k, v in claude.items() if "token" not in k.lower()}
-    print(json.dumps(clean_claude, indent=2, ensure_ascii=False))
+    print("\n1. fetch_claude (mocked to prevent network and live cache writes):")
+    from unittest.mock import MagicMock, patch
+    fake_claude_resp = {
+        "session": 15.0,
+        "session_reset": "2026-10-27T16:00:00+00:00",
+        "week": 42.0,
+        "week_reset": "2026-10-31T05:59:00+00:00",
+        "opus": None,
+        "plan": "Max 5x",
+        "subscribed_at": "",
+        "extra_usage": False,
+        "source": "Anthropic · Claude Code girişi",
+    }
+    with patch("sources._fetch_claude_live", return_value=fake_claude_resp), \
+         patch("sources.CLAUDE_CACHE", MagicMock()):
+        claude = fetch_claude()
+        clean_claude = {k: v for k, v in claude.items() if "token" not in k.lower()}
+        print(json.dumps(clean_claude, indent=2, ensure_ascii=False))
+        assert claude["session"] == 15.0
+        assert claude["plan"] == "Max 5x"
 
     print("\n2. fetch_fx:")
     fx = fetch_fx()
@@ -171,9 +205,49 @@ def test_submit_pool():
     print("ALL SUBMIT POOL ASSERTIONS PASSED")
 
 
+def test_event_when():
+    from sources import LOCAL_TZ
+    now = dt.datetime(2026, 10, 27, 14, 0, 0, tzinfo=LOCAL_TZ)
+
+    # Event started 20 min ago and ends in 40 min -> "şimdi"
+    ev_ongoing = {
+        "start": dt.datetime(2026, 10, 27, 13, 40, 0, tzinfo=LOCAL_TZ),
+        "end": dt.datetime(2026, 10, 27, 14, 40, 0, tzinfo=LOCAL_TZ),
+        "all_day": False,
+    }
+    assert event_when(ev_ongoing, now=now) == "şimdi"
+
+    # Event ended 10 min ago -> "bitti"
+    ev_ended = {
+        "start": dt.datetime(2026, 10, 27, 13, 0, 0, tzinfo=LOCAL_TZ),
+        "end": dt.datetime(2026, 10, 27, 13, 50, 0, tzinfo=LOCAL_TZ),
+        "all_day": False,
+    }
+    assert event_when(ev_ended, now=now) == "bitti"
+
+    # Upcoming event in 25 min -> "25 dk sonra"
+    ev_up = {
+        "start": dt.datetime(2026, 10, 27, 14, 25, 0, tzinfo=LOCAL_TZ),
+        "end": dt.datetime(2026, 10, 27, 15, 0, 0, tzinfo=LOCAL_TZ),
+        "all_day": False,
+    }
+    assert event_when(ev_up, now=now) == "25 dk sonra"
+
+    # All-day event today -> "bugün"
+    ev_all_day = {
+        "start": dt.datetime(2026, 10, 27, 0, 0, 0, tzinfo=LOCAL_TZ),
+        "end": dt.datetime(2026, 10, 28, 0, 0, 0, tzinfo=LOCAL_TZ),
+        "all_day": True,
+    }
+    assert event_when(ev_all_day, now=now) == "bugün"
+
+    print("ALL EVENT_WHEN ASSERTIONS PASSED")
+
+
 if __name__ == "__main__":
     test_helpers()
     test_store()
+    test_event_when()
     test_type_validation()
     test_submit_pool()
     test_live_fetches()

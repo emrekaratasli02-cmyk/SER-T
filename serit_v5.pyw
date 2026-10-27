@@ -9,6 +9,7 @@ and media.py (volume slider popover, media keys & now-playing detection).
 from __future__ import annotations
 
 import atexit
+import collections
 import ctypes
 import datetime as dt
 import json
@@ -34,8 +35,6 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import (
-    QAction,
-    QActionGroup,
     QColor,
     QFont,
     QFontMetricsF,
@@ -46,8 +45,9 @@ from PySide6.QtGui import (
     QPixmap,
     QRadialGradient,
 )
-from PySide6.QtWidgets import QApplication, QMenu, QToolTip, QWidget
+from PySide6.QtWidgets import QApplication, QToolTip, QWidget
 
+import action_menu
 import alerts
 import anim
 import brightness
@@ -65,6 +65,31 @@ try:
     import work_sources
 except ImportError:
     work_sources = None
+
+
+class LRUCache(collections.OrderedDict):
+    """Bounded LRU cache backed by OrderedDict."""
+
+    def __init__(self, maxsize: int = 128, *args, **kwargs):
+        self.maxsize = maxsize
+        super().__init__(*args, **kwargs)
+
+    def __getitem__(self, key):
+        val = super().__getitem__(key)
+        self.move_to_end(key)
+        return val
+
+    def get(self, key, default=None):
+        if key in self:
+            self.move_to_end(key)
+            return super().__getitem__(key)
+        return default
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        if len(self) > self.maxsize:
+            self.popitem(last=False)
 
 try:
     import tray_panel
@@ -134,7 +159,7 @@ TR_DAYS = {0: "Pzt", 1: "Sal", 2: "Çar", 3: "Per", 4: "Cum", 5: "Cmt", 6: "Paz"
 _LAST_PAINT_ERROR_LOG: float = 0.0
 
 
-def safe_float(val: Any, default: Optional[float] = 0.0) -> Optional[float]:
+def safe_float(val: Any, default: Optional[float] = None) -> Optional[float]:
     """Safely coerce any value to float, filtering None/NaN/Inf/TypeError."""
     if val is None:
         return default
@@ -185,7 +210,10 @@ def save_settings(cfg: dict) -> None:
         tmp_file.write_text(content, encoding="utf-8")
         if SETTINGS_FILE.exists():
             try:
-                shutil.copy2(SETTINGS_FILE, bak_file)
+                curr_content = SETTINGS_FILE.read_text(encoding="utf-8")
+                parsed = json.loads(curr_content)
+                if isinstance(parsed, dict):
+                    shutil.copy2(SETTINGS_FILE, bak_file)
             except Exception as exc:
                 sources.log_err("save_settings_bak", exc)
         os.replace(tmp_file, SETTINGS_FILE)
@@ -274,7 +302,7 @@ class TrayPopover(QWidget):
         self.setMouseTracking(True)
         self._items: list = []
         self._icons: dict = {}
-        self._icon_cache: Dict[str, QPixmap] = {}
+        self._icon_cache = LRUCache(128)
         self._hits: list = []
         self._hover = -1
         self._closed_at = 0.0
@@ -296,13 +324,13 @@ class TrayPopover(QWidget):
                 uncached.append(it)
         if uncached:
             try:
-                new_icons = trayicons.get_tray_icons(uncached)
+                new_images = trayicons.get_tray_images(uncached)
                 for it in uncached:
                     name = it.get("name", "")
                     key = f"{name}::{it.get('exe', '')}"
-                    pm = new_icons.get(name)
-                    if pm is not None and not pm.isNull():
-                        self._icon_cache[key] = pm
+                    img = new_images.get(name)
+                    if img is not None and not img.isNull():
+                        self._icon_cache[key] = QPixmap.fromImage(img)
             except Exception as exc:
                 sources.log_err("tray_sync_icons", exc)
         self._icons = {
@@ -565,6 +593,7 @@ class DataDispatcher(QObject):
     data_ready = Signal(str, object)
     brightness_done = Signal(str, int)
     tray_resolved = Signal(object, object, object)
+    action_done = Signal(str)
 
 
 class SeritDock(QWidget):
@@ -607,7 +636,7 @@ class SeritDock(QWidget):
         self._hover_tray_item: Optional[Dict[str, Any]] = None
         self._preview_hover_idx: Optional[int] = None
         self._pressed_key: Optional[str] = None
-        self._icon_cache: Dict[str, QPixmap] = {}
+        self._icon_cache = LRUCache(128)
         self._clock_rect: Optional[QRectF] = None
         self._tray_items: List[Dict[str, Any]] = []
         self._tray_icons: Dict[str, QPixmap] = {}
@@ -715,8 +744,10 @@ class SeritDock(QWidget):
         self.action_menu = None
         self._action_in_flight: bool = False
         self._action_menu_item: Optional[dict] = None
+        self._dock_action_menu: Optional[action_menu.ActionMenu] = None
+        self._app_action_menu: Optional[action_menu.ActionMenu] = None
+        self._pending_actions: Dict[str, Tuple[Callable[[], Any], Optional[Callable[[], None]]]] = {}
         try:
-            import action_menu
             if hasattr(action_menu, "ActionMenu"):
                 self.action_menu = action_menu.ActionMenu()
                 if hasattr(self.action_menu, "action_chosen"):
@@ -737,6 +768,7 @@ class SeritDock(QWidget):
 
         # AppBar registered state
         self._appbar_registered: bool = False
+        self._appbar_hwnd: Optional[int] = None
         self._appbar_bottom_logical: Optional[int] = None
         # Bant modunda kart grubunun (animasyonlu) genişliği; grup bu genişlikle ortalanır
         self._content_w: float = 0.0
@@ -758,6 +790,7 @@ class SeritDock(QWidget):
         self.dispatcher.data_ready.connect(self.on_data_ready)
         self.dispatcher.brightness_done.connect(self._on_brightness_task_done)
         self.dispatcher.tray_resolved.connect(self._on_tray_resolved)
+        self.dispatcher.action_done.connect(self._on_action_task_done)
         if not self.preview_mode:
             self.setup_timers()
 
@@ -813,6 +846,7 @@ class SeritDock(QWidget):
                 if not res:
                     return False
                 self._appbar_registered = True
+                self._appbar_hwnd = hwnd
 
             # Query & set pos. SHAppBarMessage FİZİKSEL piksel ister; Qt mantıksal piksel verir
             # (%125 ölçekte 864 mantıksal = 1080 fiziksel). Monitör dikdörtgenini doğrudan Windows'tan al.
@@ -857,7 +891,7 @@ class SeritDock(QWidget):
     def _unregister_appbar(self) -> None:
         if not self._appbar_registered or self.preview_mode:
             return
-        hwnd = int(self.winId() or 0)
+        hwnd = getattr(self, "_appbar_hwnd", None) or int(self.winId() or 0)
         if not hwnd:
             return
         try:
@@ -872,6 +906,7 @@ class SeritDock(QWidget):
             # ABM_REMOVE = 1
             shell32.SHAppBarMessage(1, ctypes.byref(abd))
             self._appbar_registered = False
+            self._appbar_hwnd = None
         except Exception as exc:
             sources.log_err("unregister_appbar", exc)
 
@@ -1019,10 +1054,10 @@ class SeritDock(QWidget):
                 uncached.append(it)
         if uncached:
             try:
-                new_icons = trayicons.get_tray_icons(uncached)
-                for name, pm in new_icons.items():
-                    if pm is not None and not pm.isNull():
-                        self._tray_icons[name] = pm
+                new_images = trayicons.get_tray_images(uncached)
+                for name, img in new_images.items():
+                    if img is not None and not img.isNull():
+                        self._tray_icons[name] = QPixmap.fromImage(img)
             except Exception as exc:
                 sources.log_err("dock_sync_tray_icons", exc)
 
@@ -1081,6 +1116,45 @@ class SeritDock(QWidget):
         if mon_id in self._pending_brightness:
             self._flush_brightness(mon_id)
 
+    def submit_action(
+        self,
+        key: str,
+        action_fn: Callable[[], Any],
+        on_done: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Submit an action to the thread pool with pending latest action per key."""
+        self._pending_actions[key] = (action_fn, on_done)
+        self._flush_action(key)
+
+    def _flush_action(self, key: str) -> None:
+        if key not in self._pending_actions:
+            return
+        fn, on_done = self._pending_actions[key]
+
+        def _worker():
+            return fn()
+
+        def _callback(*_args):
+            if hasattr(self, "dispatcher") and self.dispatcher is not None:
+                self.dispatcher.action_done.emit(key)
+
+        submitted = sources.submit(key, _worker, _callback)
+        if submitted:
+            if self._pending_actions.get(key) == (fn, on_done):
+                del self._pending_actions[key]
+            if on_done:
+                try:
+                    on_done()
+                except Exception as exc:
+                    sources.log_err(f"{key}_done", exc)
+        else:
+            QTimer.singleShot(40, lambda: self._flush_action(key))
+
+    def _on_action_task_done(self, key: str) -> None:
+        """Invoked on GUI thread when worker completes: re-flush if newer action pending."""
+        if key in self._pending_actions:
+            self._flush_action(key)
+
     def _on_clock_tick(self) -> None:
         """Repaint only the clock rect for near-zero idle CPU."""
         if self._clock_rect is not None:
@@ -1097,6 +1171,12 @@ class SeritDock(QWidget):
         self._vol_muted = bool(muted)
         self.update()
 
+    @staticmethod
+    def _fetch_tray_worker() -> dict:
+        items = trayicons.list_tray_items()
+        images = trayicons.get_tray_images(items)
+        return {"items": items, "images": images}
+
     def submit_fetch(self, key: str) -> None:
         fetchers = {
             "claude": sources.fetch_claude,
@@ -1109,7 +1189,7 @@ class SeritDock(QWidget):
             "calmonth": getattr(sources, "fetch_month_calendar", None),
             "media": sources.fetch_media,
             "top": lambda: popover_v2.top_processes(3),
-            "tray": trayicons.list_tray_items,
+            "tray": self._fetch_tray_worker,
             "bright": brightness.list_monitors,
             "mail": getattr(work_sources, "fetch_mail_waiting", None),
             "ag": getattr(work_sources, "fetch_antigravity", None),
@@ -1176,9 +1256,17 @@ class SeritDock(QWidget):
             return
 
         if key == "tray":
-            items = res if isinstance(res, list) else (res.get("items") or res.get("data") or [])
-            self._tray_items = list(items)
-            self._sync_tray_icons()
+            if isinstance(res, dict) and "images" in res:
+                items = res.get("items") or []
+                images = res.get("images") or {}
+                self._tray_items = list(items)
+                for name, img in images.items():
+                    if img is not None and not img.isNull():
+                        self._tray_icons[name] = QPixmap.fromImage(img)
+            else:
+                items = res if isinstance(res, list) else (res.get("items") or res.get("data") or [])
+                self._tray_items = list(items)
+                self._sync_tray_icons()
             if self.tray_panel is not None and hasattr(self.tray_panel, "set_items"):
                 try:
                     self.tray_panel.set_items(self._tray_items, self._tray_icons)
@@ -2099,8 +2187,11 @@ class SeritDock(QWidget):
                 elif r_next and r_next.contains(pos):
                     action = "next"
                 if action:
-                    sources.submit("media_ctl", lambda a=action: media.media_control(a))
-                    QTimer.singleShot(350, lambda: self.submit_fetch("media"))
+                    self.submit_action(
+                        "media_ctl",
+                        lambda a=action: media.media_control(a),
+                        on_done=lambda: QTimer.singleShot(350, lambda: self.submit_fetch("media")),
+                    )
         elif key == "tray":
             if self.preview_mode:
                 pass
@@ -2410,9 +2501,10 @@ class SeritDock(QWidget):
             lines = []
             for g in groups:
                 lbl = g.get("label", "")
-                used = int(round(float(g.get("used", 0.0))))
+                used_val = safe_float(g.get("used"), None)
+                used_str = f"%{int(round(used_val))}" if used_val is not None else "—"
                 rst = g.get("reset_tr") or "—"
-                lines.append(f"{lbl}: %{used} · yenilenme {rst}")
+                lines.append(f"{lbl}: {used_str} · yenilenme {rst}")
             return "\n".join(lines)
         elif key == "sys":
             s = self.store.get("sys") or {}
@@ -2482,189 +2574,163 @@ class SeritDock(QWidget):
             return f"{name} ({cnt} pencere){p_tag}" if cnt > 1 else f"{name}{p_tag}"
         return ""
 
-    def contextMenuEvent(self, event) -> None:
-        # QContextMenuEvent'te position() yok (yalnız pos()/globalPos()); eskiden her sağ tık hata veriyordu
-        cpos = QPointF(event.pos())
-        for r, key, extra in reversed(self.hit_boxes):
-            if key == "tray_icon" and extra and r.contains(cpos):
-                anchor_global = QRectF(
-                    self.mapToGlobal(QPoint(int(r.x()), int(r.y()))),
-                    r.size(),
-                )
-                self._start_tray_end_task_flow(extra, anchor_global)
-                return
-            if key.startswith("app_") and extra and r.contains(cpos):
-                # App tile context menu: Sabitle / Sabitlemeyi kaldır
-                tile_menu = QMenu(self)
-                tile_menu.setStyleSheet("""
-                    QMenu {
-                        background-color: rgba(22, 26, 36, 245);
-                        border: 1px solid rgba(255, 255, 255, 40);
-                        border-radius: 8px;
-                        padding: 4px;
-                        color: #e8ecf1;
-                        font-family: 'Segoe UI Variable Text', 'Segoe UI', sans-serif;
-                        font-size: 12px;
-                    }
-                    QMenu::item {
-                        padding: 6px 18px;
-                        border-radius: 4px;
-                    }
-                    QMenu::item:selected {
-                        background-color: rgba(255, 255, 255, 25);
-                    }
-                """)
-                is_pinned = bool(extra.get("pinned"))
-                if is_pinned:
-                    act_unpin = tile_menu.addAction("Sabitlemeyi kaldır")
-                    def do_unpin():
-                        self.pins = pinned.unpin(self.pins, extra.get("exe") or extra.get("key"))
-                        if not self.preview_mode:
-                            self.settings["pinned"] = self.pins
-                            save_settings(self.settings)
-                        self.update_windows()
-                    act_unpin.triggered.connect(do_unpin)
-                else:
-                    act_pin = tile_menu.addAction("Sabitle")
-                    def do_pin():
-                        self.pins = pinned.pin(self.pins, extra)
-                        if not self.preview_mode:
-                            self.settings["pinned"] = self.pins
-                            save_settings(self.settings)
-                        self.update_windows()
-                    act_pin.triggered.connect(do_pin)
-                tile_menu.exec(event.globalPos())
-                return
+    def build_app_tile_menu_actions(self, extra: dict) -> List[Dict[str, Any]]:
+        is_pinned = bool(extra.get("pinned"))
+        if is_pinned:
+            def do_unpin():
+                self.pins = pinned.unpin(self.pins, extra.get("exe") or extra.get("key"))
+                if not self.preview_mode:
+                    self.settings["pinned"] = self.pins
+                    save_settings(self.settings)
+                self.update_windows()
+            return [{"id": "unpin", "text": "Sabitlemeyi kaldır", "callback": do_unpin}]
+        else:
+            def do_pin():
+                self.pins = pinned.pin(self.pins, extra)
+                if not self.preview_mode:
+                    self.settings["pinned"] = self.pins
+                    save_settings(self.settings)
+                self.update_windows()
+            return [{"id": "pin", "text": "Sabitle", "callback": do_pin}]
 
-        # Main dock context menu
-        menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: rgba(22, 26, 36, 245);
-                border: 1px solid rgba(255, 255, 255, 40);
-                border-radius: 8px;
-                padding: 4px;
-                color: #e8ecf1;
-                font-family: 'Segoe UI Variable Text', 'Segoe UI', sans-serif;
-                font-size: 12px;
-            }
-            QMenu::item {
-                padding: 6px 18px;
-                border-radius: 4px;
-            }
-            QMenu::item:selected {
-                background-color: rgba(255, 255, 255, 25);
-            }
-            QMenu::separator {
-                height: 1px;
-                background: rgba(255, 255, 255, 25);
-                margin: 4px 8px;
-            }
-        """)
-
-        act_refresh = menu.addAction("Yenile")
-        act_refresh.triggered.connect(self.action_refresh)
-
-        menu.addSeparator()
-        style_group = QActionGroup(menu)
-        style_group.setExclusive(True)
-        for label, style in (("Tam genişlik şerit", "band"), ("Ortada kapsül", "pill")):
-            act_style = QAction(label, menu)
-            act_style.setCheckable(True)
-            act_style.setChecked((style == "band") == self._is_band())
-            act_style.triggered.connect(lambda _c=False, st=style: self.set_dock_style(st))
-            style_group.addAction(act_style)
-            menu.addAction(act_style)
-        menu.addSeparator()
-
-        # Optional cards toggles (dock v3: cal, mail, ag)
+    def build_dock_menu_actions(self) -> List[Dict[str, Any]]:
         cards_cfg = dict(self.settings.get("cards") or {})
 
-        act_cal = QAction("Takvim kartı", menu)
-        act_cal.setCheckable(True)
-        act_cal.setChecked(cards_cfg.get("cal", True))
-        def on_toggle_cal(checked: bool):
+        def on_toggle_cal():
             cfg = dict(self.settings.get("cards") or {})
-            cfg["cal"] = checked
+            cfg["cal"] = not bool(cfg.get("cal", True))
             self.settings["cards"] = cfg
             save_settings(self.settings)
             self.compute_layout_and_resize()
             self.place_dock()
             self.update()
-        act_cal.triggered.connect(on_toggle_cal)
-        menu.addAction(act_cal)
 
-        act_mail = QAction("Mail kartı", menu)
-        act_mail.setCheckable(True)
-        act_mail.setChecked(cards_cfg.get("mail", True))
-        def on_toggle_mail(checked: bool):
+        def on_toggle_mail():
             cfg = dict(self.settings.get("cards") or {})
-            cfg["mail"] = checked
+            cfg["mail"] = not bool(cfg.get("mail", True))
             self.settings["cards"] = cfg
             save_settings(self.settings)
             self.compute_layout_and_resize()
             self.place_dock()
             self.update()
-        act_mail.triggered.connect(on_toggle_mail)
-        menu.addAction(act_mail)
 
-        act_ag = QAction("Antigravity kartı", menu)
-        act_ag.setCheckable(True)
-        act_ag.setChecked(cards_cfg.get("ag", True))
-        def on_toggle_ag(checked: bool):
+        def on_toggle_ag():
             cfg = dict(self.settings.get("cards") or {})
-            cfg["ag"] = checked
+            cfg["ag"] = not bool(cfg.get("ag", True))
             self.settings["cards"] = cfg
             save_settings(self.settings)
             self.compute_layout_and_resize()
             self.place_dock()
             self.update()
-        act_ag.triggered.connect(on_toggle_ag)
-        menu.addAction(act_ag)
 
-        act_sys = QAction("Sistem kartı", menu)
-        act_sys.setCheckable(True)
-        act_sys.setChecked(cards_cfg.get("sys", False))
-        def on_toggle_sys(checked: bool):
+        def on_toggle_sys():
             cfg = dict(self.settings.get("cards") or {})
-            cfg["sys"] = checked
+            cfg["sys"] = not bool(cfg.get("sys", False))
             self.settings["cards"] = cfg
             save_settings(self.settings)
             self.compute_layout_and_resize()
             self.place_dock()
             self.update()
-        act_sys.triggered.connect(on_toggle_sys)
-        menu.addAction(act_sys)
 
-        menu.addSeparator()
-
-        # Alerts toggle (Requirement 5)
-        act_alerts = QAction("Uyarılar", menu)
-        act_alerts.setCheckable(True)
-        act_alerts.setChecked(self.settings.get("alerts_enabled", True))
-        def on_toggle_alerts(checked: bool):
+        def on_toggle_alerts():
+            checked = not bool(self.settings.get("alerts_enabled", True))
             self.settings["alerts_enabled"] = checked
             if self.alert_engine is not None:
                 self.alert_engine.enabled = checked
             save_settings(self.settings)
-        act_alerts.triggered.connect(on_toggle_alerts)
-        menu.addAction(act_alerts)
 
-        act_hide_tb = QAction("Windows görev çubuğunu gizle", menu)
-        act_hide_tb.setCheckable(True)
-        act_hide_tb.setChecked(self.settings.get("hide_taskbar", False))
-        act_hide_tb.triggered.connect(self.action_toggle_taskbar)
-        menu.addAction(act_hide_tb)
+        return [
+            {"id": "refresh", "text": "Yenile", "callback": self.action_refresh},
+            {"type": "separator"},
+            {
+                "id": "style_band",
+                "text": "Tam genişlik şerit",
+                "group": "style",
+                "checked": self._is_band(),
+                "callback": lambda: self.set_dock_style("band"),
+            },
+            {
+                "id": "style_pill",
+                "text": "Ortada kapsül",
+                "group": "style",
+                "checked": not self._is_band(),
+                "callback": lambda: self.set_dock_style("pill"),
+            },
+            {"type": "separator"},
+            {
+                "id": "toggle_cal",
+                "text": "Takvim kartı",
+                "checked": bool(cards_cfg.get("cal", True)),
+                "callback": on_toggle_cal,
+            },
+            {
+                "id": "toggle_mail",
+                "text": "Mail kartı",
+                "checked": bool(cards_cfg.get("mail", True)),
+                "callback": on_toggle_mail,
+            },
+            {
+                "id": "toggle_ag",
+                "text": "Antigravity kartı",
+                "checked": bool(cards_cfg.get("ag", True)),
+                "callback": on_toggle_ag,
+            },
+            {
+                "id": "toggle_sys",
+                "text": "Sistem kartı",
+                "checked": bool(cards_cfg.get("sys", False)),
+                "callback": on_toggle_sys,
+            },
+            {"type": "separator"},
+            {
+                "id": "toggle_alerts",
+                "text": "Uyarılar",
+                "checked": bool(self.settings.get("alerts_enabled", True)),
+                "callback": on_toggle_alerts,
+            },
+            {
+                "id": "toggle_taskbar",
+                "text": "Windows görev çubuğunu gizle",
+                "checked": bool(self.settings.get("hide_taskbar", False)),
+                "callback": self.action_toggle_taskbar,
+            },
+            {"id": "reset_pos", "text": "Konumu sıfırla", "callback": self.action_reset_pos},
+            {"type": "separator"},
+            {
+                "id": "quit",
+                "text": "Kapat",
+                "danger": True,
+                "confirm": True,
+                "callback": QApplication.instance().quit,
+            },
+        ]
 
-        act_reset_pos = menu.addAction("Konumu sıfırla")
-        act_reset_pos.triggered.connect(self.action_reset_pos)
+    def contextMenuEvent(self, event) -> None:
+        # QContextMenuEvent'te position() yok (yalnız pos()/globalPos()); eskiden her sağ tık hata veriyordu
+        cpos = QPointF(event.pos())
+        anchor_global = QRectF(float(event.globalPos().x()), float(event.globalPos().y()), 1.0, 1.0)
+        for r, key, extra in reversed(self.hit_boxes):
+            if key == "tray_icon" and extra and r.contains(cpos):
+                tray_anchor = QRectF(
+                    self.mapToGlobal(QPoint(int(r.x()), int(r.y()))),
+                    r.size(),
+                )
+                self._start_tray_end_task_flow(extra, tray_anchor)
+                return
+            if key.startswith("app_") and extra and r.contains(cpos):
+                if self._app_action_menu is None:
+                    self._app_action_menu = action_menu.ActionMenu()
+                actions = self.build_app_tile_menu_actions(extra)
+                self._app_action_menu.set_actions(actions)
+                self._app_action_menu.show_at(anchor_global)
+                return
 
-        menu.addSeparator()
-
-        act_quit = menu.addAction("Kapat")
-        act_quit.triggered.connect(QApplication.instance().quit)
-
-        menu.exec(event.globalPos())
+        # Main dock context menu
+        if self._dock_action_menu is None:
+            self._dock_action_menu = action_menu.ActionMenu()
+        dock_actions = self.build_dock_menu_actions()
+        self._dock_action_menu.set_actions(dock_actions)
+        self._dock_action_menu.show_at(anchor_global)
 
     def action_refresh(self) -> None:
         self.update_windows()
@@ -2769,7 +2835,10 @@ def render_preview(output_path_str: str) -> None:
 
     try:
         dock._tray_items = trayicons.list_tray_items()
-        dock._sync_tray_icons()
+        images = trayicons.get_tray_images(dock._tray_items)
+        for name, img in images.items():
+            if img is not None and not img.isNull():
+                dock._tray_icons[name] = QPixmap.fromImage(img)
     except Exception as exc:
         sources.log_err("preview_tray", exc)
 

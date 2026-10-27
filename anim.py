@@ -22,9 +22,12 @@ def get_system_reduce_motion() -> bool:
     try:
         import ctypes
         from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        user32.SystemParametersInfoW.argtypes = [wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT]
+        user32.SystemParametersInfoW.restype = wintypes.BOOL
         val = wintypes.BOOL()
         # SPI_GETCLIENTAREAANIMATION = 0x1042
-        res = ctypes.windll.user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(val), 0)
+        res = user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(val), 0)
         if res:
             return not bool(val.value)
     except Exception:
