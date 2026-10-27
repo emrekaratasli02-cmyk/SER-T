@@ -1166,7 +1166,7 @@ def parse_calendar_event(cal_data: Dict[str, Any]) -> Tuple[str, str, str]:
       - Line 2 & Line 3:
           Strip leading emoji/symbols from title.
           If title contains ' – ' or ' - ' and the last part contains a digit:
-             head = Line 2, last part = Line 3 (e.g. 'Vergi: Gelir vergisi' / '1.739,70 TL')
+             head = Line 2, last part = Line 3 (e.g. 'Vergi: Örnek vergi' / '1.234,56 TL')
           Else:
              Line 2 = title, Line 3 = time range or 'Tüm gün'
       - If no events: ('TAKVİM', 'Bugün boş', '')

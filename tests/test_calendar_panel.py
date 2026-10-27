@@ -148,7 +148,7 @@ def test_category_classification() -> None:
         assert not calendar_panel.is_tax_item(title), title
 
     assert calendar_panel.clean_title("💸 Vergi: KDV öde") == "Vergi: KDV öde"
-    assert calendar_panel.clean_title("✅ Alo 199 arandı") == "Alo 199 arandı"
+    assert calendar_panel.clean_title("✅ Örnek görüşme yapıldı") == "Örnek görüşme yapıldı"
     assert calendar_panel.clean_title("🇫🇷 (yedek) Son gün") == "(yedek) Son gün"
     assert calendar_panel.clean_title("🎓 e-Devlet öğrenci") == "e-Devlet öğrenci"
     assert calendar_panel.clean_title("   Normal Başlık   ") == "Normal Başlık"
