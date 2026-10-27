@@ -8,7 +8,7 @@ Then it restarts the dock, with a budget of at most 3 restarts within a sliding
 stops restarting, restores the Windows taskbar to visible (autohide off), and exits.
 
 Dikte Process Isolation:
-Dikte (D:/Apps/dikte/dikte.pyw and bekci.pyw) also runs with the same pythonw.exe
+Dikte (D:/Apps/dikte/dikte.pyw and bekci.pyw) may also run with a pythonw.exe
 interpreter. The watchdog identifies the dock exclusively by checking command-line
 arguments ending with 'serit_v5.pyw' and never by executable path.
 
@@ -55,7 +55,7 @@ APP_DIR = Path("D:/Apps/serit")
 DOCK_SCRIPT = APP_DIR / "serit_v5.pyw"
 SETTINGS_FILE = APP_DIR / "settings.json"
 MARKER_FILE = APP_DIR / ".clean_exit"
-PYTHONW_PATH = Path("D:/Apps/dikte/.venv/Scripts/pythonw.exe")
+PYTHONW_PATH = APP_DIR / ".venv" / "Scripts" / "pythonw.exe"  # Şerit kendi ortamı (Dikte'den ayrı)
 
 MUTEX_NAME = "Local\\SeritBekci"
 ABM_REMOVE = 1

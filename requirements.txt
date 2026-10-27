@@ -1,0 +1,12 @@
+# Şerit kendi ortamı (D:/Apps/serit/.venv) — Dikte'den bağımsız (27 Eki 2026)
+# Kurulum: uv venv .venv --python 3.12 && uv pip install --python .venv/Scripts/python.exe -r requirements.txt
+PySide6==6.11.2
+psutil==7.2.2
+pycaw==20260927
+comtypes==1.4.17
+httpx==0.28.1
+winrt-runtime==4.0.3
+winrt-Windows.Foundation==4!10.0.28000.2705
+winrt-Windows.Foundation.Collections==4!10.0.28000.2705
+winrt-Windows.Media.Control==4!10.0.28000.2705
+winrt-Windows.Storage.Streams==4!10.0.28000.2705
