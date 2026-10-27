@@ -8,3 +8,4 @@ alerts_state.json
 settings.json.bak
 settings.json.tmp
 serit.log.1
+.clean_exit

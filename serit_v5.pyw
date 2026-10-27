@@ -955,6 +955,11 @@ class SeritDock(QWidget):
         if self._cleaned_up:
             return
         self._cleaned_up = True
+        # Bekçiye "isteyerek kapandı" işareti (serit_bekci.pyw bu dosyayı görünce barı yeniden başlatmaz)
+        try:
+            (APP_DIR / ".clean_exit").touch()
+        except Exception:
+            pass
         self._unregister_appbar()
         if self.settings.get("hide_taskbar", False):
             orig = self.settings.get("taskbar_original")
