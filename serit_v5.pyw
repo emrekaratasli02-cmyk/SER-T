@@ -2433,15 +2433,17 @@ class SeritDock(QWidget):
         return ""
 
     def contextMenuEvent(self, event) -> None:
+        # QContextMenuEvent'te position() yok (yalnız pos()/globalPos()); eskiden her sağ tık hata veriyordu
+        cpos = QPointF(event.pos())
         for r, key, extra in reversed(self.hit_boxes):
-            if key == "tray_icon" and extra and r.contains(event.position()):
+            if key == "tray_icon" and extra and r.contains(cpos):
                 anchor_global = QRectF(
                     self.mapToGlobal(QPoint(int(r.x()), int(r.y()))),
                     r.size(),
                 )
                 self._start_tray_end_task_flow(extra, anchor_global)
                 return
-            if key.startswith("app_") and extra and r.contains(event.position()):
+            if key.startswith("app_") and extra and r.contains(cpos):
                 # App tile context menu: Sabitle / Sabitlemeyi kaldır
                 tile_menu = QMenu(self)
                 tile_menu.setStyleSheet("""
