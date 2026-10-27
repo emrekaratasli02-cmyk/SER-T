@@ -173,7 +173,7 @@ def _amount_match(text: Any):
 
 
 def parse_turkish_amount(title: Any) -> Optional[str]:
-    """'791,00 TL' -> '791,00'; '6.432,80 TL' -> '6.432,80'; yoksa None."""
+    """'1.234,56 TL' -> '1.234,56'; '6.432,80 TL' -> '6.432,80'; yoksa None."""
     m = _amount_match(title)
     return m.group(1) if m else None
 
