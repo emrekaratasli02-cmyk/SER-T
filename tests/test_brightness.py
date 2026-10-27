@@ -435,7 +435,7 @@ def test_direction_c_styling():
     import panel_style
     get_qapp()
     pop = brightness_popover.BrightnessPopover()
-    assert pop.WIDTH == 360
+    assert pop.WIDTH == 352 and pop.width() == 352
     assert pop.RADIUS == panel_style.R_PANEL
 
     anchor = QRectF(500, 800, 120, 32)
@@ -447,8 +447,8 @@ def test_direction_c_styling():
 
     # Offscreen image render populates caches and verifies layout
     img = pop.render_to_image(dpr=2.0)
-    assert img.width() == 720
-    assert img.height() == 760
+    assert img.width() == 704
+    assert img.height() == pop.height() * 2
 
     # Check slider caches
     assert len(pop._slider_layout_cache) == 2

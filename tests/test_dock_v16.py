@@ -176,6 +176,7 @@ def test_dock_band_layout_v16() -> None:
         "updated_at": time.monotonic(),
     }
     dock.store.update("wx", {"temp": 21.0, "icon": "cloud"})
+    dock._bat_info = {}  # pil verisi yok: kapsul iki bolumlu (74 px)
 
     dock.resize(int(sw), 64)
     dock.compute_layout_and_resize(initial=True)

@@ -115,7 +115,7 @@ def test_dpr2_realistic_render() -> None:
     assert len(w._hit_app_rows) == 4
     assert w._level == 25.0
     assert w._muted is False
-    assert w.width() == 340
+    assert w.width() == int(__import__("panel_style").WIDTH["vol"])  # 27 Eki: tüm tek sütun paneller 352
     print(f"[OK] test_dpr2_realistic_render -> {out_path} ({img.width()}x{img.height()} px)")
 
 

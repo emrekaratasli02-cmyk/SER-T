@@ -51,11 +51,13 @@ import action_menu
 import alerts
 import anim
 import brightness
+import battery_panel
 import brightness_popover
 import dock_cards
 import media
 import pinned
 import popover_v2
+import power_net
 import sources
 import theme
 import trayicons
@@ -153,6 +155,7 @@ ACTION_BUTTONS_WIDTH: float = 110.0
 ACTION_BTN_SIZE: float = 30.0
 ACTION_BTN_GAP: float = 6.0
 ACTION_PILL_WIDTH: float = 74.0
+ACTION_PILL_WIDTH_BAT: float = 136.0   # gunes | hoparlor | pil
 ACTION_PILL_HEIGHT: float = 32.0
 TRAY_ICON_SIZE: float = 26.0
 TRAY_ICON_GAP: float = 2.0
@@ -574,6 +577,11 @@ class SeritDock(QWidget):
         self.vol_popover = VolumePopover(self, on_volume_change=self._on_volume_changed)
         self.tray_popover = TrayPopover()
         self.brightness_popover = brightness_popover.BrightnessPopover()
+        self._bat_info: Dict[str, Any] = {}
+        self._bat_known_absent: bool = False
+        self.battery_panel = battery_panel.BatteryPanel()
+        self.battery_panel.toggle_requested.connect(self._on_bat_toggle_requested)
+        self.battery_panel.settings_requested.connect(self._on_bat_settings_requested)
         self.brightness_popover.level_requested.connect(self._on_brightness_requested)
         self._pending_brightness: Dict[str, int] = {}
         self.bubble = BubbleWidget(self)
@@ -658,6 +666,7 @@ class SeritDock(QWidget):
         self.dispatcher.action_done.connect(self._on_action_task_done)
         if not self.preview_mode:
             self.setup_timers()
+            self._setup_battery_timers()
 
     def sync_anim_values(self) -> None:
         """Instant snapshot synchronization for headless renders."""
@@ -680,6 +689,189 @@ class SeritDock(QWidget):
         if ram is not None:
             self.anim_ram.value = ram
             self.anim_ram.target_val = ram
+
+    # ------------------------------------------------------------------ pil
+    def _has_battery(self) -> bool:
+        b = self._bat_info
+        return bool(b.get("present")) and b.get("percent") is not None
+
+    def _pill_width(self) -> float:
+        return ACTION_PILL_WIDTH_BAT if self._has_battery() else ACTION_PILL_WIDTH
+
+    def _actions_width(self) -> float:
+        return ACTION_BTN_SIZE + ACTION_BTN_GAP + self._pill_width()
+
+    def _setup_battery_timers(self) -> None:
+        """Pil 30 sn'de bir; Wi-Fi/Bluetooth ve en yuksek yuk yalniz panel acikken 5 sn'de bir."""
+        self.bat_timer = QTimer(self)
+        self.bat_timer.setInterval(30000)
+        self.bat_timer.timeout.connect(self._poll_battery)
+        self.bat_timer.start()
+        self.batnet_timer = QTimer(self)
+        self.batnet_timer.setInterval(5000)
+        self.batnet_timer.timeout.connect(self._poll_battery_panel)
+        self.batnet_timer.start()
+        self._poll_battery()
+
+    def _poll_battery(self) -> None:
+        if self._bat_known_absent and not self.battery_panel.is_open():
+            return
+        self.submit_fetch("bat")
+
+    def _poll_battery_panel(self) -> None:
+        if self.battery_panel.is_open():
+            self.submit_fetch("batnet")
+            if self._bat_wants_top():
+                self.submit_fetch("battop")
+
+    def _bat_wants_top(self) -> bool:
+        b = self._bat_info
+        try:
+            return (
+                bool(b.get("present"))
+                and not b.get("plugged")
+                and not b.get("charging")
+                and float(b.get("rate_w") or 0) >= battery_panel.TOP_LOAD_MIN_W
+            )
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _read_batnet() -> Dict[str, Any]:
+        sup = power_net.radio_toggle_supported()
+        return {"wifi": power_net.wifi_info(), "bt": power_net.bluetooth_info(), "supported": sup}
+
+    @staticmethod
+    def _read_top_load() -> List[Dict[str, Any]]:
+        """Kisa aralikla CPU olcer (arka plan isci); Idle ve dock'un kendisi haric."""
+        me = os.getpid()
+        procs = []
+        for pr in psutil.process_iter(["pid", "name"]):
+            try:
+                nm = str(pr.info.get("name") or "").lower()
+                if pr.info["pid"] in (0, me) or nm in ("system idle process", "system", "idle"):
+                    continue
+                pr.cpu_percent(None)
+                procs.append(pr)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        time.sleep(0.5)
+        ncpu = float(psutil.cpu_count() or 1)
+        agg: Dict[str, float] = {}
+        for pr in procs:
+            try:
+                name = str(pr.info.get("name") or "")
+                agg[name] = agg.get(name, 0.0) + pr.cpu_percent(None) / ncpu
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        friendly = {
+            "chrome.exe": "Chrome", "msedge.exe": "Edge", "firefox.exe": "Firefox", "zen.exe": "Zen",
+            "hermes.exe": "Hermes", "python.exe": "Python", "pythonw.exe": "Python", "code.exe": "VS Code",
+            "claude.exe": "Claude", "explorer.exe": "Gezgin", "discord.exe": "Discord", "spotify.exe": "Spotify",
+        }
+        out = [
+            {"name": friendly.get(k.lower(), k[:-4] if k.lower().endswith(".exe") else k), "cpu": round(v, 1)}
+            for k, v in agg.items() if v > 0.0
+        ]
+        out.sort(key=lambda x: x["cpu"], reverse=True)
+        return out[:2]
+
+    def _on_battery_data(self, key: str, res: Any) -> None:
+        panel = self.battery_panel
+        if key == "bat":
+            if isinstance(res, dict) and not res.get("err"):
+                had = self._has_battery()
+                self._bat_info = dict(res)
+                self._bat_known_absent = not bool(res.get("present"))
+                panel.set_battery(self._bat_info)
+                if had != self._has_battery():
+                    self.compute_layout_and_resize()
+                self.update()
+            return
+        if key == "battop":
+            panel.set_top_load(res if isinstance(res, list) else [])
+            return
+        if isinstance(res, dict) and not res.get("err"):
+            settled = bool(res.get("settled"))
+            sup = res.get("supported")
+            if isinstance(sup, dict):
+                panel.set_supported(bool(sup.get("wifi", True)), bool(sup.get("bluetooth", True)))
+            if isinstance(res.get("wifi"), dict) and (settled or not panel.is_busy("wifi")):
+                panel.set_wifi(res["wifi"])
+            if isinstance(res.get("bt"), dict) and (settled or not panel.is_busy("bluetooth")):
+                panel.set_bluetooth(res["bt"])
+
+    def _on_bat_toggle_requested(self, kind: str, target_on: bool) -> None:
+        """Wi-Fi/Bluetooth anahtari: ayar ve yeniden okuma arka plan iscisinde."""
+        def _worker() -> Dict[str, Any]:
+            try:
+                if kind == "wifi":
+                    power_net.set_wifi(bool(target_on))
+                else:
+                    power_net.set_bluetooth(bool(target_on))
+            except Exception as exc:
+                sources.log_err(f"bat_set_{kind}", exc)
+            out: Dict[str, Any] = {"settled": True}
+            if kind == "wifi":
+                out["wifi"] = power_net.wifi_info()
+            else:
+                out["bt"] = power_net.bluetooth_info()
+            return out
+
+        if not sources.submit(f"bat_set_{kind}", _worker, lambda k, r: self.dispatcher.data_ready.emit("batnet", r)):
+            self.battery_panel.set_busy(kind, None)
+
+    def _on_bat_settings_requested(self, page: str) -> None:
+        def _worker() -> bool:
+            return bool(power_net.open_settings(page))
+        sources.submit("bat_settings", _worker)
+
+    # ---------------------------------------------------- kapsul paneli gecisi
+    def _pill_panel(self, key: str):
+        return {"bright": self.brightness_popover, "vol": self.vol_popover, "bat": self.battery_panel}[key]
+
+    def _pill_panel_visible(self, key: str) -> bool:
+        try:
+            return bool(self._pill_panel(key).isVisible())
+        except Exception:
+            return False
+
+    def _pill_panel_open(self, key: str) -> bool:
+        pnl = self._pill_panel(key)
+        if hasattr(pnl, "is_open"):
+            return bool(pnl.is_open())
+        return bool(pnl.isVisible())
+
+    def _handle_pill_click(self, key: str, rect: QRectF) -> None:
+        panel = self._pill_panel(key)
+        if self._pill_panel_open(key):
+            (getattr(panel, "hide_animated", None) or panel.hide)()
+            return
+        if hasattr(panel, "recently_closed") and panel.recently_closed():
+            return
+        switch_from: Optional[int] = None
+        for other in ("bright", "vol", "bat"):
+            if other != key and self._pill_panel_visible(other):
+                op = self._pill_panel(other)
+                switch_from = int(op.x())
+                (getattr(op, "hide_instant", None) or getattr(op, "hide_animated", None) or op.hide)()
+        anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+        if key == "bright":
+            self.submit_fetch("bright")
+            args: tuple = (self._get_store_monitors(),)
+        elif key == "vol":
+            args = (self._vol_level, self._vol_muted, self._vol_device)
+        else:
+            args = ()
+            self.submit_fetch("bat")
+            self.submit_fetch("batnet")
+        if switch_from is not None:
+            try:
+                panel.show_for(anchor_global, *args, switch_from_x=switch_from)
+                return
+            except TypeError:
+                pass
+        panel.show_for(anchor_global, *args)
 
     def _on_cal_refresh_requested(self) -> None:
         self.submit_fetch("cal")
@@ -1081,6 +1273,9 @@ class SeritDock(QWidget):
             "top": lambda: popover_v2.top_processes(3),
             "tray": self._fetch_tray_worker,
             "bright": brightness.list_monitors,
+            "bat": power_net.battery_info,
+            "batnet": self._read_batnet,
+            "battop": self._read_top_load,
             "mail": getattr(work_sources, "fetch_mail_waiting", None),
             "ag": getattr(work_sources, "fetch_antigravity", None),
         }
@@ -1116,6 +1311,10 @@ class SeritDock(QWidget):
         if key == "audio_sessions":
             if self.vol_popover and self.vol_popover.isVisible():
                 self.vol_popover.update_sessions(res if isinstance(res, list) else [])
+            return
+
+        if key in ("bat", "batnet", "battop"):
+            self._on_battery_data(key, res)
             return
 
         if key == "bright":
@@ -1386,7 +1585,7 @@ class SeritDock(QWidget):
         if show_cal:
             items.append(w_cal)
         items.append(w_clock)
-        items.append(ACTION_BUTTONS_WIDTH)
+        items.append(self._actions_width())
 
         n_items = len(items)
         inner_gaps = max(0, n_items - 1) * GAP_MODULE
@@ -1511,7 +1710,7 @@ class SeritDock(QWidget):
             cal_w = natural_cal_w
             center_shift = 0.0
 
-            actions_left_x = (sw - 14.0) - w_clock - GAP_MODULE - ACTION_BUTTONS_WIDTH
+            actions_left_x = (sw - 14.0) - w_clock - GAP_MODULE - self._actions_width()
 
             def calc_clearance(m_w: float, c_w: float, shift: float) -> float:
                 rw_items = []
@@ -1654,7 +1853,7 @@ class SeritDock(QWidget):
                 self.hit_boxes.append((r_wx, "wx", None))
 
             # Action buttons cluster: ^ chevron (30x30), and A4 Quick Settings Pill (74x32)
-            actions_w = ACTION_BUTTONS_WIDTH  # 110.0
+            actions_w = self._actions_width()
             actions_x = r_clock_x - GAP_MODULE - actions_w
             btn_y = card_y + (card_h - ACTION_BTN_SIZE) / 2.0
             pill_y = card_y + (card_h - ACTION_PILL_HEIGHT) / 2.0
@@ -1663,24 +1862,30 @@ class SeritDock(QWidget):
             vol_open = bool(self.vol_popover.isVisible())
 
             r_chv = QRectF(actions_x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
-            r_pill = QRectF(actions_x + ACTION_BTN_SIZE + ACTION_BTN_GAP, pill_y, ACTION_PILL_WIDTH, ACTION_PILL_HEIGHT)
+            r_pill = QRectF(actions_x + ACTION_BTN_SIZE + ACTION_BTN_GAP, pill_y, self._pill_width(), ACTION_PILL_HEIGHT)
 
             dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
 
-            hov_part = self._hover_key if self._hover_key in ("bright", "vol") else None
-            act_part = "bright" if bright_open else ("vol" if vol_open else None)
-            r_sun, r_spk = dock_cards.draw_quick_settings_pill(
+            bat_open = bool(self.battery_panel.is_open())
+            hov_part = self._hover_key if self._hover_key in ("bright", "vol", "bat") else None
+            act_part = "bright" if bright_open else ("vol" if vol_open else ("bat" if bat_open else None))
+            pill_res = dock_cards.draw_quick_settings_pill(
                 p,
                 r_pill,
                 hovered_part=hov_part,
                 active_part=act_part,
                 vol_level=self._vol_level,
                 vol_muted=self._vol_muted,
+                bat_percent=self._bat_info.get("percent"),
+                bat_charging=bool(self._bat_info.get("charging")),
+                bat_present=self._has_battery(),
             )
 
             self.hit_boxes.append((r_chv, "tray", None))
-            self.hit_boxes.append((r_sun, "bright", None))
-            self.hit_boxes.append((r_spk, "vol", None))
+            self.hit_boxes.append((pill_res[0], "bright", None))
+            self.hit_boxes.append((pill_res[1], "vol", None))
+            if len(pill_res) > 2:
+                self.hit_boxes.append((pill_res[2], "bat", None))
         else:
             # Pill Style: One centered capsule in order Claude, Mail, Antigravity, apps, media, calendar, clock, chevron/sun/speaker
             r_dock = QRectF(0.5, 0.5, self.width() - 1.0, DOCK_HEIGHT - 1.0)
@@ -1816,24 +2021,30 @@ class SeritDock(QWidget):
             vol_open = bool(self.vol_popover.isVisible())
 
             r_chv = QRectF(x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
-            r_pill = QRectF(x + ACTION_BTN_SIZE + ACTION_BTN_GAP, pill_y, ACTION_PILL_WIDTH, ACTION_PILL_HEIGHT)
+            r_pill = QRectF(x + ACTION_BTN_SIZE + ACTION_BTN_GAP, pill_y, self._pill_width(), ACTION_PILL_HEIGHT)
 
             dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
 
-            hov_part = self._hover_key if self._hover_key in ("bright", "vol") else None
-            act_part = "bright" if bright_open else ("vol" if vol_open else None)
-            r_sun, r_spk = dock_cards.draw_quick_settings_pill(
+            bat_open = bool(self.battery_panel.is_open())
+            hov_part = self._hover_key if self._hover_key in ("bright", "vol", "bat") else None
+            act_part = "bright" if bright_open else ("vol" if vol_open else ("bat" if bat_open else None))
+            pill_res = dock_cards.draw_quick_settings_pill(
                 p,
                 r_pill,
                 hovered_part=hov_part,
                 active_part=act_part,
                 vol_level=self._vol_level,
                 vol_muted=self._vol_muted,
+                bat_percent=self._bat_info.get("percent"),
+                bat_charging=bool(self._bat_info.get("charging")),
+                bat_present=self._has_battery(),
             )
 
             self.hit_boxes.append((r_chv, "tray", None))
-            self.hit_boxes.append((r_sun, "bright", None))
-            self.hit_boxes.append((r_spk, "vol", None))
+            self.hit_boxes.append((pill_res[0], "bright", None))
+            self.hit_boxes.append((pill_res[1], "vol", None))
+            if len(pill_res) > 2:
+                self.hit_boxes.append((pill_res[2], "bat", None))
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
@@ -2034,26 +2245,8 @@ class SeritDock(QWidget):
                 trayicons.activate(extra, button="left")
         elif key.startswith("app_") and extra:
             self.handle_tile_click(extra)
-        elif key == "bright":
-            if self.brightness_popover.is_open():
-                self.brightness_popover.hide_animated()
-            elif not self.brightness_popover.recently_closed():
-                self.submit_fetch("bright")
-                anchor_global = QRectF(
-                    self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))),
-                    rect.size(),
-                )
-                monitors = self._get_store_monitors()
-                self.brightness_popover.show_for(anchor_global, monitors)
-        elif key == "vol":
-            if self.vol_popover.isVisible():
-                self.vol_popover.hide()
-            elif not hasattr(self.vol_popover, "recently_closed") or not self.vol_popover.recently_closed():
-                anchor_global = QRectF(
-                    self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))),
-                    rect.size(),
-                )
-                self.vol_popover.show_for(anchor_global, self._vol_level, self._vol_muted, self._vol_device)
+        elif key in ("bright", "vol", "bat"):
+            self._handle_pill_click(key, rect)
         elif key == "media":
             if self._media_hit_rects and not self.preview_mode and pos is not None:
                 r_prev = self._media_hit_rects.get("prev")
@@ -2350,6 +2543,8 @@ class SeritDock(QWidget):
 
     def get_tooltip_text(self, key: str, extra: Any) -> str:
         now_dt = dt.datetime.now(sources.LOCAL_TZ)
+        if key == "bat":
+            return battery_panel.pill_tooltip(self._bat_info) or ""
         if key == "claude":
             c = self.store.get("claude") or {}
             src = c.get("source", "Anthropic · Claude Code girişi")

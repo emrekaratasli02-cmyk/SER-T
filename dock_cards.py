@@ -1479,6 +1479,70 @@ def draw_clock_block(
 # 7. QUICK ACTION BUTTONS & TRAY CLUSTER
 # ==============================================================================
 
+PILL_W_2 = 74.0   # güneş | hoparlör
+PILL_W_3 = 136.0  # güneş | hoparlör | pil
+
+
+def pill_width(has_battery: bool) -> float:
+    """Kapsül genişliği: pil bölümü yalnızca pil verisi bilindiğinde eklenir."""
+    return PILL_W_3 if has_battery else PILL_W_2
+
+
+def battery_color(percent: Optional[float], charging: bool) -> QColor:
+    """Şarjda ACCENT, <=20 DANGER, 21-35 WARN, aksi halde beyaz."""
+    if charging:
+        return QColor(10, 132, 255)
+    if percent is None:
+        return QColor(255, 255, 255)
+    if percent <= 20:
+        return QColor(255, 69, 58)
+    if percent <= 35:
+        return QColor(255, 159, 10)
+    return QColor(255, 255, 255)
+
+
+def _draw_battery_segment(p: QPainter, r: QRectF, percent: float, charging: bool, bright: bool) -> None:
+    col = battery_color(percent, charging)
+    if col == QColor(255, 255, 255) and not bright:
+        col = QColor(255, 255, 255, int(255 * 0.85))
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    # glif: 17x9 gövde + uç
+    gx = r.x() + 9.0
+    gy = r.center().y() - 4.5
+    body = QRectF(gx, gy, 17.0, 9.0)
+    p.setPen(QPen(col, 1.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(Qt.NoBrush)
+    p.drawRoundedRect(body, 2.2, 2.2)
+    p.drawLine(QPointF(body.right() + 1.8, gy + 3.0), QPointF(body.right() + 1.8, gy + 6.0))
+    lvl = max(0.0, min(100.0, float(percent)))
+    fw = (body.width() - 3.0) * lvl / 100.0
+    if fw > 0.5:
+        p.setPen(Qt.NoPen)
+        p.setBrush(col)
+        p.drawRoundedRect(QRectF(gx + 1.5, gy + 1.5, fw, 6.0), 1.0, 1.0)
+    if charging:
+        cx, cy = body.center().x(), body.center().y()
+        bolt = QPainterPath()
+        bolt.moveTo(cx + 1.6, cy - 4.0)
+        bolt.lineTo(cx - 2.2, cy + 0.6)
+        bolt.lineTo(cx - 0.1, cy + 0.6)
+        bolt.lineTo(cx - 1.6, cy + 4.0)
+        bolt.lineTo(cx + 2.2, cy - 0.6)
+        bolt.lineTo(cx + 0.1, cy - 0.6)
+        bolt.closeSubpath()
+        p.setPen(QPen(QColor(20, 21, 24), 0.8))
+        p.setBrush(QColor(255, 255, 255))
+        p.drawPath(bolt)
+    # %NN (tabular)
+    f = theme.make_font(12.0, QFont.Weight.DemiBold, tabular=True)
+    p.setFont(f)
+    p.setPen(col)
+    tx = body.right() + 6.0
+    p.drawText(QRectF(tx, r.y(), r.right() - tx - 2.0, r.height()), Qt.AlignVCenter | Qt.AlignLeft, f"%{int(round(lvl))}")
+    p.restore()
+
+
 def draw_quick_settings_pill(
     p: QPainter,
     rect: QRectF,
@@ -1486,58 +1550,57 @@ def draw_quick_settings_pill(
     active_part: Optional[str] = None,
     vol_level: float = 100.0,
     vol_muted: bool = False,
-) -> Tuple[QRectF, QRectF]:
-    """Draw A4 combined quick settings pill (74x32) containing sun (left) and speaker (right).
+    bat_percent: Optional[float] = None,
+    bat_charging: bool = False,
+    bat_present: bool = False,
+):
+    """Hızlı ayar kapsülü: güneş | hoparlör [| pil].
 
-    Mockup spec:
-      - Container: height 32px, border-radius 10px, background rgba(255,255,255,0.065), border 1px solid rgba(255,255,255,0.08)
-      - Left half (sun hit area) & Right half (speaker hit area)
-      - Hovered part: rgba(255,255,255,0.10), Active part: rgba(255,255,255,0.15), radius 6px
-      - Thin vertical separator at center: 1px wide, 14px high, rgba(255,255,255,0.14)
-      - Fluent style icons: 16x16 glyphs in 20x20 viewBox, stroke 1.6 roundcap
-    Returns (r_sun, r_spk).
+    Pil bölümü yalnızca bat_present ve yüzde biliniyorsa çizilir (kapsül o zaman iki bölümlüdür).
+    Güneş ve hoparlör 37 px, pil bölümü geri kalan genişliktir. Ayırıcılar 1 x 16 px rgba(255,255,255,.14).
+    Döndürür: (r_sun, r_spk) iki bölümde, (r_sun, r_spk, r_bat) üç bölümde.
     """
+    show_bat = bool(bat_present) and bat_percent is not None
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
 
-    # 1. Pill container
     p.setPen(QPen(QColor(255, 255, 255, int(255 * 0.08)), 1.0))
     p.setBrush(QColor(255, 255, 255, int(255 * 0.065)))
     p.drawRoundedRect(rect, 10.0, 10.0)
 
-    # 2. Divide pill into two equal halves for hit testing & hover
-    mid_x = rect.x() + rect.width() / 2.0
-    r_sun = QRectF(rect.x(), rect.y(), rect.width() / 2.0, rect.height())
-    r_spk = QRectF(mid_x, rect.y(), rect.width() / 2.0, rect.height())
+    if show_bat:
+        seg = 37.0
+        r_sun = QRectF(rect.x(), rect.y(), seg, rect.height())
+        r_spk = QRectF(rect.x() + seg, rect.y(), seg, rect.height())
+        r_bat = QRectF(rect.x() + 2 * seg, rect.y(), rect.width() - 2 * seg, rect.height())
+    else:
+        r_bat = None
+        r_sun = QRectF(rect.x(), rect.y(), rect.width() / 2.0, rect.height())
+        r_spk = QRectF(rect.x() + rect.width() / 2.0, rect.y(), rect.width() / 2.0, rect.height())
+    mid_x = r_spk.x()
 
-    # Left / right hover/active inner rounded rects (inset 3px for 26x26 feel)
-    r_sun_inner = r_sun.adjusted(3.0, 3.0, -2.0, -3.0)
-    r_spk_inner = r_spk.adjusted(2.0, 3.0, -3.0, -3.0)
+    def _inner(r: QRectF, first: bool, last: bool) -> QRectF:
+        return r.adjusted(3.0 if first else 2.0, 3.0, -3.0 if last else -2.0, -3.0)
 
-    # Sun part background
-    if active_part == "bright":
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * 0.15)))
-        p.drawRoundedRect(r_sun_inner, 6.0, 6.0)
-    elif hovered_part == "bright":
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
-        p.drawRoundedRect(r_sun_inner, 6.0, 6.0)
+    parts = [("bright", r_sun, True, False), ("vol", r_spk, False, not show_bat)]
+    if show_bat:
+        parts.append(("bat", r_bat, False, True))
+    for key, r, first, last in parts:
+        if active_part == key:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, int(255 * 0.15)))
+            p.drawRoundedRect(_inner(r, first, last), 6.0, 6.0)
+        elif hovered_part == key:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
+            p.drawRoundedRect(_inner(r, first, last), 6.0, 6.0)
 
-    # Speaker part background
-    if active_part == "vol":
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * 0.15)))
-        p.drawRoundedRect(r_spk_inner, 6.0, 6.0)
-    elif hovered_part == "vol":
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
-        p.drawRoundedRect(r_spk_inner, 6.0, 6.0)
-
-    # 3. Vertical divider (1px wide, 14px high, rgba(255,255,255,0.14))
-    div_y = rect.center().y() - 7.0
+    # ayırıcılar (1 x 16)
+    div_y = rect.center().y() - 8.0
     p.setPen(QColor(255, 255, 255, int(255 * 0.14)))
-    p.drawLine(QPointF(mid_x, div_y), QPointF(mid_x, div_y + 14.0))
+    p.drawLine(QPointF(mid_x, div_y), QPointF(mid_x, div_y + 16.0))
+    if show_bat:
+        p.drawLine(QPointF(r_bat.x(), div_y), QPointF(r_bat.x(), div_y + 16.0))
 
     # 4. Draw Sun glyph (centered in r_sun)
     # Fluent Sun: viewBox 0 0 20 20, center (10,10) r=3.6, 8 radial lines
@@ -1604,8 +1667,16 @@ def draw_quick_settings_pill(
             p.drawPath(w2)
     p.restore()
 
+    if show_bat:
+        _draw_battery_segment(p, r_bat, float(bat_percent), bool(bat_charging),
+                              hovered_part == "bat" or active_part == "bat")
+
     p.restore()
+    if show_bat:
+        return (r_sun, r_spk, r_bat)
     return (r_sun, r_spk)
+
+
 
 
 def draw_action_button(
