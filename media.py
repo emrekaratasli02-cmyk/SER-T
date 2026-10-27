@@ -303,12 +303,28 @@ def get_volume() -> Dict[str, Union[int, bool, str]]:
         return {"level": 0, "muted": False, "device": dev_name or "Default Audio"}
 
 
+
+def _guard_real_audio(what: str) -> None:
+    """Testler gerçek sese ASLA dokunamaz (27 Eki 2026: bir test Chrome'u sessize aldı).
+
+    Test altında (pytest veya tests/ klasöründen çalışan betik) gerçek ses yazımı engellenir;
+    yalnızca SERIT_ALLOW_REAL_AUDIO=1 açıkça verilirse izin var.
+    """
+    import os
+    try:
+        from logpath import is_running_under_test
+    except Exception:
+        return
+    if is_running_under_test() and os.environ.get("SERIT_ALLOW_REAL_AUDIO") != "1":
+        raise RuntimeError(f"Test sırasında gerçek ses değiştirilemez: {what}")
+
 def set_volume(level: Union[int, float]) -> bool:
     """Set master volume level scalar (0 to 100).
 
     Returns:
       True if successful, False otherwise.
     """
+    _guard_real_audio("set_volume")
     endpoint, _ = _get_endpoint()
     if endpoint is None:
         return False
@@ -328,6 +344,7 @@ def toggle_mute() -> bool:
     Returns:
       The new muted state (True = muted, False = unmuted).
     """
+    _guard_real_audio("toggle_mute")
     endpoint, _ = _get_endpoint()
     if endpoint is None:
         return False
