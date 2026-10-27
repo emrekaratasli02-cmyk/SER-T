@@ -27,6 +27,7 @@ serit_root = Path(__file__).resolve().parent.parent
 if str(serit_root) not in sys.path:
     sys.path.insert(0, str(serit_root))
 
+import panel_style as ps  # noqa: E402
 from tray_panel import (  # noqa: E402
     TrayPanel,
     clean_tray_name,
@@ -147,6 +148,16 @@ def test_dedupe() -> None:
     print("   [OK] Deduplication passed.")
 
 
+def test_panel_width_shared_kit() -> None:
+    """TrayPanel width must be exactly the shared kit tray width (352)."""
+    print("-> test_panel_width_shared_kit")
+    _ensure_qapp()
+    panel = TrayPanel()
+    assert panel.WIDTH == ps.WIDTH["tray"] == 352
+    assert panel.width() == ps.WIDTH["tray"]
+    print("   [OK] Panel width matches panel_style.WIDTH['tray'].")
+
+
 def test_bad_data_matrix() -> None:
     """Test >= 25 invalid / corrupt data inputs through set_items and offscreen rendering."""
     print("-> test_bad_data_matrix")
@@ -213,6 +224,7 @@ def test_row_hit_testing_and_signals() -> None:
     panel.setGeometry(100, 100, panel.WIDTH, panel.compute_height())
     panel.show()
     QApplication.processEvents()
+    panel.render_to_image(2.0)  # fills _close_rect / _refresh_rect from paint layout
 
     activated_events: List[Tuple[Dict[str, Any], str]] = []
     refresh_events: List[bool] = []
@@ -220,9 +232,12 @@ def test_row_hit_testing_and_signals() -> None:
     panel.item_activated.connect(lambda item, btn: activated_events.append((item, btn)))
     panel.refresh_requested.connect(lambda: refresh_events.append(True))
 
+    list_rect = panel._list_rect
+    y_row0 = list_rect.top() + panel.ROW_HEIGHT / 2.0
+    y_row1 = list_rect.top() + panel.ROW_STRIDE + panel.ROW_HEIGHT / 2.0
+
     # Test 1: Left-click on Row 0
-    # List top is 54.0, row 0 center Y is 54 + 17 = 71
-    click_row0 = QPointF(50.0, 71.0)
+    click_row0 = QPointF(50.0, y_row0)
     ev_left = QMouseEvent(
         QEvent.Type.MouseButtonPress,
         click_row0,
@@ -242,8 +257,8 @@ def test_row_hit_testing_and_signals() -> None:
     panel._is_closing = False
     panel.show()
 
-    # Test 2: Right-click on Row 1 (center Y: 54 + 36 + 17 = 107)
-    click_row1 = QPointF(50.0, 107.0)
+    # Test 2: Right-click on Row 1
+    click_row1 = QPointF(50.0, y_row1)
     ev_right = QMouseEvent(
         QEvent.Type.MouseButtonPress,
         click_row1,
@@ -350,7 +365,7 @@ def test_keyboard_navigation() -> None:
 
 
 def test_scroll_clamping_with_30_items() -> None:
-    """Test list scrolling and clamping with 30 items exceeding max height 340px."""
+    """Test list scrolling and clamping with 30 items exceeding max list height."""
     print("-> test_scroll_clamping_with_30_items")
     _ensure_qapp()
 
@@ -358,9 +373,10 @@ def test_scroll_clamping_with_30_items() -> None:
     items = [{"name": f"Process_{i:02d}", "tooltip": f"Status {i}"} for i in range(30)]
     panel.set_items(items)
 
-    assert panel._visible_list_height() == 340.0
+    max_h = panel.LIST_MAX_HEIGHT
+    assert panel._visible_list_height() == max_h
     total_h = panel._total_list_height()
-    max_scroll = total_h - 340.0
+    max_scroll = total_h - max_h
     assert max_scroll > 500.0, f"Expected large max_scroll, got {max_scroll}"
 
     # Initial scroll is 0.0
@@ -407,6 +423,7 @@ def run_all() -> None:
     test_name_cleaning()
     test_status_translation()
     test_dedupe()
+    test_panel_width_shared_kit()
     test_bad_data_matrix()
     test_row_hit_testing_and_signals()
     test_keyboard_navigation()
