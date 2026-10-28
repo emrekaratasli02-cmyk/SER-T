@@ -1906,6 +1906,25 @@ class SeritDock(QWidget):
         finally:
             p.end()
 
+    # Kart içeriğinin kart kenarına uzaklığı (sol, sağ): ayraç iki yandaki içeriğin tam ortasına konur.
+    _CONTENT_INSET: Dict[str, Tuple[float, float]] = {
+        "claude": (11.8, 10.0), "ag": (11.8, 10.0), "mail": (10.0, 10.0), "sys": (9.0, 9.0),
+        "apps": (6.0, 6.0), "media": (6.0, 10.0), "cal": (12.0, 12.0),
+    }
+
+    @classmethod
+    def _divider_x(cls, left_key: str, left_r: QRectF, right_key: str, right_r: QRectF) -> float:
+        lin = cls._CONTENT_INSET.get(left_key, (10.0, 10.0))[1]
+        rin = cls._CONTENT_INSET.get(right_key, (10.0, 10.0))[0]
+        return ((left_r.right() - lin) + (right_r.left() + rin)) / 2.0
+
+    @staticmethod
+    def _draw_divider(p: QPainter, x: float, cy: float, intersects: Callable[[QRectF], bool]) -> None:
+        """Bantta kartlar / gruplar arası ince ayraç (yalnız boyanan bölgeye düşüyorsa)."""
+        if intersects(QRectF(x - 1.0, cy - dock_cards.CARD_DIVIDER_H / 2.0 - 1.0, 2.0,
+                             dock_cards.CARD_DIVIDER_H + 2.0)):
+            dock_cards.draw_card_divider(p, x, cy)
+
     def _paint_content(self, p: QPainter, exposed_rect: Optional[Any] = None) -> None:
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.TextAntialiasing)
@@ -2056,8 +2075,14 @@ class SeritDock(QWidget):
             cur_lw_x = final_apps_x - (GAP_MODULE if (lw_w > 0 and w_apps > 0) else 0.0) - lw_w
 
             # Draw Left Wing: Claude, Mail, Antigravity
+            div_cy = card_y + card_h / 2.0
+            prev_card: Optional[Tuple[str, QRectF]] = None
             for card_key, card_w in lw_cards:
                 r_card = QRectF(cur_lw_x, card_y, card_w, card_h)
+                if prev_card is not None:  # v24 kutusuz kartlar: aralarında ince ayraç
+                    self._draw_divider(p, self._divider_x(prev_card[0], prev_card[1], card_key, r_card),
+                                       div_cy, intersects)
+                prev_card = (card_key, r_card)
                 if is_full:
                     self.hit_boxes.append((r_card, card_key, None))
                 if intersects(r_card):
@@ -2086,6 +2111,11 @@ class SeritDock(QWidget):
                         )
 
                 cur_lw_x += card_w + GAP_MODULE
+
+            r_apps = QRectF(final_apps_x, card_y, w_apps, card_h)
+            if prev_card is not None and w_apps > 0:  # sol kanat | uygulamalar
+                self._draw_divider(p, self._divider_x(prev_card[0], prev_card[1], "apps", r_apps),
+                                   div_cy, intersects)
 
             # Draw Apps Group
             hover_idx = self._preview_hover_idx if self._preview_hover_idx is not None else self._hover_app_idx
@@ -2128,6 +2158,8 @@ class SeritDock(QWidget):
             if has_media:
                 r_media = QRectF(cur_rw_x, card_y, media_w, card_h)
                 self._media_rect = r_media
+                if w_apps > 0:  # uygulamalar | medya
+                    self._draw_divider(p, self._divider_x("apps", r_apps, "media", r_media), div_cy, intersects)
                 if is_full:
                     self.hit_boxes.append((r_media, "media", self._now_playing_info))
                 if intersects(r_media):
@@ -2141,6 +2173,10 @@ class SeritDock(QWidget):
 
             if show_cal:
                 r_cal = QRectF(cur_rw_x, card_y, cal_w, card_h)
+                if has_media or w_apps > 0:
+                    lk, lr = ("media", self._media_rect) if (has_media and self._media_rect is not None) \
+                        else ("apps", r_apps)
+                    self._draw_divider(p, self._divider_x(lk, lr, "cal", r_cal), div_cy, intersects)
                 if is_full:
                     self.hit_boxes.append((r_cal, "cal", None))
                 if intersects(r_cal):

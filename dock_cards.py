@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from PySide6.QtCore import QByteArray, QPointF, QRectF, Qt
 from PySide6.QtGui import (
+    QImage,
     QBrush,
     QColor,
     QFont,
@@ -42,14 +43,18 @@ import theme
 
 CARD_HEIGHT: float = 52.0
 CARD_RADIUS: float = 13.0
-CARD_FILL: QColor = QColor(255, 255, 255, int(255 * 0.065))
-CARD_FILL_HOVER: QColor = QColor(255, 255, 255, int(255 * 0.11))
+CARD_FILL: QColor = QColor(255, 255, 255, int(255 * 0.065))   # v24'ten beri bantta çizilmez (eski kutu)
+CARD_FILL_HOVER: QColor = QColor(255, 255, 255, 18)           # v24 kutusuz kart: yalnız üzerine gelince
 CARD_BORDER: QColor = QColor(255, 255, 255, int(255 * 0.08))
+CARD_DIVIDER: QColor = QColor(255, 255, 255, 30)              # kartlar arası ince ayraç (1 cihaz pikseli)
+CARD_DIVIDER_H: float = 28.0
 
+# v24 renk düzeni (Emre: B + ortak değişiklikler): Claude turuncusu ve tek mavi vurgu.
+COLOR_ACCENT_BLUE: QColor = QColor("#6EA8FE")
 COLOR_CLAUDE_TILE: QColor = QColor("#D97757")
 COLOR_CLAUDE_CORAL: QColor = QColor("#D97757")
-COLOR_CLAUDE_SKY: QColor = QColor("#38BDF8")
-COLOR_GEMINI_BLUE: QColor = QColor("#8AB4F8")
+COLOR_CLAUDE_SKY: QColor = QColor(COLOR_ACCENT_BLUE)
+COLOR_GEMINI_BLUE: QColor = QColor(COLOR_ACCENT_BLUE)
 COLOR_RING_CRITICAL: QColor = QColor("#F87171")
 COLOR_CONCENTRIC_TRACK: QColor = QColor(255, 255, 255, int(255 * 0.08))
 COLOR_BAR_GREEN: QColor = QColor("#34C759")
@@ -57,16 +62,18 @@ COLOR_BAR_AMBER: QColor = QColor("#FF9F0A")
 COLOR_BAR_RED: QColor = QColor("#FF453A")
 COLOR_BAR_TRACK: QColor = QColor(255, 255, 255, int(255 * 0.13))
 
-COLOR_MEDIA_GRAD_START: QColor = QColor("#a2456f")
-COLOR_MEDIA_GRAD_END: QColor = QColor("#4b2a7a")
+COLOR_MEDIA_GRAD_START: QColor = QColor(255, 255, 255, 40)   # v24: pembe-mor yerine nötr medya karosu
+COLOR_MEDIA_GRAD_END: QColor = QColor(255, 255, 255, 18)
 COLOR_MEDIA_BTN_BG: QColor = QColor(255, 255, 255, int(255 * 0.09))
-COLOR_MEDIA_PLAY_BG: QColor = QColor("#0A84FF")
+COLOR_MEDIA_PLAY_BG: QColor = QColor(COLOR_ACCENT_BLUE)
 
-COLOR_CPU_BAR: QColor = QColor("#64D2FF")
-COLOR_RAM_BAR: QColor = QColor("#BF5AF2")
+# İşlemci ve bellek aynı mavi; eşik ayrımı get_sys_ring_color(is_ram=...) ile yapılır.
+COLOR_CPU_BAR: QColor = QColor(COLOR_ACCENT_BLUE)
+COLOR_RAM_BAR: QColor = QColor(COLOR_ACCENT_BLUE)
 
 COLOR_TXT_PRIMARY: QColor = QColor(255, 255, 255, int(255 * 0.95))
 COLOR_TXT_MUTED: QColor = QColor(235, 238, 245, int(255 * 0.58))
+COLOR_TXT_FAINT: QColor = QColor(235, 238, 245, 102)           # sıfırlanma saati gibi ikincil bilgi
 COLOR_CAL_RED: QColor = QColor("#FF453A")
 
 TR_DAYS_SHORT = {0: "Pzt", 1: "Sal", 2: "Çar", 3: "Per", 4: "Cum", 5: "Cmt", 6: "Paz"}
@@ -86,7 +93,7 @@ SYS_RING_STROKE: float = 3.5
 _PEN_CARD_BORDER: QPen = QPen(CARD_BORDER, 1.0)
 _PEN_BAR_TRACK_2: QPen = QPen(QColor(255, 255, 255, int(255 * 0.14)), 2.0, Qt.SolidLine, Qt.RoundCap)
 _PEN_SYS_TRACK: QPen = QPen(COLOR_BAR_TRACK, SYS_RING_STROKE, Qt.SolidLine, Qt.FlatCap)
-_PEN_ARC_ACCENT: QPen = QPen(QColor("#0A84FF"), 2.0, Qt.SolidLine, Qt.RoundCap)
+_PEN_ARC_ACCENT: QPen = QPen(COLOR_ACCENT_BLUE, 2.0, Qt.SolidLine, Qt.RoundCap)
 _PEN_BAT_BOLT: QPen = QPen(QColor(13, 15, 19), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
 
 _FM_CACHE: Dict[str, QFontMetricsF] = {}
@@ -320,36 +327,24 @@ def draw_concentric_text_rows(
     row1: Tuple[Optional[float], QColor, str, str],
     row2: Tuple[Optional[float], QColor, str, str],
 ) -> None:
-    """Draw two text rows for concentric card:
+    """Draw two text rows for concentric card (v24):
 
-    Each row: bold coloured percentage (%11.5 DemiBold tabular), label (10.0 Normal),
-    reset time right-aligned muted (9.5 Normal).
+    Each row: percentage 12.5 DemiBold tabular in ring colour, label 10.5 muted, reset time 9.5 faint
+    right-aligned (only when it fits). All three share one baseline per row (different sizes centred
+    vertically used to sit on different baselines).
     """
-    f_pct = theme.make_font(11.5, QFont.Weight.DemiBold, tabular=True)
-    f_lbl = theme.make_font(10.0, QFont.Weight.Normal)
+    f_pct = theme.make_font(12.5, QFont.Weight.DemiBold, tabular=True)
+    f_lbl = theme.make_font(10.5, QFont.Weight.Normal)
     f_rst = theme.make_font(9.5, QFont.Weight.Normal)
 
     rx = text_rect.x()
     rw = text_rect.width()
-    y1 = text_rect.y()
-    row_h = 17.0
-    y2 = y1 + row_h + 2.0
-
-    rows_data = [
-        (row1, y1),
-        (row2, y2),
-    ]
-
-    fm_lbl = _get_fm(f_lbl)
-
-    def fm_lbl_w(t: str) -> float:
-        return _text_width(fm_lbl, t)
+    row_step = 19.0  # iki satırın taban çizgileri arası
+    cap = _get_fm(f_pct).capHeight()
+    base1 = text_rect.center().y() - (row_step - cap) / 2.0  # görsel blok tam ortada
 
     p.save()
-    for (pct_val, base_col, lbl_text, rst_text), ry in rows_data:
-        r_box = QRectF(rx, ry, rw, row_h)
-
-        # 1. Percent text
+    for (pct_val, base_col, lbl_text, rst_text), base_y in ((row1, base1), (row2, base1 + row_step)):
         if pct_val is not None:
             pct_num = int(round(float(pct_val)))
             pct_str = f"%{pct_num}"
@@ -358,25 +353,26 @@ def draw_concentric_text_rows(
             pct_str = "—"
             pct_col = COLOR_TXT_MUTED
 
+        # 1. Percent (sets the row baseline)
         p.setFont(f_pct)
+        fm_pct = p.fontMetrics()  # cihaz ölçüsü (1.25 ölçekte çizimle aynı)
         p.setPen(pct_col)
-        fm_pct = p.fontMetrics()  # cihaz ölçüsü (1.25 ölçekte hizayı eskisiyle aynı tutar)
-        p.drawText(r_box, Qt.AlignLeft | Qt.AlignVCenter, pct_str)
+        p.drawText(QPointF(rx, base_y), pct_str)
         wp = fm_pct.horizontalAdvance(pct_str)
 
-        # 2. Label text
+        # 2. Label (same baseline)
         p.setFont(f_lbl)
-        p.setPen(COLOR_TXT_PRIMARY)
-        r_lbl = QRectF(rx + wp + 4.0, ry, rw - wp - 4.0, row_h)
-        p.drawText(r_lbl, Qt.AlignLeft | Qt.AlignVCenter, lbl_text)
+        wl = p.fontMetrics().horizontalAdvance(lbl_text)
+        p.setPen(COLOR_TXT_MUTED)
+        p.drawText(QPointF(rx + wp + 4.0, base_y), lbl_text)
 
-        # 3. Reset text (right-aligned, muted) — yalnızca etiketle çakışmadan sığarsa
-        p.setFont(f_rst)
-        fm_rst = p.fontMetrics()
-        need_w = wp + 4.0 + fm_lbl_w(lbl_text) + 6.0 + fm_rst.horizontalAdvance(rst_text)
-        if rst_text and need_w <= rw:
-            p.setPen(COLOR_TXT_MUTED)
-            p.drawText(r_box, Qt.AlignRight | Qt.AlignVCenter, rst_text)
+        # 3. Reset time, right-aligned, only when it fits next to the label
+        if rst_text:
+            p.setFont(f_rst)
+            wr = p.fontMetrics().horizontalAdvance(rst_text)
+            if wp + 4.0 + wl + 5.0 + wr <= rw:
+                p.setPen(COLOR_TXT_FAINT)
+                p.drawText(QPointF(rx + rw - wr, base_y), rst_text)
 
     p.restore()
 
@@ -397,7 +393,10 @@ def draw_card_base(
     hover: bool = False,
     press_scale: float = 1.0,
 ) -> None:
-    """Draw standard dark glass card background and border."""
+    """v24 kutusuz kart (Emre: B): zemin ve çerçeve yok, kart doğrudan bandın üstünde durur; kartlar
+    arasını draw_card_divider ayırır. Üzerine gelince hafif zemin (tıklanabilir olduğu belli olsun)."""
+    if not hover:
+        return
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
     if press_scale != 1.0:
@@ -405,14 +404,47 @@ def draw_card_base(
         p.translate(pc)
         p.scale(press_scale, press_scale)
         p.translate(-pc)
+    p.fillPath(theme.rounded_path(rect, radius), CARD_FILL_HOVER)
+    p.restore()
 
-    path = theme.rounded_path(rect, radius)
-    p.fillPath(path, CARD_FILL_HOVER if hover else CARD_FILL)
 
-    border_r = rect.adjusted(0.5, 0.5, -0.5, -0.5)
-    p.setPen(_PEN_CARD_BORDER)
-    p.setBrush(Qt.NoBrush)
-    p.drawPath(theme.rounded_path(border_r, max(0.0, radius - 0.5)))
+_WX_ICON_DY: Dict[str, float] = {}
+
+
+def _weather_icon_dy(icon: str) -> float:
+    """14x14 hava simgesinin mürekkep ortasının kutu ortasından farkı (aşağı +). Bir kez ölçülür."""
+    key = str(icon or "cloud")
+    if key in _WX_ICON_DY:
+        return _WX_ICON_DY[key]
+    dy = 0.0
+    try:
+        sc = 4.0
+        img = QImage(int(24 * sc), int(24 * sc), QImage.Format.Format_ARGB32_Premultiplied)
+        img.setDevicePixelRatio(sc)
+        img.fill(Qt.transparent)
+        pp = QPainter(img)
+        theme.draw_weather_icon(pp, QRectF(5.0, 5.0, 14.0, 14.0), icon=key)
+        pp.end()
+        rows = [y for y in range(img.height()) if any((img.pixel(x, y) >> 24) & 0xFF > 60
+                                                      for x in range(0, img.width(), 2))]
+        if rows:
+            ink_cy = (rows[0] + rows[-1] + 1) / 2.0 / sc
+            dy = round((12.0 - ink_cy) * 4.0) / 4.0
+    except Exception:
+        dy = 0.0
+    _WX_ICON_DY[key] = dy
+    return dy
+
+
+def draw_card_divider(p: QPainter, x: float, cy: float, height: float = CARD_DIVIDER_H) -> None:
+    """Kartlar arası ince dikey ayraç: 1 cihaz pikseli kalın, cihaz pikseline oturur (1.25'te bulanmaz)."""
+    dpr = _device_ratio(p)
+    px = round(x * dpr) / dpr
+    top = round((cy - height / 2.0) * dpr) / dpr
+    bottom = round((cy + height / 2.0) * dpr) / dpr
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing, False)
+    p.fillRect(QRectF(px, top, 1.0 / dpr, bottom - top), CARD_DIVIDER)
     p.restore()
 
 
@@ -617,13 +649,11 @@ def draw_media_card(
 
     # Title & Subtitle text column (dynamically shrinks down to 240px compact mode)
     bx = rect.x() + 56.0
-    by = rect.y() + 8.0
-    if rect.width() < 314.0:
-        ctrl_x = rect.right() - 104.0 - 8.0
-        bw = max(20.0, ctrl_x - 6.0 - bx)
-    else:
-        bw = 128.0
-        ctrl_x = bx + bw + 4.0
+    by = rect.y() + 8.0  # ölçüldü: başlık büyük harf üstü .. alt satır tabanı kartın ortasına düşer
+    # v24: kontroller (24+8+32+8+24 = 96 px) sağa yaslanır; başlık aradaki tüm boşluğu kullanır
+    # (eskiden 314 px kartta başlık 128 px'de kesiliyordu, sağda boşluk kalıyordu).
+    ctrl_x = rect.right() - 96.0 - 10.0
+    bw = max(20.0, ctrl_x - 8.0 - bx)
 
     title = str(media_info.get("title") or "Bilinmeyen Başlık")
     app_name = str(media_info.get("app") or "Medya")
@@ -979,13 +1009,14 @@ def draw_ag_card(
 # 3. SYSTEM CARD (RING GAUGES)
 # ==============================================================================
 
-def get_sys_ring_color(val: float, base_col: QColor) -> QColor:
+def get_sys_ring_color(val: float, base_col: QColor, is_ram: Optional[bool] = None) -> QColor:
     """Select base, amber, or red for sys ring gauge.
 
     İşlemci: >=70 turuncu, >=90 kırmızı. Bellek: Emre'nin bilgisayarında normalde %74-77
     olduğu için (27 Eki 2026 ölçümü) >=85 turuncu, >=93 kırmızı; yoksa mor halka hiç görünmezdi.
     """
-    is_ram = base_col == COLOR_RAM_BAR
+    if is_ram is None:  # v24'ten beri iki renk aynı: nesne kimliğine bak (eski çağrılar için)
+        is_ram = base_col is COLOR_RAM_BAR
     red_at, amber_at = (93.0, 85.0) if is_ram else (90.0, 70.0)
     if val >= red_at:
         return COLOR_BAR_RED
@@ -1050,11 +1081,11 @@ def draw_sys_card(
     f_num = theme.make_font(11.0, QFont.Weight.DemiBold, tabular=True)
 
     rings = [
-        (cx_cpu, c_val, COLOR_CPU_BAR),
-        (cx_ram, r_val, COLOR_RAM_BAR),
+        (cx_cpu, c_val, COLOR_CPU_BAR, False),
+        (cx_ram, r_val, COLOR_RAM_BAR, True),
     ]
 
-    for cx, val, base_col in rings:
+    for cx, val, base_col, is_ram in rings:
         arc_rect = QRectF(cx - r, cy - r, 2.0 * r, 2.0 * r)
 
         # 1. Background full track circle (rgba(255, 255, 255, 0.13))
@@ -1064,7 +1095,7 @@ def draw_sys_card(
 
         # 2. Foreground active arc (clockwise from 12 o'clock)
         if val is not None and val > 0.0:
-            fg_col = get_sys_ring_color(val, base_col)
+            fg_col = get_sys_ring_color(val, base_col, is_ram=is_ram)
             pen_fg = QPen(fg_col, stroke, Qt.SolidLine, Qt.RoundCap)
             p.setPen(pen_fg)
             span_angle = -int(round((val / 100.0) * 360.0 * 16.0))
@@ -1386,8 +1417,8 @@ def measure_clock_v1_width(
         f_temp = theme.make_font(13.0, QFont.Weight.DemiBold)
         fm_temp = _get_fm(f_temp)
         w_temp = _text_width(fm_temp, temp_str)
-        # 12px gap + 1px separator + 8px left padding + 14px icon + 5px gap + temp_w
-        w += 12.0 + 1.0 + 8.0 + 14.0 + 5.0 + w_temp
+        # 10px gap + 1px separator + 10px gap + 14px icon + 5px gap + temp_w (v24: ayraç iki yana eşit)
+        w += 10.0 + 1.0 + 10.0 + 14.0 + 5.0 + w_temp
     w += 10.0  # 10px right padding
     return float(math.ceil(w))
 
@@ -1444,11 +1475,12 @@ def draw_clock_v1(
 
     cur_x = rect.x() + 10.0
     r_wx: Optional[QRectF] = None
+    cy = rect.center().y()
 
     # Hava durumu SOLDA, saat en sağ kenarda (27 Eki 2026, Emre: "saat en sağda olsun")
     if has_weather and temp_str:
         wx_left = rect.x()
-        icon_y = rect.y() + (rect.height() - 14.0) / 2.0
+        icon_y = cy - 7.0 + _weather_icon_dy(wx_icon or "cloud")
         r_icon = QRectF(cur_x, icon_y, 14.0, 14.0)
         p.save()
         p.setOpacity(0.85)
@@ -1460,28 +1492,29 @@ def draw_clock_v1(
         w_temp = _text_width(fm_temp, temp_str)
         p.setFont(f_temp)
         p.setPen(COLOR_TXT_PRIMARY)
-        p.drawText(QRectF(cur_x, rect.y(), w_temp, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, temp_str)
-        cur_x += w_temp + 8.0
+        p.drawText(QPointF(cur_x, cy + fm_temp.capHeight() / 2.0), temp_str)  # rakamlar tam ortada
+        cur_x += w_temp + 10.0
         sep_x = cur_x
-        sep_y = rect.y() + (rect.height() - 24.0) / 2.0
-        p.fillRect(QRectF(sep_x, sep_y, 1.0, 24.0), QColor(255, 255, 255, int(255 * 0.10)))
-        cur_x += 1.0 + 12.0
+        draw_card_divider(p, sep_x, cy, 24.0)
+        cur_x += 1.0 + 10.0
         # Hava durumu tıklama alanı: sol kenardan ayırıcıya kadar
         r_wx = QRectF(wx_left, rect.y(), max(0.0, sep_x + 1.0 - wx_left), rect.height())
 
-    # Saat + tarih (sağa yaslı sütun)
-    total_h = 22.0 + 3.0 + 14.0
-    start_y = rect.y() + (rect.height() - total_h) / 2.0
+    # Saat + tarih (sağa yaslı sütun). Görsel blok = saat rakamlarının üstü .. tarihin taban çizgisi;
+    # kutu yüksekliğine göre ortalamak bloğu 1,5 px aşağıda bırakıyordu (v24 ölçümü).
+    gap_td = 9.5  # saat tabanı -> tarih büyük harf üstü
+    cap_t, cap_d = fm_time.capHeight(), fm_date.capHeight()
+    time_base = cy - (cap_t + gap_td + cap_d) / 2.0 + cap_t
+    date_base = time_base + gap_td + cap_d
+    right_x = cur_x + w_left
 
-    r_time = QRectF(cur_x, start_y, w_left, 22.0)
     p.setFont(f_time)
     p.setPen(Qt.white)
-    p.drawText(r_time, Qt.AlignRight | Qt.AlignVCenter, time_str)
+    p.drawText(QPointF(right_x - p.fontMetrics().horizontalAdvance(time_str), time_base), time_str)
 
-    r_date = QRectF(cur_x, start_y + 22.0 + 3.0, w_left, 14.0)
     p.setFont(f_date)
     p.setPen(QColor(235, 238, 245, int(255 * 0.58)))
-    p.drawText(r_date, Qt.AlignRight | Qt.AlignVCenter, date_str)
+    p.drawText(QPointF(right_x - p.fontMetrics().horizontalAdvance(date_str), date_base), date_str)
 
     p.restore()
     return rect, r_wx
