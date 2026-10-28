@@ -1490,6 +1490,8 @@ BATTERY_BODY_H: float = 10.0
 BATTERY_TIP_W: float = 2.0
 BATTERY_TIP_H: float = 4.0
 BATTERY_FILL_INSET: float = 2.0
+BATTERY_GLYPH_W: float = 23.0   # v22-C yuvarlak pil gövdesi (kapsül)
+BATTERY_GLYPH_H: float = 11.5
 
 
 def pill_width(has_battery: bool) -> float:
@@ -1637,6 +1639,62 @@ def _draw_battery_segment(p: QPainter, r: QRectF, percent: float, charging: bool
     p.restore()
 
 
+def _rounded_path(r: QRectF, radius: float) -> QPainterPath:
+    path = QPainterPath()
+    path.addRoundedRect(r, radius, radius)
+    return path
+
+
+def _paint_round_battery(p: QPainter, x: float, cy: float, percent: Optional[float], charging: bool,
+                         fill_col: QColor, outline_col: QColor, dpr: float) -> float:
+    """v22-C pil glifi: yuvarlak köşeli gövde + uç + yumuşak dolgu; şarjda gövdeye oyulmuş beyaz şimşek.
+
+    Genişliği (mantıksal piksel) döndürür.
+    """
+    def snap(v: float) -> float:
+        return round(v * dpr) / dpr
+
+    bw, bh = BATTERY_GLYPH_W, BATTERY_GLYPH_H
+    body = QRectF(snap(x), snap(cy - bh / 2.0), snap(bw), snap(bh))
+    pen_w = 1.2
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setPen(QPen(outline_col, pen_w))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPath(_rounded_path(body.adjusted(pen_w / 2, pen_w / 2, -pen_w / 2, -pen_w / 2), 3.2))
+    tip = QRectF(body.right() + 1.2, body.center().y() - 2.4, 1.8, 4.8)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(outline_col)
+    p.drawPath(_rounded_path(tip, 0.9))
+    if percent is not None:
+        lvl = max(0.0, min(100.0, float(percent)))
+        inner = body.adjusted(2.6, 2.6, -2.6, -2.6)
+        if lvl > 0.0 and inner.width() > 0 and inner.height() > 0:
+            fw = max(inner.height() * 0.6, inner.width() * lvl / 100.0)  # %1 bile görünsün
+            p.setBrush(fill_col)
+            p.drawPath(_rounded_path(QRectF(inner.left(), inner.top(), fw, inner.height()), 1.6))
+    if charging:
+        h = bh + 3.0
+        w_ = h * 0.62
+        pts = ((0.62, 0.0), (0.12, 0.56), (0.46, 0.56), (0.36, 1.0), (0.88, 0.42), (0.54, 0.42))
+        bolt = QPainterPath()
+        for i, (px, py) in enumerate(pts):
+            pt = QPointF(body.center().x() - w_ / 2.0 + px * w_, body.center().y() - h / 2.0 + py * h)
+            if i == 0:
+                bolt.moveTo(pt)
+            else:
+                bolt.lineTo(pt)
+        bolt.closeSubpath()
+        p.setPen(QPen(QColor(13, 15, 19), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                      Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(QColor(255, 255, 255))
+        p.drawPath(bolt)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawPath(bolt)
+    p.restore()
+    return body.width() + 3.0
+
+
 def draw_battery_pill(
     p: QPainter,
     rect: QRectF,
@@ -1645,42 +1703,41 @@ def draw_battery_pill(
     hovered: bool = False,
     active: bool = False,
 ) -> QRectF:
-    """Yalnız pil kapsülü: aynı kapsül zemini/kenarı + ortada glif ve %NN.
+    """Yalnız pil kapsülü (v22-C renkli rozet): kenarsız hap zemin durum rengine boyanır.
 
+    Şarjda yeşil, <=%20 ve şarjda değilse kırmızı, aksi halde nötr beyaz.
     Tüm kapsül tek isabet alanıdır; kapsül dikdörtgeni döndürülür.
     """
+    col = battery_color(percent, charging)
+    neutral = col == QColor(255, 255, 255)
+    dpr = _device_ratio(p)
+
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    p.setPen(QPen(QColor(255, 255, 255, int(255 * 0.08)), 1.0))
-    p.setBrush(QColor(255, 255, 255, int(255 * 0.065)))
-    p.drawRoundedRect(rect, 10.0, 10.0)
+    tint = QColor(col)
+    alpha = 14 if neutral else 34
     if active:
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * 0.15)))
-        p.drawRoundedRect(rect.adjusted(3.0, 3.0, -3.0, -3.0), 6.0, 6.0)
+        alpha += 26
     elif hovered:
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
-        p.drawRoundedRect(rect.adjusted(3.0, 3.0, -3.0, -3.0), 6.0, 6.0)
+        alpha += 14
+    tint.setAlpha(alpha)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(tint)
+    p.drawPath(_rounded_path(rect, rect.height() / 2.0))
 
-    col = battery_color(percent, charging)
-    dpr = _device_ratio(p)
-    bw, bh, tw, _th, _inset = _battery_metrics(dpr)
-    glyph_w = bw + tw
-    f = theme.make_font(12.0, QFont.Weight.DemiBold, tabular=True)
+    f = theme.make_font(13.0, QFont.Weight.DemiBold, tabular=True)
     fm = QFontMetricsF(f)
     txt = "—" if percent is None else f"%{int(round(max(0.0, min(100.0, float(percent)))))}"
     gap = 6.0
-    content_w = glyph_w / dpr + gap + fm.horizontalAdvance(txt)
-    left_log = rect.center().x() - content_w / 2.0
-    left_dev = int(round(left_log * dpr))
-    cy_dev = int(round(rect.center().y() * dpr))
-    top_dev = cy_dev - bh // 2
-    _paint_battery_glyph(p, left_dev, top_dev, percent, charging, col, dpr)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    glyph_w = BATTERY_GLYPH_W + 3.0
+    content_w = glyph_w + gap + fm.horizontalAdvance(txt)
+    x = rect.center().x() - content_w / 2.0
+    outline = QColor(col)
+    outline.setAlpha(150)
+    gw = _paint_round_battery(p, x, rect.center().y(), percent, charging, col, outline, dpr)
     p.setFont(f)
     p.setPen(col)
-    tx = (left_dev + glyph_w) / dpr + gap
+    tx = x + gw + gap
     p.drawText(QRectF(tx, rect.top(), max(0.0, rect.right() - tx - 1.0), rect.height()),
                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, txt)
     p.restore()

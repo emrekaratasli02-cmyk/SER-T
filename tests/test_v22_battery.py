@@ -150,6 +150,24 @@ def test_pill_states_all_dprs():
             assert y0 >= rect.top() + 0.5 and y1 <= rect.bottom() - 0.5, (bb, rect, dpr)
 
 
+def test_pill_c_badge_tint():
+    """v22-C: kapsül zemini durum rengine boyanır (şarj yeşil, düşük kırmızı, pilde nötr)."""
+    def bg_at(percent, charging):
+        img = QImage(96, 48, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(QColor(13, 15, 19))
+        p = QPainter(img)
+        dock_cards.draw_battery_pill(p, QRectF(8.0, 8.0, dock_cards.BATTERY_PILL_W, 32.0), percent, charging)
+        p.end()
+        return img.pixelColor(14, 24)  # sol kenara yakın, içerik dışında kalan zemin
+
+    green, red, neutral = bg_at(99.0, True), bg_at(15.0, False), bg_at(64.0, False)
+    assert green.green() > green.red() + 4 and green.green() > green.blue(), green.name()
+    assert red.red() > red.green() + 4 and red.red() > red.blue(), red.name()
+    # nötr: zemine (13,15,19) eklenen ton her kanalda eşit (renksiz beyaz), ama zemin yine hafif seçiliyor
+    d = (neutral.red() - 13, neutral.green() - 15, neutral.blue() - 19)
+    assert d[0] > 0 and max(d) - min(d) <= 2, (neutral.name(), d)
+
+
 def test_pill_sheet():
     """1.0 dpr çizimlerini 4x büyütüp tek sayfada topla."""
     names = ["v22_pill_99_chg_dpr1_0", "v22_pill_99_bat_dpr1_0", "v22_pill_50_dpr1_0",
@@ -337,7 +355,7 @@ def test_quick_settings_pill_geometry_unchanged():
 
 
 def run_all():
-    for fn in (test_pill_constant_and_geometry, test_pill_states_all_dprs, test_pill_sheet,
+    for fn in (test_pill_constant_and_geometry, test_pill_states_all_dprs, test_pill_c_badge_tint, test_pill_sheet,
                test_panel_renders, test_panel_sheet, test_panel_slider_drag_signals,
                test_panel_brightness_drag_signal, test_panel_mute_and_chevrons,
                test_panel_wheel, test_panel_public_api_kept,
