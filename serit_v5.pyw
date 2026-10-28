@@ -474,7 +474,7 @@ def _is_same_data(old: Any, new: Any) -> bool:
     if not isinstance(old, dict) or not isinstance(new, dict):
         return old == new
     for k, v in new.items():
-        if k in ("fetched_at", "stale"):
+        if k == "fetched_at":
             continue
         if old.get(k) != v:
             return False
@@ -1368,11 +1368,20 @@ class SeritDock(QWidget):
             self._flush_action(key)
 
     def _on_clock_tick(self) -> None:
-        """Repaint only the clock rect for near-zero idle CPU."""
+        """Repaint only the clock rect for near-zero idle CPU.
+
+        Claude / kota kartlarındaki geri sayım ("47 dk") boyama anında hesaplanır; veri değişmese de
+        güncel kalsın diye bu iki kart da aynı tikte (10 sn) yeniden çizilir.
+        """
         if self._clock_rect is not None:
             self.update(self._clock_rect.toRect().adjusted(-2, -2, 2, 2))
         else:
             self.update()
+            return
+        for key in ("claude", "ag"):
+            r = self._get_card_rect(key)
+            if r is not None:
+                self.update(r.toRect().adjusted(-2, -2, 2, 2))
 
     def _on_media_ring_tick(self) -> None:
         """Repaint only the media play button rect for smooth ring progression (~2 fps, near-zero CPU)."""

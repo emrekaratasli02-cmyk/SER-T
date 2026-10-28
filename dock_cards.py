@@ -89,13 +89,22 @@ _PEN_SYS_TRACK: QPen = QPen(COLOR_BAR_TRACK, SYS_RING_STROKE, Qt.SolidLine, Qt.F
 _PEN_ARC_ACCENT: QPen = QPen(QColor("#0A84FF"), 2.0, Qt.SolidLine, Qt.RoundCap)
 _PEN_BAT_BOLT: QPen = QPen(QColor(13, 15, 19), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
 
-_FM_CACHE: Dict[Tuple[float, int, Optional[float]], QFontMetricsF] = {}
+_FM_CACHE: Dict[str, QFontMetricsF] = {}
 _TEXT_WIDTH_CACHE: Dict[Tuple[int, str], float] = {}
 _ELIDED_CACHE: Dict[Tuple[int, str, float], str] = {}
 
 
+def _font_key(font: QFont) -> str:
+    """Önbellek anahtarı: yazı tipinin tam tanımı + OpenType özellikleri (tnum gibi; toString bunları içermeyebilir)."""
+    try:
+        tags = ",".join(sorted(str(t.toString()) for t in font.featureTags()))
+    except Exception:
+        tags = ""
+    return f"{font.toString()}|{tags}"
+
+
 def _get_fm(font: QFont) -> QFontMetricsF:
-    key = (font.pointSizeF() if font.pointSizeF() > 0 else float(font.pixelSize()), font.weight(), font.letterSpacing())
+    key = _font_key(font)
     fm = _FM_CACHE.get(key)
     if fm is None:
         fm = QFontMetricsF(font)
@@ -332,8 +341,6 @@ def draw_concentric_text_rows(
     ]
 
     fm_lbl = _get_fm(f_lbl)
-    fm_pct = _get_fm(f_pct)
-    fm_rst = _get_fm(f_rst)
 
     def fm_lbl_w(t: str) -> float:
         return _text_width(fm_lbl, t)
@@ -353,8 +360,9 @@ def draw_concentric_text_rows(
 
         p.setFont(f_pct)
         p.setPen(pct_col)
+        fm_pct = p.fontMetrics()  # cihaz ölçüsü (1.25 ölçekte hizayı eskisiyle aynı tutar)
         p.drawText(r_box, Qt.AlignLeft | Qt.AlignVCenter, pct_str)
-        wp = _text_width(fm_pct, pct_str)
+        wp = fm_pct.horizontalAdvance(pct_str)
 
         # 2. Label text
         p.setFont(f_lbl)
@@ -364,7 +372,8 @@ def draw_concentric_text_rows(
 
         # 3. Reset text (right-aligned, muted) — yalnızca etiketle çakışmadan sığarsa
         p.setFont(f_rst)
-        need_w = wp + 4.0 + fm_lbl_w(lbl_text) + 6.0 + _text_width(fm_rst, rst_text)
+        fm_rst = p.fontMetrics()
+        need_w = wp + 4.0 + fm_lbl_w(lbl_text) + 6.0 + fm_rst.horizontalAdvance(rst_text)
         if rst_text and need_w <= rw:
             p.setPen(COLOR_TXT_MUTED)
             p.drawText(r_box, Qt.AlignRight | Qt.AlignVCenter, rst_text)

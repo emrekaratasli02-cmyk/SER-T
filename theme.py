@@ -179,7 +179,8 @@ def make_font(
 ) -> QFont:
     """Creates a high-DPI Segoe UI Variable font instance with OpenType feature support.
 
-    Cached internally; returns a defensive copy so caller mutations do not pollute the cache.
+    Cached internally and returned as the SAME shared instance (v23 perf). Callers must not mutate it;
+    copy with QFont(f) before calling setters.
     """
     key = (round(float(size_px), 2), weight, tabular, letter_spacing)
     cached = _FONT_CACHE.get(key)
