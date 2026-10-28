@@ -461,6 +461,7 @@ class DataDispatcher(QObject):
     brightness_done = Signal(str, int)
     tray_resolved = Signal(object, object, object)
     action_done = Signal(str)
+    end_task_done = Signal(object, object)  # (tray item, end_task result)
 
 
 class SeritDock(QWidget):
@@ -664,6 +665,7 @@ class SeritDock(QWidget):
         self.dispatcher.brightness_done.connect(self._on_brightness_task_done)
         self.dispatcher.tray_resolved.connect(self._on_tray_resolved)
         self.dispatcher.action_done.connect(self._on_action_task_done)
+        self.dispatcher.end_task_done.connect(self._on_end_task_done)
         if not self.preview_mode:
             self.setup_timers()
             self._setup_battery_timers()
@@ -2514,11 +2516,41 @@ class SeritDock(QWidget):
             try:
                 import tray_actions
                 if hasattr(tray_actions, "end_task"):
-                    sources.submit("tray_end_task", lambda: tray_actions.end_task(item))
+                    def _end_worker() -> None:
+                        res = tray_actions.end_task(item)
+                        self.dispatcher.end_task_done.emit(item, res)
+
+                    sources.submit("tray_end_task", _end_worker)
             except Exception as exc:
                 sources.log_err("tray_end_task", exc)
             QTimer.singleShot(800, lambda: self.submit_fetch("tray"))
             QTimer.singleShot(3000, lambda: self.submit_fetch("tray"))
+
+    def _on_end_task_done(self, item: dict, res: dict) -> None:
+        """GUI thread: tell the user when 'Görevi sonlandır' did not work (it used to fail silently)."""
+        if not isinstance(res, dict) or res.get("ok", True):
+            return
+        mgr = getattr(self, "toast_mgr", None)
+        if mgr is None:
+            return
+        try:
+            import tray_panel
+            name = tray_panel.clean_tray_name(item)
+        except Exception:
+            name = clean_tray_name(item)
+        reason = str(res.get("reason") or "Görev sonlandırılamadı")
+        try:
+            mgr.show(
+                alerts.Alert(
+                    id=f"tray_end:{name}:{int(time.time())}",
+                    title=f"{name or 'Uygulama'} kapatılamadı",
+                    body=reason,
+                    accent="#FF6E6E",
+                    kind="tray",
+                )
+            )
+        except Exception as exc:
+            sources.log_err("tray_end_toast", exc)
 
     def handle_tile_click(self, tile: dict) -> None:
         if tile.get("running"):

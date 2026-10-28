@@ -20,14 +20,22 @@ Pure Python, worker-thread safe, never raises exceptions to callers.
 
 from __future__ import annotations
 
+import ctypes
 import datetime
 import getpass
 import os
 from pathlib import Path
 import re
+import sys
+import time
 from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 
 import psutil
+
+# Testler psutil.Process'i yamalayabilir; isinstance kontrolü gerçek sınıfa yapılır
+_REAL_PROCESS = psutil.Process
+
+ADMIN_REASON = "Yönetici izni gerekiyor"
 
 # Safe imports for Serit environment
 try:
@@ -281,6 +289,69 @@ def _match_generic_host_arguments(cmdline: List[str], tokens: List[str]) -> bool
     return False
 
 
+_PROCESS_TERMINATE = 0x0001
+_ERROR_ACCESS_DENIED = 5
+_kernel32: Any = None
+
+
+def _terminate_access(proc: Any) -> Optional[bool]:
+    """Can we end this real process? True / False (access denied) / None (unknown).
+
+    Only opens and immediately closes a PROCESS_TERMINATE handle; never terminates anything.
+    Test doubles (anything that is not a real psutil.Process) and non-Windows return None.
+    """
+    global _kernel32
+    if sys.platform != "win32" or not isinstance(proc, _REAL_PROCESS):
+        return None
+    try:
+        if _kernel32 is None:
+            from ctypes import wintypes
+
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenProcess.restype = wintypes.HANDLE
+            k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            k32.CloseHandle.argtypes = [wintypes.HANDLE]
+            _kernel32 = k32
+        handle = _kernel32.OpenProcess(_PROCESS_TERMINATE, False, int(proc.pid))
+        if handle:
+            _kernel32.CloseHandle(handle)
+            return True
+        return False if ctypes.get_last_error() == _ERROR_ACCESS_DENIED else None
+    except Exception:
+        return None
+
+
+def _wait_gone(procs: List[Any], timeout: float) -> Tuple[List[Any], List[Any]]:
+    """psutil.wait_procs, but an elevated process (no SYNCHRONIZE right) cannot make it raise.
+
+    psutil.wait_procs opens every process to wait on it; for an elevated process that raises
+    AccessDenied, which used to abort end_task with a raw English message. Fall back to polling.
+    """
+    try:
+        gone, alive = psutil.wait_procs(procs, timeout=timeout)
+        return list(gone), list(alive)
+    except psutil.AccessDenied:
+        pass
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    alive = list(procs)
+    while True:
+        still: List[Any] = []
+        for p in alive:
+            try:
+                if p.is_running() and p.status() != psutil.STATUS_ZOMBIE:
+                    still.append(p)
+            except psutil.NoSuchProcess:
+                pass
+            except Exception:
+                still.append(p)
+        alive = still
+        if not alive or time.monotonic() >= deadline:
+            break
+        time.sleep(0.1)
+    gone = [p for p in procs if p not in alive]
+    return gone, alive
+
+
 def _get_self_pids() -> Set[int]:
     """Return set of current process PID, its ancestors, and direct children."""
     prot: Set[int] = set()
@@ -438,6 +509,11 @@ def resolve_processes(item: Any) -> Dict[str, Any]:
                     other_user_or_system = True
                     continue
 
+                # Same user but elevated (e.g. a vendor control-center daemon): we cannot end it
+                if _terminate_access(p) is False:
+                    other_user_or_system = True
+                    continue
+
                 matched_candidates[p.pid] = p
 
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -495,6 +571,8 @@ def resolve_processes(item: Any) -> Dict[str, Any]:
                     except Exception:
                         u = None
                     if not _is_current_user(u):
+                        continue
+                    if _terminate_access(child) is False:
                         continue
                     full_process_map[child.pid] = child
             except Exception:
@@ -695,6 +773,14 @@ def end_task(item: Any, timeout: float = 3.0) -> Dict[str, Any]:
             except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
                 return False
 
+        # Processes Windows refuses to end for us (elevated / protected): never waited on,
+        # never counted as closed, reported in Turkish instead of a raw psutil message.
+        denied: Dict[int, Any] = {}
+
+        def _deny(proc: Any) -> None:
+            denied[proc.pid] = proc
+            atlanan_list.append(f"PID {proc.pid}: yönetici izni gerekiyor")
+
         # 1. Terminate all (children first)
         for p in ordered_procs:
             try:
@@ -704,10 +790,13 @@ def end_task(item: Any, timeout: float = 3.0) -> Dict[str, Any]:
                 p.terminate()
             except psutil.NoSuchProcess:
                 pass
+            except psutil.AccessDenied:
+                _deny(p)
             except Exception as exc:
                 log_err("tray_actions.end_task.terminate", exc)
 
-        gone, alive = psutil.wait_procs(list(procs.values()), timeout=timeout)
+        waitable = [p for pid, p in procs.items() if pid not in denied]
+        gone, alive = _wait_gone(waitable, timeout) if waitable else ([], [])
 
         # 2. Escalate to kill() for any survivors
         if alive:
@@ -719,15 +808,18 @@ def end_task(item: Any, timeout: float = 3.0) -> Dict[str, Any]:
                     p.kill()
                 except psutil.NoSuchProcess:
                     pass
+                except psutil.AccessDenied:
+                    _deny(p)
                 except Exception as exc:
                     log_err("tray_actions.end_task.kill", exc)
 
-            gone2, alive2 = psutil.wait_procs(alive, timeout=1.0)
-            survivors_count = len(alive2)
+            waitable2 = [p for p in alive if p.pid not in denied]
+            gone2, alive2 = _wait_gone(waitable2, 1.0) if waitable2 else ([], [])
             survivors_set = set(alive2)
         else:
-            survivors_count = 0
             survivors_set = set()
+        survivors_set.update(denied.values())
+        survivors_count = len(survivors_set)
 
         for pid, p in procs.items():
             base = proc_base_exe.get(pid, "exe")
@@ -745,11 +837,15 @@ def end_task(item: Any, timeout: float = 3.0) -> Dict[str, Any]:
         _log_audit(f"[tray_actions.end_task] {clean_name}: kapatıldı {N} ({kapatildi_str}), hayatta kalan {M}, atlanan {K} ({atlanan_str})")
 
         if survivors_count > 0:
+            if denied and len(denied) == survivors_count:
+                reason = ADMIN_REASON
+            else:
+                reason = f"{survivors_count} işlem sonlandırılamadı"
             return {
                 "ok": False,
                 "killed": N,
                 "survivors": survivors_count,
-                "reason": f"{survivors_count} işlem sonlandırılamadı",
+                "reason": reason,
             }
 
         return {
@@ -759,13 +855,21 @@ def end_task(item: Any, timeout: float = 3.0) -> Dict[str, Any]:
             "reason": None,
         }
 
+    except psutil.AccessDenied as exc:
+        _log_audit(f"[tray_actions.end_task] {clean_name}: kapatılamadı (yönetici izni gerekiyor, PID {getattr(exc, 'pid', '?')})")
+        return {
+            "ok": False,
+            "killed": 0,
+            "survivors": 0,
+            "reason": ADMIN_REASON,
+        }
     except Exception as exc:
         log_err("tray_actions.end_task", exc)
         return {
             "ok": False,
             "killed": 0,
             "survivors": 0,
-            "reason": str(exc),
+            "reason": "Görev sonlandırılamadı",
         }
 
 
