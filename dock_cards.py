@@ -1492,6 +1492,9 @@ BATTERY_TIP_H: float = 4.0
 BATTERY_FILL_INSET: float = 2.0
 BATTERY_GLYPH_W: float = 23.0   # v22-C yuvarlak pil gövdesi (kapsül)
 BATTERY_GLYPH_H: float = 11.5
+# Pil rozeti dış hale katmanları (taşma px, alfa); dıştan içe. En dış taşma 3.5 px:
+# solundaki ^ düğmesine 6 px, saate daha fazla boşluk var, komşuya değmez.
+BATTERY_HALO: Tuple[Tuple[float, int], ...] = ((3.5, 5), (2.2, 8), (1.0, 12))
 
 
 def pill_width(has_battery: bool) -> float:
@@ -1639,6 +1642,15 @@ def _draw_battery_segment(p: QPainter, r: QRectF, percent: float, charging: bool
     p.restore()
 
 
+def _snap_rect(r: QRectF, dpr: float) -> QRectF:
+    """Dikdörtgen kenarlarını cihaz pikseline yuvarlar (kesirli ölçekte keskin kenar)."""
+    left = round(r.left() * dpr) / dpr
+    top = round(r.top() * dpr) / dpr
+    right = round(r.right() * dpr) / dpr
+    bottom = round(r.bottom() * dpr) / dpr
+    return QRectF(left, top, right - left, bottom - top)
+
+
 def _rounded_path(r: QRectF, radius: float) -> QPainterPath:
     path = QPainterPath()
     path.addRoundedRect(r, radius, radius)
@@ -1714,16 +1726,26 @@ def draw_battery_pill(
 
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    # v22-B ışıma: kenarlar cihaz pikseline oturur (1.25 ölçekte bulanık kenar olmasın),
+    # dışa taşan 3 katmanlı yumuşak hale + net iç zemin. Nötr (pilde) durumda hale yarı güçte.
+    sr = _snap_rect(rect, dpr)
+    halo_scale = 0.5 if neutral else 1.0
+    p.setPen(Qt.PenStyle.NoPen)
+    for grow, a in BATTERY_HALO:
+        c = QColor(col)
+        c.setAlpha(int(round(a * halo_scale)))
+        p.setBrush(c)
+        rg = sr.adjusted(-grow, -grow, grow, grow)
+        p.drawPath(_rounded_path(rg, rg.height() / 2.0))
     tint = QColor(col)
-    alpha = 14 if neutral else 34
+    alpha = 14 if neutral else 36
     if active:
         alpha += 26
     elif hovered:
         alpha += 14
     tint.setAlpha(alpha)
-    p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(tint)
-    p.drawPath(_rounded_path(rect, rect.height() / 2.0))
+    p.drawPath(_rounded_path(sr, sr.height() / 2.0))
 
     f = theme.make_font(13.0, QFont.Weight.DemiBold, tabular=True)
     fm = QFontMetricsF(f)
