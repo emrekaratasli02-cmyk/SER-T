@@ -18,7 +18,7 @@ import dock_cards  # noqa: E402
 import panel_style as ps  # noqa: E402
 import power_net  # noqa: E402
 
-OUT = Path("C:/Users/Emre Karatasli/AppData/Local/hermes/cache/scratch/serit-v19")
+OUT = Path(__file__).resolve().parent.parent / "_ref" / "out"
 OUT.mkdir(parents=True, exist_ok=True)
 
 app = QApplication.instance() or QApplication([])
@@ -67,10 +67,13 @@ def test_pill_geometry_and_hidden():
 
 
 def test_color_rule():
+    # v22: kapsülde şarj = yeşil (OK), boşta beyaz; yalnız <=20 uyarı kırmızısı kalır.
     c = dock_cards.battery_color
-    assert c(30, True).name() == "#0a84ff"
-    assert c(20, False).name() == "#ff453a" and c(21, False).name() == "#ff9f0a"
-    assert c(35, False).name() == "#ff9f0a" and c(36, False).name() == "#ffffff"
+    assert c(30, True).name() == "#30d158"
+    assert c(20, False).name() == "#ff453a" and c(21, False).name() == "#ffffff"
+    assert c(35, False).name() == "#ffffff" and c(36, False).name() == "#ffffff"
+    assert c(None, False).name() == "#ffffff"
+    # Panel içi pil çubuğu kuralı değişmedi.
     assert battery_panel.level_color(15, False) == ps.DANGER
     assert battery_panel.level_color(30, False) == ps.WARN
     assert battery_panel.level_color(30, True) == ps.ACCENT
