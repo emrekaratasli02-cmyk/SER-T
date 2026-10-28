@@ -19,7 +19,6 @@ from typing import Any, Callable, Dict, List, Optional, Union
 from PySide6.QtCore import (
     QEasingCurve,
     QObject,
-    QPointF,
     QRect,
     QRectF,
     Qt,
@@ -33,7 +32,6 @@ from PySide6.QtGui import (
     QGuiApplication,
     QImage,
     QPainter,
-    QPen,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -42,22 +40,42 @@ serit_dir = str(Path(__file__).resolve().parent)
 if serit_dir not in sys.path:
     sys.path.insert(0, serit_dir)
 
+import panel_style
 import sources
-import theme
 import winapi
 
 DEFAULT_STATE_PATH = Path("D:/Apps/serit/alerts_state.json")
 
-# Visual & Geometry Tokens
-TOAST_WIDTH: int = 320
-TOAST_RADIUS: float = 16.0
+# Visual & Geometry Tokens (v21: ortak panel dili — panel_style kitine göre)
+TOAST_WIDTH: int = int(panel_style.PANEL_W)          # 352 — tek sütun ortak panel genişliği
+TOAST_RADIUS: float = float(panel_style.R_PANEL)     # 16 — dış köşe yarıçapı
 TOAST_MARGIN_SCREEN: int = 16
 TOAST_STACK_GAP: int = 8
 MAX_ACTIVE_TOASTS: int = 3
 
+# Toast çizim sabitleri (yalnızca boyama; panel kitindeki ölçüler)
+TOAST_PAD: float = float(panel_style.PAD)                  # 16 iç boşluk
+TOAST_ICON_BOX: float = 28.0                               # sol aksan ikon kutusu
+TOAST_ICON_RADIUS: float = float(panel_style.R_ICON_BOX)   # 6
+TOAST_ICON_TEXT_GAP: float = 10.0                          # kutu ile metin arası
+TOAST_TEXT_X: float = TOAST_PAD + TOAST_ICON_BOX + TOAST_ICON_TEXT_GAP   # 54
+TOAST_TITLE_ROW_H: float = TOAST_ICON_BOX                  # başlık satırı kutuyla aynı yükseklikte
+TOAST_BODY_GAP: float = 2.0                                # başlık satırı -> gövde
+TOAST_FOOTER_GAP: float = 6.0                              # gövde -> 'Şerit · HH:MM'
+TOAST_MAX_BODY_LINES: int = 3                              # gövde en fazla 3 satır, sonrası '…'
+TOAST_ICON_ALPHA: int = 46                                 # ~%18 aksan dolgusu
+TOAST_HOVER_TINT: QColor = QColor(255, 255, 255, 8)        # tüm gövdeye ince hover tonu
+
 COLOR_ALERT_WARN = QColor("#FFC45C")  # Amber (Claude / FX warn)
 COLOR_ALERT_CRIT = QColor("#FF6E6E")  # Coral Red (Critical / RAM / FX drop)
 COLOR_ALERT_GROWTH = QColor("#78DC96")  # Mint Green (FX up)
+
+# Yalnızca boyama için aksan eşlemesi (Alert içindeki hex değeri değişmez)
+_ACCENT_TO_KIT: Dict[str, QColor] = {
+    "#FF6E6E": panel_style.DANGER,
+    "#FFC45C": panel_style.WARN,
+    "#78DC96": panel_style.OK,
+}
 
 
 # ==============================================================================
@@ -475,10 +493,11 @@ class AlertEngine:
 
 
 class Toast(QWidget):
-    """Frameless acrylic glass notification toast card.
+    """Frameless opaque notification toast card in the shared panel look (panel_style).
 
-    Features zero-focus stealing (ShowWithoutActivating, WindowDoesNotAcceptFocus),
-    interactive hover pause, slide-up entrance easing, and offscreen high-DPI rendering.
+    Features zero focus stealing (ShowWithoutActivating, WindowDoesNotAcceptFocus),
+    interactive hover pause, shared fade+slide entrance easing, and offscreen
+    high-DPI rendering.
     """
 
     WIDTH: int = TOAST_WIDTH
@@ -513,17 +532,24 @@ class Toast(QWidget):
         # Interaction & Animation states
         self._is_hovered: bool = False
         self._close_hovered: bool = False
-        self._close_rect = QRectF(self.WIDTH - 28.0, 10.0, 18.0, 18.0)
+        self._close_rect = QRectF(
+            self.WIDTH - TOAST_PAD - panel_style.CLOSE_SZ,
+            TOAST_PAD + (TOAST_TITLE_ROW_H - panel_style.CLOSE_SZ) / 2.0,
+            panel_style.CLOSE_SZ,
+            panel_style.CLOSE_SZ,
+        )
         self._is_dismissing: bool = False
 
         self._target_x: int = 0
         self._target_y: int = 0
         self._anim_opacity: float = 1.0
         self._slide_offset_y: float = 0.0
+        self._exit_from_opacity: float = 1.0
+        self._exit_from_y: float = 0.0
 
-        # Animations
+        # Animations (ortak panel hareketi: 160 ms açılış / 115 ms kapanış)
         self._enter_anim = QVariantAnimation(self)
-        self._enter_anim.setDuration(220)
+        self._enter_anim.setDuration(panel_style.anim_ms(panel_style.ANIM_OPEN_MS))
         self._enter_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._enter_anim.setStartValue(0.0)
         self._enter_anim.setEndValue(1.0)
@@ -531,8 +557,8 @@ class Toast(QWidget):
         self._enter_anim.finished.connect(self._on_enter_anim_done)
 
         self._exit_anim = QVariantAnimation(self)
-        self._exit_anim.setDuration(180)
-        self._exit_anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+        self._exit_anim.setDuration(panel_style.anim_ms(panel_style.ANIM_CLOSE_MS))
+        self._exit_anim.setEasingCurve(QEasingCurve.Type.InCubic)
         self._exit_anim.setStartValue(1.0)
         self._exit_anim.setEndValue(0.0)
         self._exit_anim.valueChanged.connect(self._on_exit_anim_step)
@@ -550,31 +576,89 @@ class Toast(QWidget):
         self._timer_deadline: float = 0.0
         self._remaining_dismiss_ms: int = 8000
 
-        # High-DPI Fonts
-        self.f_title = theme.make_font(13.0, QFont.Weight.DemiBold)
-        self.f_body = theme.make_font(11.5, QFont.Weight.Normal)
-        self.f_footer = theme.make_font(10.0, QFont.Weight.Normal)
-        self.f_glyph = theme.make_font(12.0, QFont.Weight.Bold)
+        # Shared panel typography
+        self.f_title = panel_style.f_title()
+        self.f_body = panel_style.f_body()
+        self.f_footer = panel_style.f_small()
+        self.f_glyph = panel_style.font(13.0, QFont.Weight.Bold)
 
         # Dynamic height calculation
         h = self.compute_height()
         self.resize(self.WIDTH, h)
 
+    def _body_width(self) -> float:
+        return self.WIDTH - TOAST_TEXT_X - TOAST_PAD
+
+    def _wrap_body(
+        self,
+        fm: QFontMetricsF,
+        width: float,
+        max_lines: int = TOAST_MAX_BODY_LINES,
+    ) -> tuple[list[str], bool]:
+        """Greedy word-wrap; en fazla max_lines satır, taşan içerik son satırda '…' ile kısaltılır."""
+        text = " ".join(str(self.alert.body or "").split())
+        if not text:
+            return [], False
+        lines: list[str] = []
+        cur = ""
+        for word in text.split(" "):
+            trial = word if not cur else f"{cur} {word}"
+            if not cur or fm.horizontalAdvance(trial) <= width:
+                cur = trial
+            else:
+                lines.append(cur)
+                cur = word
+        if cur:
+            lines.append(cur)
+        if len(lines) <= max_lines:
+            return lines, False
+        tail = " ".join(lines[max_lines - 1:])
+        shown = lines[: max_lines - 1]
+        shown.append(fm.elidedText(tail, Qt.TextElideMode.ElideRight, max(10.0, width)))
+        return shown, True
+
     def compute_height(self) -> int:
-        """Calculate optimal card height based on text wrapping."""
-        fm = QFontMetricsF(self.f_body)
-        avail_w = self.WIDTH - 54.0 - 18.0
-        bounds = fm.boundingRect(
-            QRectF(0, 0, avail_w, 300.0),
-            Qt.TextWordWrap,
-            self.alert.body,
+        """Calculate optimal card height: title row + up to 3 wrapped body lines + footer."""
+        fm_body = QFontMetricsF(self.f_body)
+        fm_footer = QFontMetricsF(self.f_footer)
+        lines, _truncated = self._wrap_body(fm_body, self._body_width())
+        body_h = max(1, len(lines)) * fm_body.height()
+        total_h = (
+            TOAST_PAD
+            + TOAST_TITLE_ROW_H
+            + TOAST_BODY_GAP
+            + body_h
+            + TOAST_FOOTER_GAP
+            + fm_footer.height()
+            + TOAST_PAD
         )
-        body_h = max(18.0, bounds.height())
-        total_h = 14.0 + 18.0 + 4.0 + body_h + 4.0 + 14.0 + 14.0
         return int(math.ceil(total_h))
 
+    def _paint_accent(self) -> QColor:
+        """Alert aksanını yalnızca çizim için ortak kit rengine eşler.
+
+        Bilinen hexler kit renklerine bağlanır; 'claude' uyarısı WARN aksanıyla
+        geldiğinde glif kutusu CLAUDE rengini kullanır. Diğer hexler ayrıştırılır,
+        geçersizse ACCENT kullanılır. Alert içindeki hex değeri hiç değişmez.
+        """
+        raw = str(self.alert.accent or "").strip()
+        kit = _ACCENT_TO_KIT.get(raw.upper())
+        if kit is not None:
+            if "claude" in str(self.alert.kind).lower() and kit == panel_style.WARN:
+                return QColor(panel_style.CLAUDE)
+            return QColor(kit)
+        # Yalnız tam biçimli hex (#RRGGBB / #AARRGGBB) ayrıştırılır; kısa/bozuk
+        # değerler (#123 gibi) geçersiz sayılır ve ACCENT kullanılır.
+        hex_ok = raw.startswith("#") and len(raw) in (7, 9) and all(
+            c in "0123456789abcdefABCDEF" for c in raw[1:]
+        )
+        parsed = QColor(raw) if hex_ok else QColor()
+        if not parsed.isValid():
+            return QColor(panel_style.ACCENT)
+        return parsed
+
     def _get_glyph(self) -> str:
-        """Return category glyph symbol for visual badge."""
+        """Return category glyph symbol for visual badge (bilinmeyen tür: nötr '!')."""
         k = str(self.alert.kind).lower()
         if "claude" in k:
             return "✦"
@@ -587,21 +671,29 @@ class Toast(QWidget):
             return "$"
         if "sys" in k or "ram" in k:
             return "⚡"
-        return "●"
+        return "!"
 
     def show_toast(self, x: int, y: int) -> None:
-        """Position and show toast with 10px slide-up enter transition."""
+        """Position and show toast with the shared panel entrance (fade + 6 px slide)."""
         self._target_x = x
         self._target_y = y
-        self._slide_offset_y = 10.0
+        open_ms = panel_style.anim_ms(panel_style.ANIM_OPEN_MS)
+        if open_ms <= 0:
+            self._slide_offset_y = 0.0
+            self._anim_opacity = 1.0
+            self.setWindowOpacity(1.0)
+            self.move(x, y)
+            self.show()
+            self._on_enter_anim_done()
+            return
+        self._slide_offset_y = panel_style.ANIM_OPEN_SLIDE
         self._anim_opacity = 0.0
         self.setWindowOpacity(0.0)
-        self.move(x, y + 10)
+        self.move(x, y + int(panel_style.ANIM_OPEN_SLIDE))
         self.show()
 
         hwnd = int(self.winId())
         try:
-            winapi.enable_acrylic(hwnd, 0x50181612)
             dpr = self.devicePixelRatioF()
             winapi.set_round_region(
                 hwnd, self.width(), self.height(), int(self.RADIUS), dpr
@@ -610,6 +702,7 @@ class Toast(QWidget):
             pass
 
         self._enter_anim.stop()
+        self._enter_anim.setDuration(open_ms)
         self._enter_anim.start()
 
     def reposition(self, x: int, y: int) -> None:
@@ -635,7 +728,7 @@ class Toast(QWidget):
 
     def _on_enter_anim_step(self, val: float) -> None:
         self._anim_opacity = val
-        self._slide_offset_y = (1.0 - val) * 10.0
+        self._slide_offset_y = (1.0 - val) * panel_style.ANIM_OPEN_SLIDE
         self.setWindowOpacity(val)
         self.move(self._target_x, int(round(self._target_y + self._slide_offset_y)))
         self.update()
@@ -647,21 +740,31 @@ class Toast(QWidget):
         self._dismiss_timer.start(8000)
 
     def dismiss(self) -> None:
-        """Fade out and close toast."""
+        """Fade out (panel_style timing: 115 ms InCubic + 4 px aşağı) and close toast."""
         if self._is_dismissing:
             return
         self._is_dismissing = True
         self._dismiss_timer.stop()
         self._enter_anim.stop()
         self._slide_anim.stop()
+        close_ms = panel_style.anim_ms(panel_style.ANIM_CLOSE_MS)
+        if close_ms <= 0 or not self.isVisible():
+            self._on_exit_anim_done()
+            return
+        self._exit_from_opacity = float(self.windowOpacity())
+        self._exit_from_y = float(self.y())
         self._exit_anim.stop()
-        self._exit_anim.setStartValue(self.windowOpacity())
-        self._exit_anim.setEndValue(0.0)
+        self._exit_anim.setDuration(close_ms)
         self._exit_anim.start()
 
     def _on_exit_anim_step(self, val: float) -> None:
-        self._anim_opacity = val
-        self.setWindowOpacity(val)
+        val_f = float(val)
+        self._anim_opacity = self._exit_from_opacity * val_f
+        self.setWindowOpacity(self._anim_opacity)
+        self.move(
+            self._target_x,
+            int(round(self._exit_from_y + (1.0 - val_f) * panel_style.ANIM_CLOSE_SLIDE)),
+        )
         self.update()
 
     def _on_exit_anim_done(self) -> None:
@@ -743,83 +846,75 @@ class Toast(QWidget):
     # --------------------------------------------------------------------------
 
     def _paint_toast(self, p: QPainter, rect: QRectF) -> None:
-        # 1. Physical acrylic glass capsule background
-        bg_tint = QColor(18, 22, 30, 230)
-        theme.draw_glass_capsule(
-            p,
-            rect,
-            radius=self.RADIUS,
-            is_hovered=self._is_hovered,
-            bg_tint=bg_tint,
-            show_grain=False,
-            show_specular=True,
-            show_outer_stroke=True,
+        # 1. Opak ortak panel kabuğu (akrilik/cam kapsül yok, renkli sol şerit yok)
+        panel_style.draw_panel_shell(p, rect)
+        if self._is_hovered:
+            p.save()
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setPen(Qt.NoPen)
+            p.setBrush(TOAST_HOVER_TINT)
+            p.drawPath(panel_style.rounded(rect, panel_style.R_PANEL))
+            p.restore()
+
+        accent_col = self._paint_accent()
+
+        # 2. Sol 28 px yuvarlak aksan ikon kutusu (~%18 dolgu, aksan renginde glif)
+        icon_box = QRectF(TOAST_PAD, TOAST_PAD, TOAST_ICON_BOX, TOAST_ICON_BOX)
+        p.setPen(Qt.NoPen)
+        p.setBrush(
+            QColor(accent_col.red(), accent_col.green(), accent_col.blue(), TOAST_ICON_ALPHA)
         )
+        p.drawPath(panel_style.rounded(icon_box, TOAST_ICON_RADIUS))
 
-        accent_col = QColor(self.alert.accent)
-
-        # 2. Left vertical accent indicator bar (docked flush against card curved edge)
-        p.save()
-        p.setClipPath(theme.rounded_path(rect, self.RADIUS))
-        p.fillRect(QRectF(0.0, 0.0, 4.0, rect.height()), accent_col)
-        p.restore()
-
-        # 3. Left category icon badge (frosted glass container vertically centered)
-        badge_w = 28.0
-        badge_h = 28.0
-        badge_y = (rect.height() - badge_h) / 2.0
-        badge_rect = QRectF(16.0, badge_y, badge_w, badge_h)
-        badge_bg = QColor(255, 255, 255, 20)
-        p.setPen(QPen(QColor(accent_col.red(), accent_col.green(), accent_col.blue(), 75), 1.0))
-        p.setBrush(badge_bg)
-        p.drawRoundedRect(badge_rect, 8.0, 8.0)
-
-        # Inner glyph symbol
         p.setFont(self.f_glyph)
         p.setPen(accent_col)
-        glyph = self._get_glyph()
-        p.drawText(badge_rect, Qt.AlignCenter, glyph)
+        p.drawText(icon_box, Qt.AlignCenter, self._get_glyph())
 
-        # 4. Title text (13px semibold)
-        p.setFont(self.f_title)
-        p.setPen(theme.COLOR_TEXT_PRIMARY)
-        title_rect = QRectF(54.0, 14.0, rect.width() - 54.0 - 32.0, 18.0)
-        p.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, self.alert.title)
+        # 3. Başlık satırı + sağ üst × (draw_header görünümü: TEXT_CLOSE, BUTTON_HOVER, R_CLOSE)
+        title_row = QRectF(
+            TOAST_TEXT_X,
+            TOAST_PAD,
+            rect.width() - TOAST_TEXT_X - TOAST_PAD,
+            TOAST_TITLE_ROW_H,
+        )
+        hdr = panel_style.draw_header(
+            p, title_row, self.alert.title, close_hover=self._close_hovered
+        )
+        close = hdr.get("close")
+        if close is not None:
+            self._close_rect = QRectF(close)
 
-        # 5. Body text (11.5px regular, secondary)
+        # 4. Gövde (f_body, TEXT_BODY; en fazla 3 satır, taşarsa son satır '…' ile kısaltılır)
+        fm_body = QFontMetricsF(self.f_body)
+        lines, _truncated = self._wrap_body(fm_body, self._body_width())
         p.setFont(self.f_body)
-        p.setPen(theme.COLOR_TEXT_SECONDARY)
-        body_rect = QRectF(
-            54.0, 34.0, rect.width() - 54.0 - 18.0, rect.height() - 34.0 - 22.0
+        p.setPen(panel_style.TEXT_BODY)
+        line_box = QRectF(
+            TOAST_TEXT_X,
+            TOAST_PAD + TOAST_TITLE_ROW_H + TOAST_BODY_GAP,
+            self._body_width(),
+            fm_body.height(),
         )
-        p.drawText(body_rect, Qt.AlignLeft | Qt.TextWordWrap, self.alert.body)
+        for line in lines:
+            p.drawText(
+                line_box, Qt.AlignLeft | Qt.AlignVCenter, line
+            )
+            line_box = line_box.translated(0.0, fm_body.height())
 
-        # 6. Small 'Şerit · HH:MM' line (high contrast legible footer)
-        p.setFont(self.f_footer)
-        p.setPen(QColor(255, 255, 255, 155))
+        # 5. 'Şerit · HH:MM' alt satırı (f_small, TEXT_META)
+        fm_footer = QFontMetricsF(self.f_footer)
         now_clock = dt.datetime.now(sources.LOCAL_TZ).strftime("%H:%M")
-        footer_text = f"Şerit · {now_clock}"
+        p.setFont(self.f_footer)
+        p.setPen(panel_style.TEXT_META)
         footer_rect = QRectF(
-            54.0, rect.height() - 22.0, rect.width() - 54.0 - 18.0, 14.0
+            TOAST_TEXT_X,
+            rect.height() - TOAST_PAD - fm_footer.height(),
+            self._body_width(),
+            fm_footer.height(),
         )
-        p.drawText(footer_rect, Qt.AlignLeft | Qt.AlignVCenter, footer_text)
-
-        # 7. Small '×' close button (vertically aligned with title center)
-        close_cy = title_rect.center().y()
-        self._close_rect = QRectF(rect.width() - 28.0, close_cy - 9.0, 18.0, 18.0)
-        if self._close_hovered:
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, 32))
-            p.drawRoundedRect(self._close_rect, 9.0, 9.0)
-            p.setPen(QPen(QColor(255, 255, 255, 240), 1.4, Qt.SolidLine, Qt.RoundCap))
-        else:
-            p.setPen(QPen(QColor(255, 255, 255, 140), 1.3, Qt.SolidLine, Qt.RoundCap))
-
-        cx = self._close_rect.center().x()
-        cy = self._close_rect.center().y()
-        d = 3.5
-        p.drawLine(QPointF(cx - d, cy - d), QPointF(cx + d, cy + d))
-        p.drawLine(QPointF(cx + d, cy - d), QPointF(cx - d, cy + d))
+        p.drawText(
+            footer_rect, Qt.AlignLeft | Qt.AlignVCenter, f"Şerit · {now_clock}"
+        )
 
     def render_to_image(self, dpr: float = 2.0) -> QImage:
         """Render current toast offscreen to a high-DPI ARGB32 QImage."""

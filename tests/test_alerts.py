@@ -457,7 +457,7 @@ def test_toast_widget_properties() -> None:
     )
 
     toast = Toast(alert)
-    assert toast.width() == 320
+    assert toast.width() == Toast.WIDTH == 352  # v21: panel genişliği
     assert toast.height() >= 70
     assert toast.alert.title == "Test Bildirimi"
     assert toast.alert.accent == "#FFC45C"
