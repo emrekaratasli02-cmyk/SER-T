@@ -1,10 +1,11 @@
-"""Şerit Bildirim Alanı (sistem tepsisi) paneli — panel_style v2 ortak kit ÜSTÜNDE (v20).
+"""Şerit Bildirim Alanı (sistem tepsisi) paneli — v22 kompakt simge ızgarası.
 
-Açılır panellerin ortak dilini paylaşır: opak #141518 kabuk, 16/12/8 köşe dilimi,
-draw_header / draw_card / draw_footer yardımcıları, animate_in / animate_out hareketi.
-Panelin kendi işleri: eğri baş sayfa devri yok; DPR uyumlu 24 px gerçek simge + genel glif
-yedeği, Türkçe ad temizleme, kaydırma, klavye gezinmesi. Veri yoksa '—' veya 'Simge yok'
-boş durumu; hiçbir değer uydurulmaz. Ağır işler GUI iş parçacığı dışındadır.
+Windows 11 gizli simge flyout'u hissi: başlıksız, kartsız, footersız opak
+#141518 kabuk; 44 px hücreler halinde 5 sütunlu simge ızgarası, altta tek
+26 px etiket satırı (hover/odaklı öğenin temiz adı; hiçbiri değilse 'N simge';
+liste boşsa kompakt 'Gizli simge yok'). DPR uyumlu 24 px gerçek simge + genel
+glif yedeği korunur. Türkçe ad temizleme, kaydırma ve klavye gezinmesi korunur;
+veri yoksa uydurma yapılmaz. Ağır işler GUI iş parçacığı dışındadır.
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
-    QFont,
     QFontMetricsF,
     QGuiApplication,
     QImage,
@@ -223,22 +223,31 @@ def draw_generic_app_glyph(p: QPainter, rect: QRectF) -> None:
 
 
 # ---------------------------------------------------------------------------
-# TrayPanel Widget
+# TrayPanel Widget — v22 kompakt simge ızgarası
 # ---------------------------------------------------------------------------
 
 class TrayPanel(QWidget):
-    """Windows sistem tepsisi simge listesi paneli, 352 px, panel_style v2."""
+    """Windows sistem tepsisi simge ızgarası paneli (Windows 11 gizli simge flyout'u)."""
 
-    WIDTH: int = int(ps.WIDTH["tray"])
+    WIDTH: int = 260            # tam ızgara genişliği (>= 5 öğe); daha az öğede daralır
     RADIUS: float = float(ps.R_PANEL)
 
-    ROW_HEIGHT: float = 40.0
-    ROW_STRIDE: float = 40.0
-    LIST_MAX_HEIGHT: float = 320.0   # uzun listeler kaydırılır (8 tam satır)
-    EMPTY_LIST_H: float = 40.0
-    ICON_SZ: float = 24.0
-    EMPTY_TEXT: str = "Simge yok"
-    ROW_RADIUS: float = 8.0
+    CELL_SZ: float = 44.0       # hücre 44x44
+    CELL_GAP: float = 4.0       # hücreler arası boşluk
+    CELLS_PER_ROW: int = 5      # 5 sütun
+    GRID_PAD: float = 12.0      # ızgara çevre boşluğu
+    ICON_SZ: float = 24.0       # hücre içi ortalı simge
+    LABEL_H: float = 26.0       # ızgara altı etiket satırı
+    LABEL_GAP: float = 4.0      # ızgara - etiket arası
+    MAX_ROWS: int = 4           # 4 satırdan fazlası tekerlekle kaydırılır
+    CELL_RADIUS: float = 8.0    # hover/odak hücre köşesi
+    MIN_WIDTH: float = 164.0    # etiket satırına ~140 px kalan alt genişlik
+    EMPTY_TEXT: str = "Gizli simge yok"
+    EMPTY_H: float = GRID_PAD + LABEL_H + GRID_PAD
+
+    # v20/v21 uyumluluk: dock getattr yolunda satır bantı olarak aynı hücre geometrisi
+    ROW_HEIGHT: float = 44.0
+    ROW_STRIDE: float = 48.0    # CELL_SZ + CELL_GAP
 
     item_activated = Signal(object, str)   # (item dict, "left" | "right")
     refresh_requested = Signal()
@@ -259,22 +268,18 @@ class TrayPanel(QWidget):
         self._items: List[Dict[str, Any]] = []
         self._icons: Dict[str, Any] = {}
         self._scaled_icons: Dict[Tuple[str, float], QPixmap] = {}
-        self._stamp: str = "—"                        # son set_items saati
         self._anchor_global: Optional[QRectF] = None
 
         # Etkileşim durumu
         self._hover_idx: int = -1
         self._highlight_idx: int = -1
-        self._close_hovered: bool = False
-        self._refresh_hovered: bool = False
-        self._refresh_pressed: bool = False
+        self._pressed_idx: int = -1
         self._scroll_y: float = 0.0
 
         # Hit-test dikdörtgenleri
-        self._rects: Dict[str, QRectF] = {}
-        self._close_rect: QRectF = QRectF()
-        self._refresh_rect: QRectF = QRectF()
-        self._list_rect: QRectF = QRectF(0.0, 0.0, 0.0, 0.0)
+        self._grid_rect: QRectF = QRectF()
+        self._label_rect: QRectF = QRectF()
+        self._cell_rects: Dict[int, QRectF] = {}
 
         # Yaşam döngüsü
         self._is_closing: bool = False
@@ -283,39 +288,83 @@ class TrayPanel(QWidget):
         self._anchor_timer.setSingleShot(True)
         self._anchor_timer.timeout.connect(self._on_anchor_timeout)
 
-        self._f_name = ps.font(12.5, QFont.Weight.DemiBold)
-        self._f_sub = ps.f_small()
+        self._f_label = ps.f_small()
         self._f_empty = ps.f_body()
 
-        self.resize(self.WIDTH, self.compute_height())
+        self.resize(self.compute_width(), self.compute_height())
         self._layout()
 
     # ------------------------------------------------------------- yerleşim
-    def _body_list_heights(self) -> Tuple[float, float]:
-        """(toplam satır yüksekliği, görünen yükseklik)."""
+    def _cols_needed(self) -> int:
+        """Öğe sayısı için gereken sütun sayısı (en çok 5)."""
         if not self._items:
-            return self.EMPTY_LIST_H, self.EMPTY_LIST_H
-        total = float(len(self._items) * self.ROW_STRIDE)
-        return total, min(self.LIST_MAX_HEIGHT, total)
+            return 0
+        return min(len(self._items), self.CELLS_PER_ROW)
 
-    def _layout(self) -> None:
-        """Kart içi liste alanını hesaplar (paint olmaksızın hit-test için)."""
-        vh = self._visible_list_height()
-        list_top = ps.PAD + ps.HEADER_H + ps.GAP + ps.CARD_GAP + 15.0 + ps.CARD_PAD
-        self._list_rect = QRectF(
-            ps.PAD + ps.CARD_PAD,
-            list_top,
-            self.width() - 2.0 * ps.PAD - 2.0 * ps.CARD_PAD,
-            vh,
-        )
+    def _total_rows(self) -> int:
+        """Sanal ızgaradaki toplam satır sayısı."""
+        if not self._items:
+            return 0
+        return (len(self._items) + self.CELLS_PER_ROW - 1) // self.CELLS_PER_ROW
+
+    def _visible_rows(self) -> int:
+        """Görünen satır sayısı: 4 satırdan fazlası kaydırılır."""
+        return min(self._total_rows(), self.MAX_ROWS)
+
+    def _grid_content_size(self) -> Tuple[float, float]:
+        """(ızgara içeriği genişlik, dikey olarak kaydırılabilir SANAL ızgara yüksekliği)."""
+        cols = self._cols_needed()
+        if cols == 0:
+            return 0.0, 0.0
+        w = cols * self.CELL_SZ + (cols - 1) * self.CELL_GAP
+        h = self._total_rows() * self.CELL_SZ + (self._total_rows() - 1) * self.CELL_GAP
+        return w, h
+
+    def _visible_grid_h(self) -> float:
+        """Görünen ızgara yüksekliği (<= 4 satır)."""
+        rows = self._visible_rows()
+        if rows == 0:
+            return 0.0
+        return rows * self.CELL_SZ + (rows - 1) * self.CELL_GAP
+
+    def compute_width(self) -> int:
+        """Genişlik: 5x44 + 4x4 + 24 = 260; daha az öğe → daralır; etiket ~140 px alt sınır."""
+        cols = self._cols_needed()
+        if cols == 0:
+            return int(round(self.MIN_WIDTH))
+        w = cols * self.CELL_SZ + (cols - 1) * self.CELL_GAP + 2.0 * self.GRID_PAD
+        return int(round(max(self.MIN_WIDTH, w)))
 
     def compute_height(self) -> int:
-        """Öğe sayısına göre panel yüksekliği (kart içeriği dar; uzun liste kaydırılır)."""
-        total_h, vis_h = self._body_list_heights()
-        h = ps.PAD + ps.HEADER_H + ps.GAP
-        h += 2.0 * ps.CARD_PAD + 15.0 + ps.CARD_GAP + vis_h
-        h += ps.GAP + ps.FOOTER_H + ps.PAD * 0.5
+        """Yükseklik: 12 + ızgara (max 4 satır) + 4 + 26 etiket + 12; boş liste kompakt."""
+        if not self._items:
+            return int(round(self.EMPTY_H))
+        h = self.GRID_PAD + self._visible_grid_h() + self.LABEL_GAP + self.LABEL_H + self.GRID_PAD
         return int(round(h))
+
+    def _layout(self) -> None:
+        """Izgara alanını ve hücre dikdörtgenlerini hesaplar (hit-test için)."""
+        w = float(self.width())
+        if not self._items:
+            self._grid_rect = QRectF()
+            self._label_rect = QRectF(self.GRID_PAD, self.GRID_PAD,
+                                      max(0.0, w - 2.0 * self.GRID_PAD), self.LABEL_H)
+            self._cell_rects = {}
+            return
+
+        content_w, _total_h = self._grid_content_size()
+        gx = (w - content_w) / 2.0 if content_w < w else self.GRID_PAD
+        self._grid_rect = QRectF(gx, self.GRID_PAD, content_w, self._visible_grid_h())
+        self._label_rect = QRectF(
+            self.GRID_PAD,
+            self._grid_rect.bottom() + self.LABEL_GAP,
+            max(0.0, w - 2.0 * self.GRID_PAD),
+            self.LABEL_H,
+        )
+
+        self._cell_rects = {}
+        for idx in range(len(self._items)):
+            self._cell_rects[idx] = self._cell_rect(idx)
 
     # ------------------------------------------------------------------ API
     def is_open(self) -> bool:
@@ -327,8 +376,8 @@ class TrayPanel(QWidget):
         return (time.monotonic() - self._last_close_time) * 1000.0 <= threshold_ms
 
     def chip_text(self) -> str:
-        """Başlık rozeti: öğe sayısı ('5 öğe')."""
-        return f"{len(self._items)} öğe"
+        """Etiket rozeti: simge sayısı ('N simge')."""
+        return f"{len(self._items)} simge"
 
     def set_items(self, items: Any, icons: Any = None) -> None:
         """Tepsi simge listesini ve ikon önbelleğini gösterilecek hale getirir."""
@@ -345,14 +394,14 @@ class TrayPanel(QWidget):
             self._icons = icons if isinstance(icons, dict) else {}
             self._scaled_icons.clear()
 
-            self._stamp = time.strftime("%H:%M")
-
             if self._highlight_idx >= len(self._items):
                 self._highlight_idx = len(self._items) - 1
             if self._hover_idx >= len(self._items):
                 self._hover_idx = -1
+            if self._pressed_idx >= len(self._items):
+                self._pressed_idx = -1
 
-            max_scroll = max(0.0, self._total_list_height() - self._visible_list_height())
+            max_scroll = max(0.0, self._total_grid_height() - self._visible_grid_h())
             self._scroll_y = max(0.0, min(max_scroll, self._scroll_y))
 
             self._relayout()
@@ -360,9 +409,10 @@ class TrayPanel(QWidget):
             _log_err("TrayPanel.set_items", exc)
 
     def _relayout(self) -> None:
+        w = self.compute_width()
         h = self.compute_height()
-        if h != self.height():
-            self.resize(self.WIDTH, h)
+        if w != self.width() or h != self.height():
+            self.resize(w, h)
         self._layout()
         self.update()
 
@@ -378,7 +428,7 @@ class TrayPanel(QWidget):
                 self._anchor_global = None
 
             self._is_closing = False
-            self.resize(self.WIDTH, self.compute_height())
+            self.resize(self.compute_width(), self.compute_height())
             self._layout()
 
             dpr = 1.0
@@ -452,70 +502,61 @@ class TrayPanel(QWidget):
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-            self._paint_card(p)
+            self._paint_content(p)
         finally:
             p.end()
         return img
 
-    # ------------------------------------------------------ satır yardımcıları
-    def _total_list_height(self) -> float:
-        return self._body_list_heights()[0]
+    # -------------------------------------------------- ızgara yardımcıları
+    def _total_grid_height(self) -> float:
+        """SANAL ızgara yüksekliği (tüm satırlar)."""
+        return self._grid_content_size()[1]
 
-    def _visible_list_height(self) -> float:
-        return self._body_list_heights()[1]
+    def _cell_rect(self, idx: int) -> QRectF:
+        """Öğenin görünen hücre dikdörtgeni (yerel koordinat, kaydırma dahil)."""
+        if self._grid_rect.isNull() or idx < 0 or idx >= len(self._items):
+            return QRectF()
+        col = idx % self.CELLS_PER_ROW
+        row = idx // self.CELLS_PER_ROW
+        x = self._grid_rect.left() + col * self.ROW_STRIDE
+        y = self._grid_rect.top() + row * self.ROW_STRIDE - self._scroll_y
+        return QRectF(x, y, self.CELL_SZ, self.CELL_SZ)
 
-    def _get_scaled_icon(self, item: Dict[str, Any], dpr: float) -> Optional[QPixmap]:
-        """Öğe için DPR uyumlu 24 px simge; yoksa None."""
-        name = str(item.get("name") or "")
-        cache_key = (name, dpr)
-        if cache_key in self._scaled_icons:
-            return self._scaled_icons[cache_key]
+    def _cell_at_point(self, pos: QPointF) -> int:
+        """Yerel koordinattan hücre indeksi; yoksa -1."""
+        for idx in sorted(self._cell_rects.keys()):
+            r = self._cell_rects[idx]
+            if r.isValid() and r.contains(pos):
+                return idx
+        return -1
 
-        pm = None
-        if name in self._icons:
-            pm = self._icons[name]
-        elif item.get("tooltip") and str(item["tooltip"]) in self._icons:
-            pm = self._icons[str(item["tooltip"])]
-        elif item.get("exe") and str(item["exe"]) in self._icons:
-            pm = self._icons[str(item["exe"])]
+    def item_anchor_global(self, item: Any) -> Optional[QRectF]:
+        """Öğenin hücresinin GLOBAL dikdörtgeni (sağ tık menüsü bunun üzerine çapa lanır)."""
+        try:
+            if not self._items or item not in self._items:
+                return None
+            idx = self._items.index(item)
+            r = self._cell_rect(idx)
+            if r.isNull():
+                return None
+            c = r.center()
+            gc = self.mapToGlobal(QPoint(int(c.x()), int(c.y())))
+            return QRectF(float(gc.x() - self.CELL_SZ / 2.0),
+                          float(gc.y() - self.CELL_SZ / 2.0),
+                          self.CELL_SZ, self.CELL_SZ)
+        except Exception as exc:
+            _log_err("TrayPanel.item_anchor_global", exc)
+            return None
 
-        if isinstance(pm, QPixmap) and not pm.isNull():
-            target_px = int(round(self.ICON_SZ * dpr))
-            scaled = pm.scaled(
-                target_px,
-                target_px,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            scaled.setDevicePixelRatio(dpr)
-            self._scaled_icons[cache_key] = scaled
-            return scaled
-
-        return None
-
-    def _row_at_point(self, pos: QPointF) -> int:
-        """Yerel koordinattan görünen satır indeksi; yoksa -1."""
-        if self._list_rect is None or self._list_rect.isNull():
-            return -1
-        if not self._list_rect.contains(pos):
-            return -1
-        rel_y = pos.y() - self._list_rect.top() + self._scroll_y
-        if rel_y < 0:
-            return -1
-        idx = int(rel_y // self.ROW_STRIDE)
-        offset = rel_y - idx * self.ROW_STRIDE
-        if offset > self.ROW_HEIGHT:
-            return -1
-        return idx if 0 <= idx < len(self._items) else -1
-
-    def _ensure_row_visible(self, idx: int) -> None:
-        """Klavye gezinmesinde satırı görünür aralığa kaydırır."""
+    def _ensure_cell_visible(self, idx: int) -> None:
+        """Klavye gezinmesinde hücrenin satırını görünür aralığa kaydırır."""
         if idx < 0 or not self._items or idx >= len(self._items):
             return
-        row_top = idx * self.ROW_STRIDE
-        row_bottom = row_top + self.ROW_HEIGHT
-        vis_h = self._visible_list_height()
-        max_scroll = max(0.0, self._total_list_height() - vis_h)
+        row = idx // self.CELLS_PER_ROW
+        row_top = row * self.ROW_STRIDE
+        row_bottom = row_top + self.CELL_SZ
+        vis_h = self._visible_grid_h()
+        max_scroll = max(0.0, self._total_grid_height() - vis_h)
 
         if row_top < self._scroll_y:
             self._scroll_y = float(row_top)
@@ -531,23 +572,46 @@ class TrayPanel(QWidget):
                 event.accept()
                 return
 
-            if key in (Qt.Key.Key_Down, Qt.Key.Key_Up) and self._items:
+            n = len(self._items)
+            moved = False
+            if key in (Qt.Key.Key_Down, Qt.Key.Key_Up, Qt.Key.Key_Left, Qt.Key.Key_Right) and n:
                 if self._highlight_idx < 0:
-                    self._highlight_idx = 0 if key == Qt.Key.Key_Down else len(self._items) - 1
+                    self._highlight_idx = 0 if key in (
+                        Qt.Key.Key_Down, Qt.Key.Key_Right) else n - 1
+                    moved = True
                 elif key == Qt.Key.Key_Down:
-                    self._highlight_idx = min(len(self._items) - 1, self._highlight_idx + 1)
+                    self._highlight_idx = min(n - 1, self._highlight_idx + self.CELLS_PER_ROW)
+                    moved = True
+                elif key == Qt.Key.Key_Up:
+                    self._highlight_idx = max(0, self._highlight_idx - self.CELLS_PER_ROW)
+                    moved = True
+                elif key == Qt.Key.Key_Right:
+                    self._highlight_idx = min(n - 1, self._highlight_idx + 1)
+                    moved = True
                 else:
                     self._highlight_idx = max(0, self._highlight_idx - 1)
-                self._ensure_row_visible(self._highlight_idx)
-                self.update()
-                event.accept()
-                return
+                    moved = True
+                if moved:
+                    self._ensure_cell_visible(self._highlight_idx)
+                    self.update()
+                    event.accept()
+                    return
 
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                if 0 <= self._highlight_idx < len(self._items):
+                if 0 <= self._highlight_idx < n:
                     item = self._items[self._highlight_idx]
                     self.item_activated.emit(item, "left")
                     self.hide_animated()
+                    event.accept()
+                    return
+
+            is_menu_key = key == Qt.Key.Key_Menu or (
+                key == Qt.Key.Key_F10 and bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            )
+            if is_menu_key:
+                if 0 <= self._highlight_idx < n:
+                    item = self._items[self._highlight_idx]
+                    self.item_activated.emit(item, "right")
                     event.accept()
                     return
         except Exception as exc:
@@ -581,28 +645,18 @@ class TrayPanel(QWidget):
             pos = event.position()
             button = event.button()
 
+            hit_idx = self._cell_at_point(pos)
             if button == Qt.MouseButton.LeftButton:
-                if self._close_rect.isValid() and self._close_rect.contains(pos):
-                    self.hide_animated()
-                    event.accept()
-                    return
-
-                if self._refresh_rect.isValid() and self._refresh_rect.contains(pos):
-                    self._refresh_pressed = True
-                    self.update()
-                    event.accept()
-                    return
-
-                hit_idx = self._row_at_point(pos)
                 if 0 <= hit_idx < len(self._items):
+                    self._pressed_idx = hit_idx
                     item = self._items[hit_idx]
+                    self.update()
                     self.item_activated.emit(item, "left")
                     self.hide_animated()
                     event.accept()
                     return
 
             elif button == Qt.MouseButton.RightButton:
-                hit_idx = self._row_at_point(pos)
                 if 0 <= hit_idx < len(self._items):
                     item = self._items[hit_idx]
                     self.item_activated.emit(item, "right")
@@ -615,10 +669,8 @@ class TrayPanel(QWidget):
 
     def mouseReleaseEvent(self, event) -> None:
         try:
-            if event.button() == Qt.MouseButton.LeftButton and self._refresh_pressed:
-                self._refresh_pressed = False
-                if self._refresh_rect.isValid() and self._refresh_rect.contains(event.position()):
-                    self.refresh_requested.emit()
+            if self._pressed_idx >= 0:
+                self._pressed_idx = -1
                 self.update()
                 event.accept()
                 return
@@ -630,15 +682,9 @@ class TrayPanel(QWidget):
     def mouseMoveEvent(self, event) -> None:
         try:
             pos = event.position()
-            was_close = self._close_hovered
-            was_ref = self._refresh_hovered
             old_hover = self._hover_idx
-
-            self._close_hovered = self._close_rect.isValid() and self._close_rect.contains(pos)
-            self._refresh_hovered = self._refresh_rect.isValid() and self._refresh_rect.contains(pos)
-            self._hover_idx = self._row_at_point(pos)
-
-            if was_close != self._close_hovered or was_ref != self._refresh_hovered or old_hover != self._hover_idx:
+            self._hover_idx = self._cell_at_point(pos)
+            if old_hover != self._hover_idx:
                 self.update()
         except Exception as exc:
             _log_err("TrayPanel.mouseMoveEvent", exc)
@@ -647,21 +693,20 @@ class TrayPanel(QWidget):
 
     def leaveEvent(self, event) -> None:
         self._hover_idx = -1
-        self._close_hovered = False
-        self._refresh_hovered = False
-        self._refresh_pressed = False
+        self._pressed_idx = -1
         self.update()
         super().leaveEvent(event)
 
     def wheelEvent(self, event) -> None:
         try:
-            vis_h = self._visible_list_height()
-            max_scroll = max(0.0, self._total_list_height() - vis_h)
+            vis_h = self._visible_grid_h()
+            max_scroll = max(0.0, self._total_grid_height() - vis_h)
 
             if max_scroll > 0.0:
-                step = (event.angleDelta().y() / 120.0) * 40.0
+                step = (event.angleDelta().y() / 120.0) * self.ROW_STRIDE
                 self._scroll_y = max(0.0, min(max_scroll, self._scroll_y - step))
-                self._hover_idx = self._row_at_point(event.position())
+                self._layout()
+                self._hover_idx = self._cell_at_point(event.position())
                 self.update()
                 event.accept()
                 return
@@ -677,154 +722,136 @@ class TrayPanel(QWidget):
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-            self._paint_card(p)
+            self._paint_content(p)
         except Exception as exc:
             _log_err("TrayPanel.paintEvent", exc)
         finally:
             p.end()
 
-    @staticmethod
-    def _draw_header_icon(p: QPainter, r: QRectF) -> None:
-        """Tepsiyi açan bölüme benzer ^ işareti (22 px kutu)."""
-        p.save()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        cx, cy = r.center().x(), r.center().y()
-        p.setPen(QPen(QColor(255, 255, 255, 230), 1.6, Qt.PenStyle.SolidLine,
-                      Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawLine(QPointF(cx - 4.5, cy + 2.0), QPointF(cx, cy - 2.5))
-        p.drawLine(QPointF(cx, cy - 2.5), QPointF(cx + 4.5, cy + 2.0))
-        p.setPen(QPen(QColor(255, 255, 255, 90), 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        p.drawLine(QPointF(cx - 6.5, cy + 6.0), QPointF(cx + 6.5, cy + 6.0))
-        p.restore()
+    def _get_scaled_icon(self, item: Dict[str, Any], dpr: float) -> Optional[QPixmap]:
+        """Öğe için DPR uyumlu 24 px simge; yoksa None."""
+        name = str(item.get("name") or "")
+        cache_key = (name, dpr)
+        if cache_key in self._scaled_icons:
+            return self._scaled_icons[cache_key]
 
-    def _paint_row(self, p: QPainter, row: QRectF, idx: int, item: Dict[str, Any], dpr: float) -> None:
-        # Satır zemini: hover yumuşak vurgu / klavye imleci
+        pm = None
+        if name in self._icons:
+            pm = self._icons[name]
+        elif item.get("tooltip") and str(item["tooltip"]) in self._icons:
+            pm = self._icons[str(item["tooltip"])]
+        elif item.get("exe") and str(item["exe"]) in self._icons:
+            pm = self._icons[str(item["exe"])]
+
+        if isinstance(pm, QPixmap) and not pm.isNull():
+            target_px = int(round(self.ICON_SZ * dpr))
+            scaled = pm.scaled(
+                target_px,
+                target_px,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            scaled.setDevicePixelRatio(dpr)
+            self._scaled_icons[cache_key] = scaled
+            return scaled
+
+        return None
+
+    def _paint_cell(self, p: QPainter, cell: QRectF, idx: int, item: Dict[str, Any], dpr: float) -> None:
         is_hover = idx == self._hover_idx
+        is_pressed = idx == self._pressed_idx
         is_kbd = idx == self._highlight_idx
-        if is_hover:
-            p.setPen(QPen(QColor(255, 255, 255, 15), 1.0))
-            p.setBrush(ps.TILE_HOVER)
-            p.drawPath(ps.rounded(row.adjusted(0.5, 0.5, -0.5, -0.5), self.ROW_RADIUS))
-        elif is_kbd:
-            p.setPen(QPen(QColor(255, 255, 255, 20), 1.0))
-            p.setBrush(QColor(255, 255, 255, 26))
-            p.drawPath(ps.rounded(row.adjusted(0.5, 0.5, -0.5, -0.5), self.ROW_RADIUS))
 
-        # Simge: gerçek 24 px icon, yoksa genel uygulama glifi
-        icon_x = row.left() + 10.0
-        icon_y = row.top() + (self.ROW_HEIGHT - self.ICON_SZ) / 2.0
+        # Hücre zemini: hover BUTTON_HOVER / basılı daha koyu
+        if is_pressed:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, 55))
+            p.drawPath(ps.rounded(cell, self.CELL_RADIUS))
+        elif is_hover:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(ps.BUTTON_HOVER)
+            p.drawPath(ps.rounded(cell, self.CELL_RADIUS))
+
+        # Klavye odağı: 1 px ACCENT halkası
+        if is_kbd:
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(ps.ACCENT, 1.0))
+            p.drawPath(ps.rounded(cell.adjusted(0.5, 0.5, -0.5, -0.5), self.CELL_RADIUS))
+
+        # Simge: gerçek 24 px icon ortalı, yoksa genel uygulama glifi
         pm = self._get_scaled_icon(item, dpr)
         if pm is not None:
-            p.drawPixmap(QPointF(icon_x, icon_y), pm)
+            pm_w = pm.width() / max(1.0, pm.devicePixelRatio())
+            pm_h = pm.height() / max(1.0, pm.devicePixelRatio())
+            ix = cell.center().x() - pm_w / 2.0
+            iy = cell.center().y() - pm_h / 2.0
+            p.drawPixmap(QPointF(ix, iy), pm)
         else:
-            draw_generic_app_glyph(p, QRectF(icon_x + 0.5, icon_y + 0.5,
-                                             self.ICON_SZ - 1.0, self.ICON_SZ - 1.0))
+            gr = QRectF(cell.center().x() - self.ICON_SZ / 2.0 + 0.5,
+                        cell.center().y() - self.ICON_SZ / 2.0 + 0.5,
+                        self.ICON_SZ - 1.0, self.ICON_SZ - 1.0)
+            draw_generic_app_glyph(p, gr)
 
-        # Ad + varsa Türkçe durum ikinci satırı
-        text_x = icon_x + self.ICON_SZ + 10.0
-        avail = max(8.0, row.right() - 6.0 - text_x)
-        name = clean_tray_name(item)
-        status = tray_status_tr(item)
+    def _paint_label(self, p: QPainter) -> None:
+        """Izgara altı tek etiket satırı: temiz ad (hover/odak), 'N simge', 'Gizli simge yok'."""
+        r = self._label_rect
+        if r.isNull():
+            return
+        n = len(self._items)
+        idx = self._hover_idx if 0 <= self._hover_idx < n else (
+            self._highlight_idx if 0 <= self._highlight_idx < n else -1)
 
-        if status:
-            p.setFont(self._f_name)
-            fm = QFontMetricsF(self._f_name)
-            p.setPen(ps.TEXT)
-            p.drawText(
-                QRectF(text_x, row.top() + 4.5, avail, 17.0),
-                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                fm.elidedText(name, Qt.TextElideMode.ElideRight, avail),
-            )
-            p.setFont(self._f_sub)
-            fm_sub = QFontMetricsF(self._f_sub)
+        p.setFont(self._f_label)
+        if idx >= 0:
+            fm = QFontMetricsF(self._f_label)
+            text = fm.elidedText(clean_tray_name(self._items[idx]),
+                                 Qt.TextElideMode.ElideRight, max(8.0, r.width()))
+            p.setPen(ps.TEXT_BODY)
+        else:
+            text = self.EMPTY_TEXT if not self._items else self.chip_text()
             p.setPen(ps.TEXT_MUTED)
-            p.drawText(
-                QRectF(text_x, row.top() + 22.0, avail, 13.0),
-                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                fm_sub.elidedText(status, Qt.TextElideMode.ElideRight, avail),
-            )
-        else:
-            p.setFont(self._f_name)
-            fm = QFontMetricsF(self._f_name)
-            p.setPen(ps.TEXT)
-            p.drawText(
-                QRectF(text_x, row.top(), avail, self.ROW_HEIGHT),
-                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                fm.elidedText(name, Qt.TextElideMode.ElideRight, avail),
-            )
+
+        p.drawText(r, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
 
     def _paint_scroll_indicator(self, p: QPainter) -> None:
-        total = self._total_list_height()
-        vis_h = self._visible_list_height()
-        if total <= vis_h + 0.5 or self._scroll_y <= 0.5:
+        total = self._total_grid_height()
+        vis_h = self._visible_grid_h()
+        if total <= vis_h + 0.5 or self._scroll_y <= 0.5 or self._grid_rect.isNull():
             return
         max_scroll = total - vis_h
         thumb_h = max(24.0, vis_h * (vis_h / total))
-        thumb_y = self._list_rect.top() + (self._scroll_y / max_scroll) * (vis_h - thumb_h)
+        thumb_y = self._grid_rect.top() + (self._scroll_y / max_scroll) * (vis_h - thumb_h)
         thumb = QRectF(self.width() - 7.0, thumb_y, 3.0, thumb_h)
         p.fillPath(ps.rounded(thumb, 1.5), QColor(255, 255, 255, 70))
 
-    def _paint_card(self, p: QPainter) -> None:
+    def _paint_content(self, p: QPainter) -> None:
         w = float(self.width())
         h = float(self.height())
         dpr = p.device().devicePixelRatio() if p.device() is not None else 1.0
 
         ps.draw_panel_shell(p, QRectF(0.0, 0.0, w, h))
-        self._rects = {}
+        self._cell_rects = {}
         self._layout()
 
-        cw = w - 2.0 * ps.PAD
-        y = ps.PAD
-
-        # Başlık: 'Bildirim Alanı' + tek rozet ('N öğe') + ×
-        hdr = ps.draw_header(
-            p,
-            QRectF(ps.PAD, y, cw, ps.HEADER_H),
-            "Bildirim Alanı",
-            self._draw_header_icon,
-            chip=self.chip_text(),
-            close_hover=self._close_hovered,
-        )
-        self._close_rect = QRectF(hdr["close"]) if hdr.get("close") is not None else QRectF()
-        self._rects["close"] = self._close_rect
-        y += ps.HEADER_H + ps.GAP
-
-        # Kart 'UYGULAMALAR': satır başına bir tepsi ögesi
-        total_h, vis_h = self._body_list_heights()
-        card_h = 2.0 * ps.CARD_PAD + 15.0 + ps.CARD_GAP + vis_h
-        ps.draw_card(p, QRectF(ps.PAD, y, cw, card_h), "Uygulamalar")
-
-        p.save()
-        p.setClipRect(self._list_rect)
-
         if not self._items:
+            # Kompakt boş durum: ortada soluk 'Gizli simge yok'
             p.setFont(self._f_empty)
             p.setPen(ps.TEXT_MUTED)
-            p.drawText(self._list_rect, Qt.AlignmentFlag.AlignCenter, self.EMPTY_TEXT)
-        else:
-            for i, item in enumerate(self._items):
-                row_y = self._list_rect.top() + i * self.ROW_STRIDE - self._scroll_y
-                if row_y + self.ROW_HEIGHT < self._list_rect.top() or row_y > self._list_rect.bottom():
-                    continue
-                row = QRectF(self._list_rect.left(), row_y, self._list_rect.width(), self.ROW_HEIGHT)
-                self._paint_row(p, row, i, item, dpr)
+            empty_rect = QRectF(self.GRID_PAD, self.GRID_PAD,
+                                max(0.0, w - 2.0 * self.GRID_PAD), self.LABEL_H)
+            p.drawText(empty_rect, Qt.AlignmentFlag.AlignCenter, self.EMPTY_TEXT)
+            return
 
+        # Izgara: görünür hücreler klibi
+        p.save()
+        p.setClipRect(self._grid_rect.adjusted(-1.0, -1.0, 1.0, 1.0))
+        for idx in sorted(self._cell_rects.keys()):
+            item = self._items[idx]
+            if isinstance(item, dict):
+                self._paint_cell(p, self._cell_rects[idx], idx, item, dpr)
         p.restore()
 
-        # Kaydırma göstergesi (yalnız kaydırılırken)
-        if total_h > vis_h and self._scroll_y > 0.5:
-            self._paint_scroll_indicator(p)
+        self._paint_label(p)
 
-        # Alt bilgi: kaynak + tek hayalet düğme
-        footer_top = h - ps.PAD * 0.5 - ps.FOOTER_H
-        btn = ps.draw_footer(
-            p,
-            QRectF(ps.PAD, footer_top, cw, ps.FOOTER_H),
-            f"Windows sistem tepsisi · {self._stamp}",
-            "Yenile",
-            button_hover=self._refresh_hovered,
-        )
-        self._refresh_rect = QRectF(btn) if btn is not None else QRectF()
-        if not self._refresh_rect.isNull():
-            self._rects["refresh"] = self._refresh_rect
+        # Kaydırma göstergesi (yalnız kaydırılırken)
+        self._paint_scroll_indicator(p)

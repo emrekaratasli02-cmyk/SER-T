@@ -1,13 +1,14 @@
-"""test_tray_panel.py - Test suite for TrayPanel, Turkish cleaning, and deduplication.
+"""test_tray_panel.py - Test suite for v22 TrayPanel grid, Turkish cleaning, and deduplication.
 
 Tests:
 1. Turkish name cleaning table (all requirements + 10 edge cases)
 2. Tooltip status translation
 3. Item deduplication
 4. Bad data matrix (>= 25 cases) through set_items + render_to_image
-5. Hit testing and signal emission (left-click closes, right-click keeps open)
-6. Keyboard navigation (Escape, Up/Down, Enter/Return)
-7. Scroll clamping with 30 items
+5. Grid-cell hit testing and signal emission (left-click closes, right-click keeps open,
+   Esc closes; v22 has no header/footer)
+6. Keyboard navigation (Escape, Up/Down/Left/Right, Enter/Return)
+7. Scroll clamping with 30 items (6 rows, 4 visible)
 8. recently_closed bounce prevention timing
 """
 
@@ -27,7 +28,6 @@ serit_root = Path(__file__).resolve().parent.parent
 if str(serit_root) not in sys.path:
     sys.path.insert(0, str(serit_root))
 
-import panel_style as ps  # noqa: E402
 from tray_panel import (  # noqa: E402
     TrayPanel,
     clean_tray_name,
@@ -149,13 +149,18 @@ def test_dedupe() -> None:
 
 
 def test_panel_width_shared_kit() -> None:
-    """TrayPanel width must be exactly the shared kit tray width (352)."""
+    """TrayPanel v22 ızgara genişliği: >= 5 öğe -> 260; az öğe daralır (alt sınır 164)."""
     print("-> test_panel_width_shared_kit")
     _ensure_qapp()
     panel = TrayPanel()
-    assert panel.WIDTH == ps.WIDTH["tray"] == 352
-    assert panel.width() == ps.WIDTH["tray"]
-    print("   [OK] Panel width matches panel_style.WIDTH['tray'].")
+    assert panel.WIDTH == 260
+    panel.set_items([{"name": "App"} for _ in range(5)])
+    assert panel.width() == 260
+    panel.set_items([{"name": "App"} for _ in range(3)])
+    assert panel.width() == 164                # etiket ~140 px alan bulur
+    panel.set_items([])
+    assert panel.width() == 164
+    print("   [OK] Panel width matches v22 grid contract (260 / shrink / 164).")
 
 
 def test_bad_data_matrix() -> None:
@@ -208,7 +213,12 @@ def test_bad_data_matrix() -> None:
 
 
 def test_row_hit_testing_and_signals() -> None:
-    """Test mouse clicks: left click emits item_activated and closes, right click keeps open."""
+    """Test grid-cell clicks: left click emits item_activated and closes, right click keeps open.
+
+    v22: başlık/kart/footer yok; ✕ ve 'Yenile' düğmesi kaldırıldı. Aynı niyetin yerine
+    geçen doğrulamalar: Esc ile kapanır, ızgara dışı tık sinyal üretmez ve
+    refresh_requested sinyali (artık hiçbir şey tetiklemese de) hâlâ bağlanabilir kalır.
+    """
     print("-> test_row_hit_testing_and_signals")
     _ensure_qapp()
 
@@ -221,10 +231,10 @@ def test_row_hit_testing_and_signals() -> None:
     panel.set_items(mock_items)
 
     # Position at known geometry
-    panel.setGeometry(100, 100, panel.WIDTH, panel.compute_height())
+    panel.setGeometry(100, 100, panel.compute_width(), panel.compute_height())
     panel.show()
     QApplication.processEvents()
-    panel.render_to_image(2.0)  # fills _close_rect / _refresh_rect from paint layout
+    panel.render_to_image(2.0)  # fills _cell_rects from paint layout
 
     activated_events: List[Tuple[Dict[str, Any], str]] = []
     refresh_events: List[bool] = []
@@ -232,16 +242,12 @@ def test_row_hit_testing_and_signals() -> None:
     panel.item_activated.connect(lambda item, btn: activated_events.append((item, btn)))
     panel.refresh_requested.connect(lambda: refresh_events.append(True))
 
-    list_rect = panel._list_rect
-    y_row0 = list_rect.top() + panel.ROW_HEIGHT / 2.0
-    y_row1 = list_rect.top() + panel.ROW_STRIDE + panel.ROW_HEIGHT / 2.0
-
-    # Test 1: Left-click on Row 0
-    click_row0 = QPointF(50.0, y_row0)
+    # Test 1: Left-click on Cell 0
+    click_cell0 = panel._cell_rect(0).center()
     ev_left = QMouseEvent(
         QEvent.Type.MouseButtonPress,
-        click_row0,
-        click_row0,
+        click_cell0,
+        click_cell0,
         Qt.MouseButton.LeftButton,
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
@@ -256,13 +262,14 @@ def test_row_hit_testing_and_signals() -> None:
     # Reset closing state for next test
     panel._is_closing = False
     panel.show()
+    QApplication.processEvents()
 
-    # Test 2: Right-click on Row 1
-    click_row1 = QPointF(50.0, y_row1)
+    # Test 2: Right-click on Cell 1
+    click_cell1 = panel._cell_rect(1).center()
     ev_right = QMouseEvent(
         QEvent.Type.MouseButtonPress,
-        click_row1,
-        click_row1,
+        click_cell1,
+        click_cell1,
         Qt.MouseButton.RightButton,
         Qt.MouseButton.RightButton,
         Qt.KeyboardModifier.NoModifier,
@@ -274,42 +281,26 @@ def test_row_hit_testing_and_signals() -> None:
     assert activated_events[1][1] == "right"
     assert panel._is_closing is False, "Panel should NOT close on right click"
 
-    # Test 3: Click 'Yenile' button
-    ref_center = panel._refresh_rect.center()
-    ev_ref_press = QMouseEvent(
+    # Test 3: Izgara dışı boş alana tık: sinyal üretilmez (eski Yenile/boş bölge niyeti)
+    hit_free = panel._cell_at_point(QPointF(2.0, 2.0))
+    assert hit_free == -1
+    ev_blank = QMouseEvent(
         QEvent.Type.MouseButtonPress,
-        ref_center,
-        ref_center,
+        QPointF(2.0, 2.0),
+        QPointF(2.0, 2.0),
         Qt.MouseButton.LeftButton,
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
     )
-    panel.mousePressEvent(ev_ref_press)
-    assert panel._refresh_pressed is True
+    panel.mousePressEvent(ev_blank)
+    assert len(activated_events) == 2, "Blank-area click must not emit item_activated"
+    assert len(refresh_events) == 0
+    assert not hasattr(panel, "_refresh_rect"), "v22 has no footer/Yenile button"
 
-    ev_ref_rel = QMouseEvent(
-        QEvent.Type.MouseButtonRelease,
-        ref_center,
-        ref_center,
-        Qt.MouseButton.LeftButton,
-        Qt.MouseButton.NoButton,
-        Qt.KeyboardModifier.NoModifier,
-    )
-    panel.mouseReleaseEvent(ev_ref_rel)
-    assert len(refresh_events) == 1, "refresh_requested signal not emitted"
-
-    # Test 4: Click ✕ close button
-    close_center = panel._close_rect.center()
-    ev_close = QMouseEvent(
-        QEvent.Type.MouseButtonPress,
-        close_center,
-        close_center,
-        Qt.MouseButton.LeftButton,
-        Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier,
-    )
-    panel.mousePressEvent(ev_close)
-    assert panel._is_closing is True, "Panel should close when ✕ is clicked"
+    # Test 4: Esc kapatır (eski ✕ kapatma niyeti)
+    ev_esc = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+    panel.keyPressEvent(ev_esc)
+    assert panel._is_closing is True, "Panel should close on Esc (replaces ✕ button)"
 
     panel.close()
     print("   [OK] Hit-testing and signal emissions passed.")
@@ -336,12 +327,12 @@ def test_keyboard_navigation() -> None:
     panel.keyPressEvent(ev_down1)
     assert panel._highlight_idx == 0
 
-    # Key Down -> 1
+    # Key Down -> bir sonraki ızgara satırı; 3 öğe tek satırda olduğu için son hücreye kırpılır
     ev_down2 = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
     panel.keyPressEvent(ev_down2)
-    assert panel._highlight_idx == 1
+    assert panel._highlight_idx == 2
 
-    # Key Up -> 0
+    # Key Up -> başa döner
     ev_up = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Up, Qt.KeyboardModifier.NoModifier)
     panel.keyPressEvent(ev_up)
     assert panel._highlight_idx == 0
@@ -365,7 +356,7 @@ def test_keyboard_navigation() -> None:
 
 
 def test_scroll_clamping_with_30_items() -> None:
-    """Test list scrolling and clamping with 30 items exceeding max list height."""
+    """Test grid scrolling and clamping with 30 items (6 rows, 4 visible)."""
     print("-> test_scroll_clamping_with_30_items")
     _ensure_qapp()
 
@@ -373,17 +364,18 @@ def test_scroll_clamping_with_30_items() -> None:
     items = [{"name": f"Process_{i:02d}", "tooltip": f"Status {i}"} for i in range(30)]
     panel.set_items(items)
 
-    max_h = panel.LIST_MAX_HEIGHT
-    assert panel._visible_list_height() == max_h
-    total_h = panel._total_list_height()
-    max_scroll = total_h - max_h
-    assert max_scroll > 500.0, f"Expected large max_scroll, got {max_scroll}"
+    assert panel._visible_rows() == 4, "Only 4 grid rows are visible"
+    assert panel._total_rows() == 6
+    total_h = panel._total_grid_height()
+    vis_h = panel._visible_grid_h()
+    max_scroll = total_h - vis_h
+    assert max_scroll == 2 * panel.ROW_STRIDE, f"Expected 2 rows of scroll, got {max_scroll}"
 
     # Initial scroll is 0.0
     assert panel._scroll_y == 0.0
 
     # Ensure last row visible
-    panel._ensure_row_visible(29)
+    panel._ensure_cell_visible(29)
     assert panel._scroll_y > 0.0
     assert panel._scroll_y <= max_scroll
 
