@@ -11,7 +11,6 @@ import copy
 import math
 import os
 from pathlib import Path
-import subprocess
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -66,20 +65,52 @@ STALL_NONE = "Bu oturumda donma yok"
 STALL_ROW_H = 21.0
 
 
+_GIT_VER_CACHE: Optional[str] = None
+
+
 def _get_git_version() -> str:
+    """Kısa commit kimliği, doğrudan .git dosyalarından okunur.
+
+    Eskiden `git describe` alt süreci GUI iş parçacığında çalışıyordu ve pencere her
+    açılışta ~2 sn donuyordu (28 Eki, ui_stall_stack). Artık alt süreç yok ve sonuç önbellekte.
+    """
+    global _GIT_VER_CACHE
+    if _GIT_VER_CACHE is not None:
+        return _GIT_VER_CACHE
+    ver = "—"
     try:
-        app_dir = Path(__file__).resolve().parent
-        res = subprocess.run(
-            ["git", "-C", str(app_dir), "describe", "--always", "--tags"],
-            capture_output=True,
-            text=True,
-            timeout=2.0,
-            check=False,
-        )
-        ver = res.stdout.strip()
-        return ver if ver else "—"
+        git_dir = Path(__file__).resolve().parent / ".git"
+        if git_dir.is_file():  # worktree: "gitdir: <yol>"
+            txt = git_dir.read_text(encoding="utf-8").strip()
+            if txt.startswith("gitdir:"):
+                git_dir = Path(txt.split(":", 1)[1].strip())
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        sha = head
+        if head.startswith("ref:"):
+            ref = head.split(":", 1)[1].strip()
+            common = git_dir
+            common_file = git_dir / "commondir"
+            if common_file.is_file():
+                common = (git_dir / common_file.read_text(encoding="utf-8").strip()).resolve()
+            sha = ""
+            for base in (git_dir, common):
+                ref_file = base / ref
+                if ref_file.is_file():
+                    sha = ref_file.read_text(encoding="utf-8").strip()
+                    break
+            if not sha:
+                packed = common / "packed-refs"
+                if packed.is_file():
+                    for line in packed.read_text(encoding="utf-8").splitlines():
+                        if line.endswith(" " + ref):
+                            sha = line.split(" ", 1)[0]
+                            break
+        if len(sha) >= 7 and all(c in "0123456789abcdef" for c in sha[:7].lower()):
+            ver = sha[:7]
     except Exception:
-        return "—"
+        ver = "—"
+    _GIT_VER_CACHE = ver
+    return ver
 
 
 def _as_int(value: Any) -> Optional[int]:
