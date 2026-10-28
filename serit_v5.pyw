@@ -466,6 +466,19 @@ class DataDispatcher(QObject):
     thumbs_ready = Signal(object, object)  # (exe, {hwnd: QImage}) pencere seçicisi önizlemeleri
 
 
+def _is_same_data(old: Any, new: Any) -> bool:
+    if old is new:
+        return True
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return old == new
+    for k, v in new.items():
+        if k in ("fetched_at", "stale"):
+            continue
+        if old.get(k) != v:
+            return False
+    return True
+
+
 class SeritDock(QWidget):
     """Variant A: Floating Acrylic glass dock capsule with physical animations."""
 
@@ -534,7 +547,7 @@ class SeritDock(QWidget):
 
         # Central animation engine
         self.anim_driver = anim.get_default_driver()
-        self.anim_driver.frame.connect(self.update)
+        self.anim_driver.frame.connect(self._on_anim_frame)
 
         # Dynamic tweens
         self.anim_claude_s = anim.Tween(0.0, 0.0, theme.DUR_RING_SWEEP_SLOW, driver=self.anim_driver)
@@ -710,6 +723,34 @@ class SeritDock(QWidget):
             self.anim_ram.value = ram
             self.anim_ram.target_val = ram
 
+    def _on_anim_frame(self) -> None:
+        tweens = getattr(self.anim_driver, "_tweens", None)
+        if tweens:
+            if all(t in (self.anim_cpu, self.anim_ram, self.anim_sys_op) for t in tweens):
+                r = self._get_card_rect("sys")
+                if r is not None:
+                    self.update(r.toRect().adjusted(-2, -2, 2, 2))
+                    return
+            if all(t in (self.anim_claude_s, self.anim_claude_w, self.anim_claude_op) for t in tweens):
+                r = self._get_card_rect("claude")
+                if r is not None:
+                    self.update(r.toRect().adjusted(-2, -2, 2, 2))
+                    return
+            if all(t in (self.anim_pill_x, self.anim_pill_opacity) for t in tweens):
+                if self._tile_rects:
+                    r_apps = self._tile_rects[0].united(self._tile_rects[-1]).adjusted(-4, -4, 4, 8)
+                    self.update(r_apps.toRect())
+                    return
+        self.update()
+
+    def _get_card_rect(self, key: Optional[str]) -> Optional[QRectF]:
+        if not key:
+            return None
+        for r, k, _ in self.hit_boxes:
+            if k == key:
+                return r
+        return None
+
     # ------------------------------------------------------------------ pil
     def _has_battery(self) -> bool:
         b = self._bat_info
@@ -718,7 +759,14 @@ class SeritDock(QWidget):
     def _pill_width(self) -> float:
         return dock_cards.BATTERY_PILL_W if self._has_battery() else ACTION_PILL_WIDTH
 
-    def _draw_quick_pill(self, p: QPainter, r_pill: QRectF, bright_open: bool, vol_open: bool) -> None:
+    def _draw_quick_pill(
+        self,
+        p: QPainter,
+        r_pill: QRectF,
+        bright_open: bool,
+        vol_open: bool,
+        register_hitboxes: bool = True,
+    ) -> None:
         """Pil varsa yalnız pil kapsülü (ses/parlaklık pil panelinde); yoksa eski güneş | hoparlör kapsülü."""
         bat_open = bool(self.battery_panel.is_open())
         if self._has_battery():
@@ -731,7 +779,8 @@ class SeritDock(QWidget):
                 hovered=(self._hover_key == "bat"),
                 active=bat_open,
             )
-            self.hit_boxes.append((r_bat, "bat", None))
+            if register_hitboxes:
+                self.hit_boxes.append((r_bat, "bat", None))
             return
         hov_part = self._hover_key if self._hover_key in ("bright", "vol", "bat") else None
         act_part = "bright" if bright_open else ("vol" if vol_open else ("bat" if bat_open else None))
@@ -746,8 +795,19 @@ class SeritDock(QWidget):
             bat_charging=bool(self._bat_info.get("charging")),
             bat_present=False,
         )
-        self.hit_boxes.append((pill_res[0], "bright", None))
-        self.hit_boxes.append((pill_res[1], "vol", None))
+        if register_hitboxes:
+            self.hit_boxes.append((pill_res[0], "bright", None))
+            self.hit_boxes.append((pill_res[1], "vol", None))
+
+    def _register_quick_pill_hitboxes(self, r_pill: QRectF, bright_open: bool, vol_open: bool) -> None:
+        if self._has_battery():
+            self.hit_boxes.append((r_pill, "bat", None))
+        else:
+            hw = r_pill.width() / 2.0
+            r_sun = QRectF(r_pill.x(), r_pill.y(), hw, r_pill.height())
+            r_spk = QRectF(r_pill.x() + hw, r_pill.y(), hw, r_pill.height())
+            self.hit_boxes.append((r_sun, "bright", None))
+            self.hit_boxes.append((r_spk, "vol", None))
 
     def _actions_width(self) -> float:
         return ACTION_BTN_SIZE + ACTION_BTN_GAP + self._pill_width()
@@ -832,12 +892,20 @@ class SeritDock(QWidget):
         if key == "bat":
             if isinstance(res, dict) and not res.get("err"):
                 had = self._has_battery()
+                if _is_same_data(self._bat_info, res):
+                    return
                 self._bat_info = dict(res)
                 self._bat_known_absent = not bool(res.get("present"))
                 panel.set_battery(self._bat_info)
                 if had != self._has_battery():
                     self.compute_layout_and_resize()
-                self.update()
+                    self.update()
+                else:
+                    r_bat = self._get_card_rect("bat")
+                    if r_bat is not None:
+                        self.update(r_bat.toRect().adjusted(-2, -2, 2, 2))
+                    else:
+                        self.update()
             return
         if key == "battop":
             panel.set_top_load(res if isinstance(res, list) else [])
@@ -1409,26 +1477,43 @@ class SeritDock(QWidget):
     def on_data_ready(self, key: str, res: Any) -> None:
         if isinstance(res, dict) and res.get("err"):
             sources.log_err(key, RuntimeError(str(res.get("err"))))
+        old_val = self.store.get(key)
         self.store.update(key, res)
 
         if key == "mail":
+            if _is_same_data(old_val, res):
+                return
             if self.mail_panel is not None and hasattr(self.mail_panel, "set_data"):
                 try:
                     self.mail_panel.set_data(res if isinstance(res, dict) else {})
                 except Exception as exc:
                     sources.log_err("mail_panel_set_data", exc)
-            self.compute_layout_and_resize()
-            self.update()
+            old_w = dock_cards.measure_mail_card_width(old_val if isinstance(old_val, dict) else {})
+            new_w = dock_cards.measure_mail_card_width(res if isinstance(res, dict) else {})
+            if old_w != new_w:
+                self.compute_layout_and_resize()
+                self.update()
+            else:
+                r_mail = self._get_card_rect("mail")
+                if r_mail is not None:
+                    self.update(r_mail.toRect().adjusted(-2, -2, 2, 2))
+                else:
+                    self.update()
             return
 
         if key == "ag":
+            if _is_same_data(old_val, res):
+                return
             if self.quota_panel is not None and hasattr(self.quota_panel, "set_data"):
                 try:
                     self.quota_panel.set_data(res if isinstance(res, dict) else {})
                 except Exception as exc:
                     sources.log_err("quota_panel_set_data", exc)
-            self.compute_layout_and_resize()
-            self.update()
+            r_ag = self._get_card_rect("ag")
+            if r_ag is not None:
+                self.update(r_ag.toRect().adjusted(-2, -2, 2, 2))
+            else:
+                self.update()
             return
 
         if key == "audio_sessions":
@@ -1445,13 +1530,17 @@ class SeritDock(QWidget):
                 self.brightness_popover.update_levels(res)
             if self.battery_panel.is_open():
                 self._push_bat_panel_controls()
-            self.update()
+            if _is_same_data(old_val, res):
+                return
+            r_bright = self._get_card_rect("bright")
+            if r_bright is not None:
+                self.update(r_bright.toRect().adjusted(-2, -2, 2, 2))
             return
 
         if key == "media":
             if not isinstance(res, dict):
                 return
-            changed = False
+            changed_visual = False
             v_data = res.get("vol") or {}
             lvl = float(v_data.get("level", self._vol_level))
             muted = bool(v_data.get("muted", self._vol_muted))
@@ -1464,28 +1553,48 @@ class SeritDock(QWidget):
                     self.vol_popover.update_volume(lvl, muted, dev)
                 if self.battery_panel.is_open():
                     self._push_bat_panel_controls()
-                changed = True
+                changed_visual = True
 
             np = res.get("np")
-            if np != self._now_playing_info:
-                self._now_playing_info = np
-                changed = True
+            old_np = self._now_playing_info
 
-            if changed:
+            def _track_sig(info):
+                if not isinstance(info, dict):
+                    return None
+                return (
+                    info.get("title"),
+                    info.get("artist"),
+                    info.get("app"),
+                    bool(info.get("playing")),
+                    info.get("duration_s"),
+                )
+
+            track_changed = (_track_sig(np) != _track_sig(old_np))
+            self._now_playing_info = np
+
+            if track_changed:
                 self.compute_layout_and_resize()
                 self.update()
+            elif changed_visual:
+                r_vol = self._get_card_rect("vol")
+                if r_vol is not None:
+                    self.update(r_vol.toRect().adjusted(-2, -2, 2, 2))
+                else:
+                    self.update()
             return
 
         if key == "tray":
             if isinstance(res, dict) and "images" in res:
                 items = res.get("items") or []
                 images = res.get("images") or {}
+                items_changed = (self._tray_items != list(items))
                 self._tray_items = list(items)
                 for name, img in images.items():
                     if img is not None and not img.isNull():
                         self._tray_icons[name] = QPixmap.fromImage(img)
             else:
                 items = res if isinstance(res, list) else (res.get("items") or res.get("data") or [])
+                items_changed = (self._tray_items != list(items))
                 self._tray_items = list(items)
                 self._sync_tray_icons()
             if self.tray_panel is not None and hasattr(self.tray_panel, "set_items"):
@@ -1494,10 +1603,14 @@ class SeritDock(QWidget):
                 except Exception as exc:
                     sources.log_err("tray_panel_set_items", exc)
             self.tray_popover.set_items(self._tray_items)
-            self.update()
+            if items_changed:
+                self.update()
             return
 
         # Tween retargeting: only when value changed by >= 1 point (Requirement 6)
+        card_changed = False
+        card_to_update = None
+
         if key == "claude" and isinstance(res, dict):
             s = safe_float(res.get("session"), None)
             w = safe_float(res.get("week"), None)
@@ -1505,8 +1618,11 @@ class SeritDock(QWidget):
             self.anim_claude_op.retarget(0.45 if has_err else 1.0)
             if s is not None and abs(s - self.anim_claude_s.target_val) >= 1.0:
                 self.anim_claude_s.retarget(s)
+                card_changed = True
             if w is not None and abs(w - self.anim_claude_w.target_val) >= 1.0:
                 self.anim_claude_w.retarget(w)
+                card_changed = True
+            card_to_update = "claude"
         elif key == "sys" and isinstance(res, dict):
             cpu = safe_float(res.get("cpu"), None)
             ram = safe_float(res.get("ram"), None)
@@ -1514,11 +1630,19 @@ class SeritDock(QWidget):
             self.anim_sys_op.retarget(0.45 if has_err else 1.0)
             if cpu is not None and abs(cpu - self.anim_cpu.target_val) >= 1.0:
                 self.anim_cpu.retarget(cpu)
+                card_changed = True
             if ram is not None and abs(ram - self.anim_ram.target_val) >= 1.0:
                 self.anim_ram.retarget(ram)
+                card_changed = True
+            card_to_update = "sys"
         elif key == "wx" and isinstance(res, dict):
             has_err = ("err" in res) or (res.get("temp") is None)
             self.anim_wx_op.retarget(0.45 if has_err else 1.0)
+            if not _is_same_data(old_val, res):
+                card_changed = True
+                card_to_update = "clock"
+        elif not _is_same_data(old_val, res):
+            card_changed = True
 
         # Proactive alerts engine evaluation in normal mode (Requirement 5)
         if not self.preview_mode and self.alert_engine is not None and self.toast_mgr is not None:
@@ -1528,6 +1652,21 @@ class SeritDock(QWidget):
                     self.toast_mgr.show(a)
             except Exception as exc:
                 sources.log_err("alerts", exc)
+
+        if not card_changed and _is_same_data(old_val, res):
+            return
+
+        if key in ("claude", "sys"):
+            old_err = bool(isinstance(old_val, dict) and old_val.get("err"))
+            curr_err = bool(isinstance(res, dict) and res.get("err"))
+            if old_err == curr_err:
+                if not self.anim_driver.is_running():
+                    r = self._get_card_rect(card_to_update)
+                    if r is not None:
+                        self.update(r.toRect().adjusted(-2, -2, 2, 2))
+                    else:
+                        self.update()
+                return
 
         self.compute_layout_and_resize()
         self.update()
@@ -1727,12 +1866,13 @@ class SeritDock(QWidget):
             if total_w != int(round(self.dock_width_tween.target_val)):
                 self.dock_width_tween.retarget(total_w)
 
-    def paintEvent(self, _event) -> None:
+    def paintEvent(self, event) -> None:
         """K1 Defensive painter: isolates paint errors and prevents process crashes."""
         global _LAST_PAINT_ERROR_LOG
         p = QPainter(self)
         try:
-            self._paint_content(p)
+            exp_rect = event.rect() if event is not None else None
+            self._paint_content(p, exp_rect)
         except Exception as exc:
             now = time.time()
             if now - _LAST_PAINT_ERROR_LOG > 60.0:
@@ -1741,14 +1881,21 @@ class SeritDock(QWidget):
         finally:
             p.end()
 
-    def _paint_content(self, p: QPainter) -> None:
+    def _paint_content(self, p: QPainter, exposed_rect: Optional[Any] = None) -> None:
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.TextAntialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
 
         card_y = CARD_Y  # 6.0
         card_h = CARD_HEIGHT  # 52.0
-        self.hit_boxes.clear()
+
+        exp_f: Optional[QRectF] = QRectF(exposed_rect) if exposed_rect is not None else None
+        is_full = exp_f is None or (exp_f.x() <= 1.0 and exp_f.width() >= self.width() - 2.0)
+        if is_full:
+            self.hit_boxes.clear()
+
+        def intersects(r: QRectF) -> bool:
+            return True if exp_f is None else r.intersects(exp_f)
 
         cards_cfg = dict(self.settings.get("cards") or {})
         show_claude = cards_cfg.get("claude", True)
@@ -1782,16 +1929,19 @@ class SeritDock(QWidget):
 
         if self._is_band():
             # Tam genişlik koyu şerit (köşesiz) + üstte ince ayırıcı çizgi
-            p.fillRect(QRectF(0, 0, self.width(), DOCK_HEIGHT), QColor(13, 15, 19))
-            p.fillRect(QRectF(0, 0, self.width(), 1.0), QColor(255, 255, 255, 18))
+            if exp_f is None or exp_f.y() < DOCK_HEIGHT:
+                p.fillRect(QRectF(0, 0, self.width(), DOCK_HEIGHT), QColor(13, 15, 19))
+                p.fillRect(QRectF(0, 0, self.width(), 1.0), QColor(255, 255, 255, 18))
 
             # Sol alt köşe: masaüstünü göster / geri getir (ekran kenarında, fareyi köşeye atınca bulunur)
             r_desk = QRectF(0.0, 1.0, DESKTOP_STRIP_W, DOCK_HEIGHT - 1.0)
-            self.hit_boxes.append((r_desk, "desktop", None))
-            if self._hover_key == "desktop":
-                alpha = 34 if self._pressed_key == "desktop" else 22
-                p.fillRect(r_desk, QColor(255, 255, 255, alpha))
-            p.fillRect(QRectF(DESKTOP_STRIP_W, 14.0, 1.0, DOCK_HEIGHT - 28.0), QColor(255, 255, 255, 20))
+            if is_full:
+                self.hit_boxes.append((r_desk, "desktop", None))
+            if intersects(r_desk):
+                if self._hover_key == "desktop":
+                    alpha = 34 if self._pressed_key == "desktop" else 22
+                    p.fillRect(r_desk, QColor(255, 255, 255, alpha))
+                p.fillRect(QRectF(DESKTOP_STRIP_W, 14.0, 1.0, DOCK_HEIGHT - 28.0), QColor(255, 255, 255, 20))
 
             sw = float(self.width())
             apps_x = round(sw / 2.0 - w_apps / 2.0) if w_apps > 0 else round(sw / 2.0)
@@ -1883,30 +2033,32 @@ class SeritDock(QWidget):
             # Draw Left Wing: Claude, Mail, Antigravity
             for card_key, card_w in lw_cards:
                 r_card = QRectF(cur_lw_x, card_y, card_w, card_h)
-                self.hit_boxes.append((r_card, card_key, None))
-                is_hover = (self._hover_key == card_key)
-                press_scale = self.press_tween.scale if (self._pressed_key == card_key) else 1.0
+                if is_full:
+                    self.hit_boxes.append((r_card, card_key, None))
+                if intersects(r_card):
+                    is_hover = (self._hover_key == card_key)
+                    press_scale = self.press_tween.scale if (self._pressed_key == card_key) else 1.0
 
-                if card_key == "claude":
-                    dock_cards.draw_claude_card(p, r_card, claude_entry, hover=is_hover, press_scale=press_scale)
-                elif card_key == "mail":
-                    dock_cards.draw_mail_card(p, r_card, mail_data, hover=is_hover, press_scale=press_scale)
-                elif card_key == "ag":
-                    dock_cards.draw_ag_card(p, r_card, ag_data, hover=is_hover, press_scale=press_scale)
-                elif card_key == "sys":
-                    sys_entry = self.store.get("sys") or {}
-                    c_disp = None if self.preview_mode else self.anim_cpu.value
-                    r_disp = None if self.preview_mode else self.anim_ram.value
-                    dock_cards.draw_sys_card(
-                        p,
-                        r_card,
-                        sys_entry,
-                        hover=is_hover,
-                        press_scale=press_scale,
-                        cpu_disp=c_disp,
-                        ram_disp=r_disp,
-                        opacity=self.anim_sys_op.value,
-                    )
+                    if card_key == "claude":
+                        dock_cards.draw_claude_card(p, r_card, claude_entry, hover=is_hover, press_scale=press_scale)
+                    elif card_key == "mail":
+                        dock_cards.draw_mail_card(p, r_card, mail_data, hover=is_hover, press_scale=press_scale)
+                    elif card_key == "ag":
+                        dock_cards.draw_ag_card(p, r_card, ag_data, hover=is_hover, press_scale=press_scale)
+                    elif card_key == "sys":
+                        sys_entry = self.store.get("sys") or {}
+                        c_disp = None if self.preview_mode else self.anim_cpu.value
+                        r_disp = None if self.preview_mode else self.anim_ram.value
+                        dock_cards.draw_sys_card(
+                            p,
+                            r_card,
+                            sys_entry,
+                            hover=is_hover,
+                            press_scale=press_scale,
+                            cpu_disp=c_disp,
+                            ram_disp=r_disp,
+                            opacity=self.anim_sys_op.value,
+                        )
 
                 cur_lw_x += card_w + GAP_MODULE
 
@@ -1924,46 +2076,52 @@ class SeritDock(QWidget):
                 self._tile_centers.append(r_slot.center().x())
 
                 app_key = f"app_{i}"
-                self.hit_boxes.append((r_slot, app_key, t))
+                if is_full:
+                    self.hit_boxes.append((r_slot, app_key, t))
 
-                is_h = (hover_idx == i)
-                hover_t = 1.0 if is_h else 0.0
                 scale, lift_y = scales_lifts[i] if i < len(scales_lifts) else (1.0, 0.0)
-                press_scale = self.press_tween.scale if (self._pressed_key == app_key) else 1.0
-
-                pix = self.get_app_icon(t.get("exe", ""))
                 r_draw = QRectF(r_slot.x(), r_slot.y() + lift_y, r_slot.width(), r_slot.height())
-                pinned.draw_tile(
-                    p=p,
-                    rect=r_draw,
-                    tile=t,
-                    pixmap=pix,
-                    hover_t=hover_t,
-                    press_scale=press_scale * scale,
-                    dot_count=t.get("count"),
-                    indicator_y=r_slot.bottom() - 4.0,
-                )
+                if intersects(r_slot) or intersects(r_draw):
+                    is_h = (hover_idx == i)
+                    hover_t = 1.0 if is_h else 0.0
+                    press_scale = self.press_tween.scale if (self._pressed_key == app_key) else 1.0
+
+                    pix = self.get_app_icon(t.get("exe", ""))
+                    pinned.draw_tile(
+                        p=p,
+                        rect=r_draw,
+                        tile=t,
+                        pixmap=pix,
+                        hover_t=hover_t,
+                        press_scale=press_scale * scale,
+                        dot_count=t.get("count"),
+                        indicator_y=r_slot.bottom() - 4.0,
+                    )
 
             # Draw Right Wing: Media, Calendar
             cur_rw_x = final_apps_x + w_apps + (GAP_MODULE if (w_apps > 0) else 0.0)
             if has_media:
                 r_media = QRectF(cur_rw_x, card_y, media_w, card_h)
                 self._media_rect = r_media
-                self.hit_boxes.append((r_media, "media", self._now_playing_info))
-                m_hover = (self._hover_key == "media")
-                m_press = self.press_tween.scale if (self._pressed_key == "media") else 1.0
-                m_ctrl_hover = getattr(self, "_hover_media_ctrl", None)
-                self._media_hit_rects = dock_cards.draw_media_card(
-                    p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, hovered_control=m_ctrl_hover
-                )
+                if is_full:
+                    self.hit_boxes.append((r_media, "media", self._now_playing_info))
+                if intersects(r_media):
+                    m_hover = (self._hover_key == "media")
+                    m_press = self.press_tween.scale if (self._pressed_key == "media") else 1.0
+                    m_ctrl_hover = getattr(self, "_hover_media_ctrl", None)
+                    self._media_hit_rects = dock_cards.draw_media_card(
+                        p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, hovered_control=m_ctrl_hover
+                    )
                 cur_rw_x += media_w + GAP_MODULE
 
             if show_cal:
                 r_cal = QRectF(cur_rw_x, card_y, cal_w, card_h)
-                self.hit_boxes.append((r_cal, "cal", None))
-                cal_hover = (self._hover_key == "cal")
-                cal_press = self.press_tween.scale if (self._pressed_key == "cal") else 1.0
-                dock_cards.draw_calendar_card(p, r_cal, cal_data, hover=cal_hover, press_scale=cal_press)
+                if is_full:
+                    self.hit_boxes.append((r_cal, "cal", None))
+                if intersects(r_cal):
+                    cal_hover = (self._hover_key == "cal")
+                    cal_press = self.press_tween.scale if (self._pressed_key == "cal") else 1.0
+                    dock_cards.draw_calendar_card(p, r_cal, cal_data, hover=cal_hover, press_scale=cal_press)
                 cur_rw_x += cal_w + GAP_MODULE
 
             # Right end: Clock V1 at the far right edge, Action buttons to its left
@@ -1974,19 +2132,25 @@ class SeritDock(QWidget):
             clk_hover = (self._hover_key == "clock")
             clk_press = self.press_tween.scale if (self._pressed_key == "clock") else 1.0
 
-            r_clk, r_wx = dock_cards.draw_clock_v1(
-                p,
-                r_clock,
-                temp_str=temp_str,
-                hover=clk_hover,
-                press_scale=clk_press,
-                wx_icon=wx_icon,
-                has_weather=has_wx,
-                now=now_dt,
-            )
-            self.hit_boxes.append((r_clk, "clock", None))
-            if r_wx is not None:
-                self.hit_boxes.append((r_wx, "wx", None))
+            if intersects(r_clock):
+                r_clk, r_wx = dock_cards.draw_clock_v1(
+                    p,
+                    r_clock,
+                    temp_str=temp_str,
+                    hover=clk_hover,
+                    press_scale=clk_press,
+                    wx_icon=wx_icon,
+                    has_weather=has_wx,
+                    now=now_dt,
+                )
+            else:
+                r_clk = r_clock
+                r_wx = None
+
+            if is_full:
+                self.hit_boxes.append((r_clk, "clock", None))
+                if r_wx is not None:
+                    self.hit_boxes.append((r_wx, "wx", None))
 
             # Action buttons cluster: ^ chevron (30x30), and A4 Quick Settings Pill (74x32)
             actions_w = self._actions_width()
@@ -2000,58 +2164,72 @@ class SeritDock(QWidget):
             r_chv = QRectF(actions_x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
             r_pill = QRectF(actions_x + ACTION_BTN_SIZE + ACTION_BTN_GAP, pill_y, self._pill_width(), ACTION_PILL_HEIGHT)
 
-            dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
+            if is_full:
+                self.hit_boxes.append((r_chv, "tray", None))
+            if intersects(r_chv):
+                dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
 
-            self.hit_boxes.append((r_chv, "tray", None))
-            self._draw_quick_pill(p, r_pill, bright_open, vol_open)
+            if intersects(r_pill):
+                self._draw_quick_pill(p, r_pill, bright_open, vol_open, register_hitboxes=is_full)
+            elif is_full:
+                self._register_quick_pill_hitboxes(r_pill, bright_open, vol_open)
         else:
             # Pill Style: One centered capsule in order Claude, Mail, Antigravity, apps, media, calendar, clock, chevron/sun/speaker
             r_dock = QRectF(0.5, 0.5, self.width() - 1.0, DOCK_HEIGHT - 1.0)
-            theme.draw_glass_capsule(p, r_dock, radius=DOCK_RADIUS)
+            if intersects(r_dock):
+                theme.draw_glass_capsule(p, r_dock, radius=DOCK_RADIUS)
 
             x = 6.0  # inner padding 6px
             if show_claude:
                 r_claude = QRectF(x, card_y, CLAUDE_CARD_WIDTH, card_h)
-                self.hit_boxes.append((r_claude, "claude", None))
-                c_hover = (self._hover_key == "claude")
-                c_press = self.press_tween.scale if (self._pressed_key == "claude") else 1.0
-                dock_cards.draw_claude_card(p, r_claude, claude_entry, hover=c_hover, press_scale=c_press)
+                if is_full:
+                    self.hit_boxes.append((r_claude, "claude", None))
+                if intersects(r_claude):
+                    c_hover = (self._hover_key == "claude")
+                    c_press = self.press_tween.scale if (self._pressed_key == "claude") else 1.0
+                    dock_cards.draw_claude_card(p, r_claude, claude_entry, hover=c_hover, press_scale=c_press)
                 x += CLAUDE_CARD_WIDTH + GAP_MODULE
 
             if show_mail:
                 r_mail = QRectF(x, card_y, w_mail, card_h)
-                self.hit_boxes.append((r_mail, "mail", None))
-                m_hover = (self._hover_key == "mail")
-                m_press = self.press_tween.scale if (self._pressed_key == "mail") else 1.0
-                dock_cards.draw_mail_card(p, r_mail, mail_data, hover=m_hover, press_scale=m_press)
+                if is_full:
+                    self.hit_boxes.append((r_mail, "mail", None))
+                if intersects(r_mail):
+                    m_hover = (self._hover_key == "mail")
+                    m_press = self.press_tween.scale if (self._pressed_key == "mail") else 1.0
+                    dock_cards.draw_mail_card(p, r_mail, mail_data, hover=m_hover, press_scale=m_press)
                 x += w_mail + GAP_MODULE
 
             if show_ag:
                 r_ag = QRectF(x, card_y, w_ag, card_h)
-                self.hit_boxes.append((r_ag, "ag", None))
-                ag_hover = (self._hover_key == "ag")
-                ag_press = self.press_tween.scale if (self._pressed_key == "ag") else 1.0
-                dock_cards.draw_ag_card(p, r_ag, ag_data, hover=ag_hover, press_scale=ag_press)
+                if is_full:
+                    self.hit_boxes.append((r_ag, "ag", None))
+                if intersects(r_ag):
+                    ag_hover = (self._hover_key == "ag")
+                    ag_press = self.press_tween.scale if (self._pressed_key == "ag") else 1.0
+                    dock_cards.draw_ag_card(p, r_ag, ag_data, hover=ag_hover, press_scale=ag_press)
                 x += w_ag + GAP_MODULE
 
             if show_sys:
                 r_sys = QRectF(x, card_y, SYS_CARD_WIDTH, card_h)
-                self.hit_boxes.append((r_sys, "sys", None))
-                s_hover = (self._hover_key == "sys")
-                s_press = self.press_tween.scale if (self._pressed_key == "sys") else 1.0
-                sys_entry = self.store.get("sys") or {}
-                c_disp = None if self.preview_mode else self.anim_cpu.value
-                r_disp = None if self.preview_mode else self.anim_ram.value
-                dock_cards.draw_sys_card(
-                    p,
-                    r_sys,
-                    sys_entry,
-                    hover=s_hover,
-                    press_scale=s_press,
-                    cpu_disp=c_disp,
-                    ram_disp=r_disp,
-                    opacity=self.anim_sys_op.value,
-                )
+                if is_full:
+                    self.hit_boxes.append((r_sys, "sys", None))
+                if intersects(r_sys):
+                    s_hover = (self._hover_key == "sys")
+                    s_press = self.press_tween.scale if (self._pressed_key == "sys") else 1.0
+                    sys_entry = self.store.get("sys") or {}
+                    c_disp = None if self.preview_mode else self.anim_cpu.value
+                    r_disp = None if self.preview_mode else self.anim_ram.value
+                    dock_cards.draw_sys_card(
+                        p,
+                        r_sys,
+                        sys_entry,
+                        hover=s_hover,
+                        press_scale=s_press,
+                        cpu_disp=c_disp,
+                        ram_disp=r_disp,
+                        opacity=self.anim_sys_op.value,
+                    )
                 x += SYS_CARD_WIDTH + GAP_MODULE
 
             # Apps Group
@@ -2068,46 +2246,52 @@ class SeritDock(QWidget):
                 self._tile_centers.append(r_slot.center().x())
 
                 app_key = f"app_{i}"
-                self.hit_boxes.append((r_slot, app_key, t))
+                if is_full:
+                    self.hit_boxes.append((r_slot, app_key, t))
 
-                is_h = (hover_idx == i)
-                hover_t = 1.0 if is_h else 0.0
                 scale, lift_y = scales_lifts[i] if i < len(scales_lifts) else (1.0, 0.0)
-                press_scale = self.press_tween.scale if (self._pressed_key == app_key) else 1.0
-
-                pix = self.get_app_icon(t.get("exe", ""))
                 r_draw = QRectF(r_slot.x(), r_slot.y() + lift_y, r_slot.width(), r_slot.height())
-                pinned.draw_tile(
-                    p=p,
-                    rect=r_draw,
-                    tile=t,
-                    pixmap=pix,
-                    hover_t=hover_t,
-                    press_scale=press_scale * scale,
-                    dot_count=t.get("count"),
-                    indicator_y=r_slot.bottom() - 4.0,
-                )
+                if intersects(r_slot) or intersects(r_draw):
+                    is_h = (hover_idx == i)
+                    hover_t = 1.0 if is_h else 0.0
+                    press_scale = self.press_tween.scale if (self._pressed_key == app_key) else 1.0
+
+                    pix = self.get_app_icon(t.get("exe", ""))
+                    pinned.draw_tile(
+                        p=p,
+                        rect=r_draw,
+                        tile=t,
+                        pixmap=pix,
+                        hover_t=hover_t,
+                        press_scale=press_scale * scale,
+                        dot_count=t.get("count"),
+                        indicator_y=r_slot.bottom() - 4.0,
+                    )
 
             if n_tiles > 0:
                 x += w_apps + GAP_MODULE
 
             if has_media:
                 r_media = QRectF(x, card_y, MEDIA_CARD_WIDTH, card_h)
-                self.hit_boxes.append((r_media, "media", self._now_playing_info))
-                m_hover = (self._hover_key == "media")
-                m_press = self.press_tween.scale if (self._pressed_key == "media") else 1.0
-                m_ctrl_hover = getattr(self, "_hover_media_ctrl", None)
-                self._media_hit_rects = dock_cards.draw_media_card(
-                    p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, hovered_control=m_ctrl_hover
-                )
+                if is_full:
+                    self.hit_boxes.append((r_media, "media", self._now_playing_info))
+                if intersects(r_media):
+                    m_hover = (self._hover_key == "media")
+                    m_press = self.press_tween.scale if (self._pressed_key == "media") else 1.0
+                    m_ctrl_hover = getattr(self, "_hover_media_ctrl", None)
+                    self._media_hit_rects = dock_cards.draw_media_card(
+                        p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, hovered_control=m_ctrl_hover
+                    )
                 x += MEDIA_CARD_WIDTH + GAP_MODULE
 
             if show_cal:
                 r_cal = QRectF(x, card_y, natural_cal_w, card_h)
-                self.hit_boxes.append((r_cal, "cal", None))
-                cal_hover = (self._hover_key == "cal")
-                cal_press = self.press_tween.scale if (self._pressed_key == "cal") else 1.0
-                dock_cards.draw_calendar_card(p, r_cal, cal_data, hover=cal_hover, press_scale=cal_press)
+                if is_full:
+                    self.hit_boxes.append((r_cal, "cal", None))
+                if intersects(r_cal):
+                    cal_hover = (self._hover_key == "cal")
+                    cal_press = self.press_tween.scale if (self._pressed_key == "cal") else 1.0
+                    dock_cards.draw_calendar_card(p, r_cal, cal_data, hover=cal_hover, press_scale=cal_press)
                 x += natural_cal_w + GAP_MODULE
 
             # Clock Block
@@ -2116,19 +2300,25 @@ class SeritDock(QWidget):
             clk_hover = (self._hover_key == "clock")
             clk_press = self.press_tween.scale if (self._pressed_key == "clock") else 1.0
 
-            r_clk, r_wx = dock_cards.draw_clock_v1(
-                p,
-                r_clock,
-                temp_str=temp_str,
-                hover=clk_hover,
-                press_scale=clk_press,
-                wx_icon=wx_icon,
-                has_weather=has_wx,
-                now=now_dt,
-            )
-            self.hit_boxes.append((r_clk, "clock", None))
-            if r_wx is not None:
-                self.hit_boxes.append((r_wx, "wx", None))
+            if intersects(r_clock):
+                r_clk, r_wx = dock_cards.draw_clock_v1(
+                    p,
+                    r_clock,
+                    temp_str=temp_str,
+                    hover=clk_hover,
+                    press_scale=clk_press,
+                    wx_icon=wx_icon,
+                    has_weather=has_wx,
+                    now=now_dt,
+                )
+            else:
+                r_clk = r_clock
+                r_wx = None
+
+            if is_full:
+                self.hit_boxes.append((r_clk, "clock", None))
+                if r_wx is not None:
+                    self.hit_boxes.append((r_wx, "wx", None))
             x += w_clock + GAP_MODULE
 
             # Action buttons cluster: ^ chevron (30x30), and A4 Quick Settings Pill (74x32)
@@ -2141,10 +2331,15 @@ class SeritDock(QWidget):
             r_chv = QRectF(x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
             r_pill = QRectF(x + ACTION_BTN_SIZE + ACTION_BTN_GAP, pill_y, self._pill_width(), ACTION_PILL_HEIGHT)
 
-            dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
+            if is_full:
+                self.hit_boxes.append((r_chv, "tray", None))
+            if intersects(r_chv):
+                dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
 
-            self.hit_boxes.append((r_chv, "tray", None))
-            self._draw_quick_pill(p, r_pill, bright_open, vol_open)
+            if intersects(r_pill):
+                self._draw_quick_pill(p, r_pill, bright_open, vol_open, register_hitboxes=is_full)
+            elif is_full:
+                self._register_quick_pill_hitboxes(r_pill, bright_open, vol_open)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:

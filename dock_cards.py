@@ -83,6 +83,87 @@ SYS_CARD_WIDTH: float = 96.0
 SYS_RING_SIZE: float = 34.0
 SYS_RING_STROKE: float = 3.5
 
+_PEN_CARD_BORDER: QPen = QPen(CARD_BORDER, 1.0)
+_PEN_BAR_TRACK_2: QPen = QPen(QColor(255, 255, 255, int(255 * 0.14)), 2.0, Qt.SolidLine, Qt.RoundCap)
+_PEN_SYS_TRACK: QPen = QPen(COLOR_BAR_TRACK, SYS_RING_STROKE, Qt.SolidLine, Qt.FlatCap)
+_PEN_ARC_ACCENT: QPen = QPen(QColor("#0A84FF"), 2.0, Qt.SolidLine, Qt.RoundCap)
+_PEN_BAT_BOLT: QPen = QPen(QColor(13, 15, 19), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+
+_FM_CACHE: Dict[Tuple[float, int, Optional[float]], QFontMetricsF] = {}
+_TEXT_WIDTH_CACHE: Dict[Tuple[int, str], float] = {}
+_ELIDED_CACHE: Dict[Tuple[int, str, float], str] = {}
+
+
+def _get_fm(font: QFont) -> QFontMetricsF:
+    key = (font.pointSizeF() if font.pointSizeF() > 0 else float(font.pixelSize()), font.weight(), font.letterSpacing())
+    fm = _FM_CACHE.get(key)
+    if fm is None:
+        fm = QFontMetricsF(font)
+        _FM_CACHE[key] = fm
+    return fm
+
+
+def _text_width(fm: QFontMetricsF, text: str) -> float:
+    key = (id(fm), text)
+    w = _TEXT_WIDTH_CACHE.get(key)
+    if w is None:
+        w = fm.horizontalAdvance(text)
+        if len(_TEXT_WIDTH_CACHE) > 512:
+            _TEXT_WIDTH_CACHE.clear()
+        _TEXT_WIDTH_CACHE[key] = w
+    return w
+
+
+def _elided_text(fm: QFontMetricsF, text: str, width: float) -> str:
+    key = (id(fm), text, round(width, 1))
+    s = _ELIDED_CACHE.get(key)
+    if s is None:
+        s = fm.elidedText(text, Qt.ElideRight, width)
+        if len(_ELIDED_CACHE) > 256:
+            _ELIDED_CACHE.clear()
+        _ELIDED_CACHE[key] = s
+    return s
+
+
+_PATH_MEDIA_PREV = QPainterPath()
+_PATH_MEDIA_PREV.addRoundedRect(QRectF(3.5, 4.0, 2.0, 12.0), 1.0, 1.0)
+_PATH_MEDIA_PREV.moveTo(15.7, 5.4)
+_PATH_MEDIA_PREV.lineTo(8.7, 9.9)
+_PATH_MEDIA_PREV.lineTo(8.7, 10.1)
+_PATH_MEDIA_PREV.lineTo(15.7, 14.6)
+_PATH_MEDIA_PREV.closeSubpath()
+
+_PATH_MEDIA_PAUSE = QPainterPath()
+_PATH_MEDIA_PAUSE.addRoundedRect(QRectF(5.2, 4.0, 3.4, 12.0), 1.7, 1.7)
+_PATH_MEDIA_PAUSE.addRoundedRect(QRectF(11.4, 4.0, 3.4, 12.0), 1.7, 1.7)
+
+_PATH_MEDIA_PLAY = QPainterPath()
+_PATH_MEDIA_PLAY.moveTo(7.0, 4.5)
+_PATH_MEDIA_PLAY.lineTo(7.0, 15.5)
+_PATH_MEDIA_PLAY.lineTo(16.0, 10.0)
+_PATH_MEDIA_PLAY.closeSubpath()
+
+_PATH_MEDIA_NEXT = QPainterPath()
+_PATH_MEDIA_NEXT.addRoundedRect(QRectF(14.5, 4.0, 2.0, 12.0), 1.0, 1.0)
+_PATH_MEDIA_NEXT.moveTo(4.3, 5.4)
+_PATH_MEDIA_NEXT.lineTo(11.3, 9.9)
+_PATH_MEDIA_NEXT.lineTo(11.3, 10.1)
+_PATH_MEDIA_NEXT.lineTo(4.3, 14.6)
+_PATH_MEDIA_NEXT.closeSubpath()
+
+_EQUALIZER_GRAD_CACHE: Dict[Tuple[float, float, float, float], QLinearGradient] = {}
+
+
+def _get_equalizer_grad(rect: QRectF) -> QLinearGradient:
+    key = (rect.x(), rect.y(), rect.width(), rect.height())
+    g = _EQUALIZER_GRAD_CACHE.get(key)
+    if g is None:
+        g = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        g.setColorAt(0.0, COLOR_MEDIA_GRAD_START)
+        g.setColorAt(1.0, COLOR_MEDIA_GRAD_END)
+        _EQUALIZER_GRAD_CACHE[key] = g
+    return g
+
 
 def format_reset_display(
     reset_val: Any,
@@ -250,10 +331,12 @@ def draw_concentric_text_rows(
         (row2, y2),
     ]
 
-    fm_lbl = QFontMetricsF(f_lbl)
+    fm_lbl = _get_fm(f_lbl)
+    fm_pct = _get_fm(f_pct)
+    fm_rst = _get_fm(f_rst)
 
     def fm_lbl_w(t: str) -> float:
-        return fm_lbl.horizontalAdvance(t)
+        return _text_width(fm_lbl, t)
 
     p.save()
     for (pct_val, base_col, lbl_text, rst_text), ry in rows_data:
@@ -270,9 +353,8 @@ def draw_concentric_text_rows(
 
         p.setFont(f_pct)
         p.setPen(pct_col)
-        fm_pct = p.fontMetrics()
         p.drawText(r_box, Qt.AlignLeft | Qt.AlignVCenter, pct_str)
-        wp = fm_pct.horizontalAdvance(pct_str)
+        wp = _text_width(fm_pct, pct_str)
 
         # 2. Label text
         p.setFont(f_lbl)
@@ -282,8 +364,7 @@ def draw_concentric_text_rows(
 
         # 3. Reset text (right-aligned, muted) — yalnızca etiketle çakışmadan sığarsa
         p.setFont(f_rst)
-        fm_rst = p.fontMetrics()
-        need_w = wp + 4.0 + fm_lbl_w(lbl_text) + 6.0 + fm_rst.horizontalAdvance(rst_text)
+        need_w = wp + 4.0 + fm_lbl_w(lbl_text) + 6.0 + _text_width(fm_rst, rst_text)
         if rst_text and need_w <= rw:
             p.setPen(COLOR_TXT_MUTED)
             p.drawText(r_box, Qt.AlignRight | Qt.AlignVCenter, rst_text)
@@ -320,7 +401,7 @@ def draw_card_base(
     p.fillPath(path, CARD_FILL_HOVER if hover else CARD_FILL)
 
     border_r = rect.adjusted(0.5, 0.5, -0.5, -0.5)
-    p.setPen(QPen(CARD_BORDER, 1.0))
+    p.setPen(_PEN_CARD_BORDER)
     p.setBrush(Qt.NoBrush)
     p.drawPath(theme.rounded_path(border_r, max(0.0, radius - 0.5)))
     p.restore()
@@ -483,9 +564,7 @@ def draw_equalizer_tile(p: QPainter, rect: QRectF, playing: bool = True) -> None
     p.setRenderHint(QPainter.Antialiasing)
     tile_path = theme.rounded_path(rect, 10.0)
 
-    grad = QLinearGradient(rect.topLeft(), rect.bottomRight())
-    grad.setColorAt(0.0, COLOR_MEDIA_GRAD_START)
-    grad.setColorAt(1.0, COLOR_MEDIA_GRAD_END)
+    grad = _get_equalizer_grad(rect)
     p.fillPath(tile_path, QBrush(grad))
 
     # 5 white equalizer bars: static heights 10, 18, 13, 20, 9
@@ -493,7 +572,7 @@ def draw_equalizer_tile(p: QPainter, rect: QRectF, playing: bool = True) -> None
     # Total width = 5 * 3 + 4 * 2.4 = 15 + 9.6 = 24.6px
     bar_w = 3.0
     bar_gap = 2.4
-    heights = [10.0, 18.0, 13.0, 20.0, 9.0]
+    heights = (10.0, 18.0, 13.0, 20.0, 9.0)
     total_w = len(heights) * bar_w + (len(heights) - 1) * bar_gap
     start_x = rect.x() + (rect.width() - total_w) / 2.0
     cy = rect.center().y()
@@ -545,11 +624,11 @@ def draw_media_card(
     f_lbl = theme.make_font(12.0, QFont.Weight.DemiBold)
     f_sub = theme.make_font(11.0, QFont.Weight.Normal)
 
-    fm_l = QFontMetricsF(f_lbl)
-    fm_s = QFontMetricsF(f_sub)
+    fm_l = _get_fm(f_lbl)
+    fm_s = _get_fm(f_sub)
 
-    elided_title = fm_l.elidedText(title, Qt.ElideRight, bw)
-    elided_sub = fm_s.elidedText(sub, Qt.ElideRight, bw)
+    elided_title = _elided_text(fm_l, title, bw)
+    elided_sub = _elided_text(fm_s, sub, bw)
 
     p.save()
     p.setFont(f_lbl)
@@ -562,24 +641,14 @@ def draw_media_card(
     p.restore()
 
     # Controls: prev (glyph), play/pause with B3 track progress ring (32x32), next (glyph)
-    # B3 Mockup:
-    #   Gap: 8px, aligned vertically
-    #   Prev/Next: plain glyphs without circles, color rgba(255,255,255,0.55), 14x14 icon in 20x20 viewBox
-    #   Play/Pause: 32x32 center area with circular progress ring:
-    #     - Track circle: r=13, stroke rgba(255,255,255,0.12), width 2
-    #     - Progress arc: r=13, stroke #0A84FF, width 2, stroke-linecap round
-    #       drawn only if duration > 0 and position is known; otherwise no progress arc.
-    #     - Center icon: play / pause in white, scaled to fit inside r=13 circle
     cy = rect.center().y()
 
     # Hit targets: prev (24x28), play (32x32), next (24x28)
-    # We place play at ctrl_x + 24.0 + 8.0
     r_prev = QRectF(ctrl_x, cy - 14.0, 24.0, 28.0)
     r_play = QRectF(ctrl_x + 24.0 + 8.0, cy - 16.0, 32.0, 32.0)
     r_next = QRectF(ctrl_x + 24.0 + 8.0 + 32.0 + 8.0, cy - 14.0, 24.0, 28.0)
 
     # 1. Prev button (plain glyph without circle)
-    # SVG viewBox 0 0 20 20: <path d="M4.5 4a1 1 0 0 1 1 1v10a1 1 0 1 1-2 0V5a1 1 0 0 1 1-1zm11.2 1.4a1 1 0 0 0-1.5-.86l-7 4.5a1 1 0 0 0 0 1.72l7 4.5A1 1 0 0 0 16 14.4V5.4z"/>
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
     prev_col = QColor(255, 255, 255) if hovered_control == "prev" else QColor(255, 255, 255, int(255 * 0.55))
@@ -593,17 +662,7 @@ def draw_media_card(
     p.translate(-10.0, -10.0)
     p.setPen(Qt.NoPen)
     p.setBrush(prev_col)
-
-    path_prev = QPainterPath()
-    # bar: M4.5 4a1 1 0 0 1 1 1v10a1 1 0 1 1-2 0V5a1 1 0 0 1 1-1z -> rounded rect 2x12 at (3.5, 4) rx=1
-    path_prev.addRoundedRect(QRectF(3.5, 4.0, 2.0, 12.0), 1.0, 1.0)
-    # triangle: M15.7 5.4a1 1 0 0 0-1.5-.86l-7 4.5a1 1 0 0 0 0 1.72l7 4.5A1 1 0 0 0 16 14.4V5.4z
-    path_prev.moveTo(15.7, 5.4)
-    path_prev.lineTo(8.7, 9.9)
-    path_prev.lineTo(8.7, 10.1)
-    path_prev.lineTo(15.7, 14.6)
-    path_prev.closeSubpath()
-    p.drawPath(path_prev)
+    p.drawPath(_PATH_MEDIA_PREV)
     p.restore()
 
     # 2. Play/Pause button with B3 progress ring
@@ -620,16 +679,12 @@ def draw_media_card(
         p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
         p.drawEllipse(r_play)
 
-    # Ring Track: circle cx=16, cy=16, r=13, fill=none, stroke rgba(255,255,255,0.12), stroke-width 2
-    track_pen = QPen(QColor(255, 255, 255, int(255 * 0.14)), 2.0, Qt.SolidLine, Qt.RoundCap)
-    p.setPen(track_pen)
+    # Ring Track
+    p.setPen(_PEN_BAR_TRACK_2)
     p.setBrush(Qt.NoBrush)
     ring_rect = QRectF(pcx - ring_radius, pcy - ring_radius, ring_radius * 2.0, ring_radius * 2.0)
     p.drawEllipse(ring_rect)
 
-    # Progress Arc:
-    # Only draw if duration_s is known and > 0.
-    # Calculate progress fraction (0.0 .. 1.0).
     pos_s = media_info.get("position_s")
     dur_s = media_info.get("duration_s")
     progress_frac: Optional[float] = None
@@ -647,43 +702,23 @@ def draw_media_card(
         progress_frac = max(0.0, min(1.0, p_val / d_val))
 
     if progress_frac is not None and progress_frac > 0.0:
-        # Accent #0A84FF, stroke-width 2, round cap
-        # In Qt drawArc, start angle 90 degrees is 12 o'clock (90 * 16).
-        # Span angle is negative for clockwise direction (-360 * fraction * 16).
-        arc_pen = QPen(QColor("#0A84FF"), 2.0, Qt.SolidLine, Qt.RoundCap)
-        p.setPen(arc_pen)
+        p.setPen(_PEN_ARC_ACCENT)
         start_angle = 90 * 16
         span_angle = -int(round(progress_frac * 360.0 * 16.0))
         p.drawArc(ring_rect, start_angle, span_angle)
 
     # Center Play / Pause Icon
-    # SVG viewBox 0 0 20 20, white
     p.save()
     p.translate(pcx, pcy)
     p.scale(16.0 / 20.0, 16.0 / 20.0)
     p.translate(-10.0, -10.0)
     p.setPen(Qt.NoPen)
     p.setBrush(Qt.white)
-
-    path_pp = QPainterPath()
-    if playing:
-        # Pause: two vertical rounded bars:
-        # <rect x="5.2" y="4" width="3.4" height="12" rx="1.7"/>
-        # <rect x="11.4" y="4" width="3.4" height="12" rx="1.7"/>
-        path_pp.addRoundedRect(QRectF(5.2, 4.0, 3.4, 12.0), 1.7, 1.7)
-        path_pp.addRoundedRect(QRectF(11.4, 4.0, 3.4, 12.0), 1.7, 1.7)
-    else:
-        # Play: smooth triangle: M7 4.5v11l9-5.5z
-        path_pp.moveTo(7.0, 4.5)
-        path_pp.lineTo(7.0, 15.5)
-        path_pp.lineTo(16.0, 10.0)
-        path_pp.closeSubpath()
-    p.drawPath(path_pp)
+    p.drawPath(_PATH_MEDIA_PAUSE if playing else _PATH_MEDIA_PLAY)
     p.restore()
     p.restore()
 
     # 3. Next button (plain glyph without circle)
-    # SVG viewBox 0 0 20 20: <path d="M15.5 4a1 1 0 0 1 1 1v10a1 1 0 1 1-2 0V5a1 1 0 0 1 1-1zM4.3 5.4a1 1 0 0 1 1.5-.86l7 4.5a1 1 0 0 1 0 1.72l-7 4.5A1 1 0 0 1 4.3 14.4V5.4z"/>
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
     next_col = QColor(255, 255, 255) if hovered_control == "next" else QColor(255, 255, 255, int(255 * 0.55))
@@ -697,17 +732,7 @@ def draw_media_card(
     p.translate(-10.0, -10.0)
     p.setPen(Qt.NoPen)
     p.setBrush(next_col)
-
-    path_next = QPainterPath()
-    # bar at right: rounded rect 2x12 at (14.5, 4) rx=1
-    path_next.addRoundedRect(QRectF(14.5, 4.0, 2.0, 12.0), 1.0, 1.0)
-    # triangle pointing right:
-    path_next.moveTo(4.3, 5.4)
-    path_next.lineTo(11.3, 9.9)
-    path_next.lineTo(11.3, 10.1)
-    path_next.lineTo(4.3, 14.6)
-    path_next.closeSubpath()
-    p.drawPath(path_next)
+    p.drawPath(_PATH_MEDIA_NEXT)
     p.restore()
 
     return {"prev": r_prev, "playpause": r_play, "next": r_next}
@@ -1024,7 +1049,7 @@ def draw_sys_card(
         arc_rect = QRectF(cx - r, cy - r, 2.0 * r, 2.0 * r)
 
         # 1. Background full track circle (rgba(255, 255, 255, 0.13))
-        p.setPen(QPen(COLOR_BAR_TRACK, stroke, Qt.SolidLine, Qt.FlatCap))
+        p.setPen(_PEN_SYS_TRACK)
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(arc_rect)
 
@@ -1341,17 +1366,17 @@ def measure_clock_v1_width(
     f_time = theme.make_font(20.0, QFont.Weight.DemiBold, tabular=True, letter_spacing=-0.3)
     f_date = theme.make_font(11.0, QFont.Weight.Medium)
 
-    fm_time = QFontMetricsF(f_time)
-    fm_date = QFontMetricsF(f_date)
-    w_time = fm_time.horizontalAdvance(time_str)
-    w_date = fm_date.horizontalAdvance(date_str)
+    fm_time = _get_fm(f_time)
+    fm_date = _get_fm(f_date)
+    w_time = _text_width(fm_time, time_str)
+    w_date = _text_width(fm_date, date_str)
     w_left = max(w_time, w_date)
 
     w = 10.0 + w_left  # 10px left padding
     if has_weather and temp_str:
         f_temp = theme.make_font(13.0, QFont.Weight.DemiBold)
-        fm_temp = QFontMetricsF(f_temp)
-        w_temp = fm_temp.horizontalAdvance(temp_str)
+        fm_temp = _get_fm(f_temp)
+        w_temp = _text_width(fm_temp, temp_str)
         # 12px gap + 1px separator + 8px left padding + 14px icon + 5px gap + temp_w
         w += 12.0 + 1.0 + 8.0 + 14.0 + 5.0 + w_temp
     w += 10.0  # 10px right padding
@@ -1402,10 +1427,10 @@ def draw_clock_v1(
     f_time = theme.make_font(20.0, QFont.Weight.DemiBold, tabular=True, letter_spacing=-0.3)
     f_date = theme.make_font(11.0, QFont.Weight.Medium)
 
-    fm_time = QFontMetricsF(f_time)
-    fm_date = QFontMetricsF(f_date)
-    w_time = fm_time.horizontalAdvance(time_str)
-    w_date = fm_date.horizontalAdvance(date_str)
+    fm_time = _get_fm(f_time)
+    fm_date = _get_fm(f_date)
+    w_time = _text_width(fm_time, time_str)
+    w_date = _text_width(fm_date, date_str)
     w_left = max(w_time, w_date)
 
     cur_x = rect.x() + 10.0
@@ -1422,8 +1447,8 @@ def draw_clock_v1(
         p.restore()
         cur_x += 14.0 + 5.0
         f_temp = theme.make_font(13.0, QFont.Weight.DemiBold)
-        fm_temp = QFontMetricsF(f_temp)
-        w_temp = fm_temp.horizontalAdvance(temp_str)
+        fm_temp = _get_fm(f_temp)
+        w_temp = _text_width(fm_temp, temp_str)
         p.setFont(f_temp)
         p.setPen(COLOR_TXT_PRIMARY)
         p.drawText(QRectF(cur_x, rect.y(), w_temp, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, temp_str)
@@ -1619,11 +1644,11 @@ def _draw_battery_segment(p: QPainter, r: QRectF, percent: float, charging: bool
     bw, bh, tw, _th, _inset = _battery_metrics(dpr)
     glyph_w = bw + tw
     f = theme.make_font(12.0, QFont.Weight.DemiBold, tabular=True)
-    fm = QFontMetricsF(f)
+    fm = _get_fm(f)
     lvl = max(0.0, min(100.0, float(percent)))
     txt = f"%{int(round(lvl))}"
     gap = 5.0
-    content_w = glyph_w / dpr + gap + fm.horizontalAdvance(txt)
+    content_w = glyph_w / dpr + gap + _text_width(fm, txt)
     left_log = r.center().x() - content_w / 2.0
     left_dev = int(round(left_log * dpr))
     cy_dev = int(round(r.center().y() * dpr))
@@ -1649,9 +1674,29 @@ def _snap_rect(r: QRectF, dpr: float) -> QRectF:
 
 
 def _rounded_path(r: QRectF, radius: float) -> QPainterPath:
-    path = QPainterPath()
-    path.addRoundedRect(r, radius, radius)
-    return path
+    return theme.rounded_path(r, radius)
+
+
+_BOLT_PTS = ((0.62, 0.0), (0.12, 0.56), (0.46, 0.56), (0.36, 1.0), (0.88, 0.42), (0.54, 0.42))
+_BOLT_PATH_CACHE: Dict[Tuple[float, float, float, float], QPainterPath] = {}
+
+
+def _get_bolt_path(cx: float, cy: float, w_: float, h: float) -> QPainterPath:
+    key = (round(cx, 2), round(cy, 2), round(w_, 2), round(h, 2))
+    b = _BOLT_PATH_CACHE.get(key)
+    if b is None:
+        b = QPainterPath()
+        for i, (px, py) in enumerate(_BOLT_PTS):
+            pt = QPointF(cx - w_ / 2.0 + px * w_, cy - h / 2.0 + py * h)
+            if i == 0:
+                b.moveTo(pt)
+            else:
+                b.lineTo(pt)
+        b.closeSubpath()
+        if len(_BOLT_PATH_CACHE) > 64:
+            _BOLT_PATH_CACHE.clear()
+        _BOLT_PATH_CACHE[key] = b
+    return b
 
 
 def _paint_round_battery(p: QPainter, x: float, cy: float, percent: Optional[float], charging: bool,
@@ -1685,17 +1730,8 @@ def _paint_round_battery(p: QPainter, x: float, cy: float, percent: Optional[flo
     if charging:
         h = bh + 3.0
         w_ = h * 0.62
-        pts = ((0.62, 0.0), (0.12, 0.56), (0.46, 0.56), (0.36, 1.0), (0.88, 0.42), (0.54, 0.42))
-        bolt = QPainterPath()
-        for i, (px, py) in enumerate(pts):
-            pt = QPointF(body.center().x() - w_ / 2.0 + px * w_, body.center().y() - h / 2.0 + py * h)
-            if i == 0:
-                bolt.moveTo(pt)
-            else:
-                bolt.lineTo(pt)
-        bolt.closeSubpath()
-        p.setPen(QPen(QColor(13, 15, 19), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                      Qt.PenJoinStyle.RoundJoin))
+        bolt = _get_bolt_path(body.center().x(), body.center().y(), w_, h)
+        p.setPen(_PEN_BAT_BOLT)
         p.setBrush(QColor(255, 255, 255))
         p.drawPath(bolt)
         p.setPen(Qt.PenStyle.NoPen)
@@ -1730,11 +1766,11 @@ def draw_battery_pill(
         p.drawPath(_rounded_path(sr, sr.height() / 2.0))
 
     f = theme.make_font(13.0, QFont.Weight.DemiBold, tabular=True)
-    fm = QFontMetricsF(f)
+    fm = _get_fm(f)
     txt = "—" if percent is None else f"%{int(round(max(0.0, min(100.0, float(percent)))))}"
     gap = 6.0
     glyph_w = BATTERY_GLYPH_W + 3.0
-    content_w = glyph_w + gap + fm.horizontalAdvance(txt)
+    content_w = glyph_w + gap + _text_width(fm, txt)
     x = rect.center().x() - content_w / 2.0
     outline = QColor(col)
     outline.setAlpha(150)

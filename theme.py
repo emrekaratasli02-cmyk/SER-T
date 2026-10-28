@@ -205,7 +205,7 @@ def make_font(
         _FONT_CACHE[key] = f
         cached = f
 
-    return QFont(cached)
+    return cached
 
 
 # ==============================================================================
@@ -214,6 +214,8 @@ def make_font(
 
 _NOISE_BRUSH: Optional[QBrush] = None
 _ICON_CACHE: Dict[Tuple[int, int, int], QPixmap] = {}
+_ROUNDED_PATH_CACHE: Dict[Tuple[float, float, float, float, float], QPainterPath] = {}
+_ROUNDED_PATH_CACHE_MAX: int = 512
 
 
 def get_noise_brush() -> QBrush:
@@ -240,9 +242,15 @@ def get_noise_brush() -> QBrush:
 
 def rounded_path(rect: QRectF, radius: float) -> QPainterPath:
     """Constructs a rounded rectangle QPainterPath."""
-    path = QPainterPath()
     r = max(0.0, min(radius, min(rect.width(), rect.height()) / 2.0))
-    path.addRoundedRect(rect, r, r)
+    key = (round(rect.x(), 2), round(rect.y(), 2), round(rect.width(), 2), round(rect.height(), 2), round(r, 2))
+    path = _ROUNDED_PATH_CACHE.get(key)
+    if path is None:
+        path = QPainterPath()
+        path.addRoundedRect(rect, r, r)
+        if len(_ROUNDED_PATH_CACHE) >= _ROUNDED_PATH_CACHE_MAX:
+            _ROUNDED_PATH_CACHE.clear()
+        _ROUNDED_PATH_CACHE[key] = path
     return path
 
 
@@ -676,6 +684,28 @@ def draw_chip_text(
     draw_value(p, QRectF(x, y + 24.0, w_max, 16.0), value, opacity=opacity)
 
 
+_CLOUD_PATH_CACHE: Dict[Tuple[float, float], QPainterPath] = {}
+
+
+def _get_cloud_path(w: float, h: float) -> QPainterPath:
+    key = (w, h)
+    p = _CLOUD_PATH_CACHE.get(key)
+    if p is not None:
+        return p
+    base_h = h * 0.62
+    base = QPainterPath()
+    base.addRoundedRect(QRectF(0.0, 0.0, w, base_h), base_h / 2.0, base_h / 2.0)
+    small = QPainterPath()
+    d1 = h * 0.78
+    small.addEllipse(QRectF(w * 0.12, base_h * 0.55 - d1, d1, d1))
+    big = QPainterPath()
+    d2 = h * 1.05
+    big.addEllipse(QRectF(w * 0.36, base_h * 0.62 - d2, d2, d2))
+    cloud = base.united(small).united(big)
+    _CLOUD_PATH_CACHE[key] = cloud
+    return cloud
+
+
 def draw_weather_icon(p: QPainter, rect: QRectF, icon: str = "cloud") -> None:
     """Renders crisp vector weather iconography (sun, cloud, partly, rain, snow, storm, fog)."""
     p.save()
@@ -685,23 +715,13 @@ def draw_weather_icon(p: QPainter, rect: QRectF, icon: str = "cloud") -> None:
     cy = rect.center().y()
 
     def _draw_cloud_path(base_x: float, base_y: float, w: float = 16.0, h: float = 10.0, col: QColor = COLOR_WX_CLOUD) -> None:
-        left = base_x - w / 2.0
-        base_h = h * 0.62
-        base = QPainterPath()
-        base.addRoundedRect(QRectF(left, base_y, w, base_h), base_h / 2.0, base_h / 2.0)
-
-        small = QPainterPath()
-        d1 = h * 0.78
-        small.addEllipse(QRectF(left + w * 0.12, base_y + base_h * 0.55 - d1, d1, d1))
-
-        big = QPainterPath()
-        d2 = h * 1.05
-        big.addEllipse(QRectF(left + w * 0.36, base_y + base_h * 0.62 - d2, d2, d2))
-
-        cloud = base.united(small).united(big)
+        cloud = _get_cloud_path(w, h)
+        p.save()
+        p.translate(base_x - w / 2.0, base_y)
         p.setPen(Qt.NoPen)
         p.setBrush(col)
         p.drawPath(cloud)
+        p.restore()
 
     if icon == "sun":
         p.setPen(Qt.NoPen)

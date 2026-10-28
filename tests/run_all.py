@@ -13,9 +13,11 @@ import tempfile
 import time
 from pathlib import Path
 
-APP_DIR = Path("D:/Apps/serit")
+APP_DIR = Path(__file__).resolve().parent.parent
 TESTS_DIR = APP_DIR / "tests"
-PYTHON_EXE = APP_DIR / ".venv" / "Scripts" / "python.exe"
+PYTHON_EXE = Path("D:/Apps/serit/.venv/Scripts/python.exe")
+if not PYTHON_EXE.exists():
+    PYTHON_EXE = APP_DIR / ".venv" / "Scripts" / "python.exe"
 if not PYTHON_EXE.exists():
     PYTHON_EXE = Path(sys.executable)
 
@@ -25,6 +27,9 @@ PYTEST_TESTS = {
 }
 
 MONITORED_FILES = [
+    Path("D:/Apps/serit/settings.json"),
+    Path("D:/Apps/serit/serit.log"),
+    Path("D:/Apps/serit/claude_cache.json"),
     APP_DIR / "settings.json",
     APP_DIR / "serit.log",
     APP_DIR / "claude_cache.json",
