@@ -158,6 +158,8 @@ ACTION_PILL_WIDTH: float = 74.0
 ACTION_PILL_WIDTH_BAT: float = 136.0   # gunes | hoparlor | pil
 ACTION_PILL_HEIGHT: float = 32.0
 DESKTOP_STRIP_W: float = 8.0   # sol alt köşedeki "masaüstünü göster" şeridi
+HOVER_OPEN_MS: int = 450       # kütük üzerinde bu kadar durunca önizleme açılır
+HOVER_HIDE_MS: int = 250       # kütükten / önizlemeden çıkınca bu kadar sonra kapanır
 TRAY_ICON_SIZE: float = 26.0
 TRAY_ICON_GAP: float = 2.0
 
@@ -635,6 +637,20 @@ class SeritDock(QWidget):
         self._app_action_menu: Optional[action_menu.ActionMenu] = None
         self.window_picker = None  # çok pencereli uygulama döşemesine tıklayınca (ilk kullanımda kurulur)
         self._fs_hidden: bool = False  # tam ekran uygulama yüzünden gizli mi
+        # Üzerine gelince önizleme (hover_preview.py, ilk kullanımda kurulur)
+        self.hover_preview = None
+        self._hover_tile_idx: Optional[int] = None
+        self._hover_tile_exe: Optional[str] = None
+        self._thumb_cache: Dict[str, Tuple[float, Dict[int, Any]]] = {}
+        self._hover_open_timer = QTimer(self)
+        self._hover_open_timer.setSingleShot(True)
+        self._hover_open_timer.timeout.connect(self._open_hover_preview)
+        self._hover_hide_timer = QTimer(self)
+        self._hover_hide_timer.setSingleShot(True)
+        self._hover_hide_timer.timeout.connect(self._hide_hover_preview)
+        self._hover_refresh_timer = QTimer(self)
+        self._hover_refresh_timer.setInterval(1500)
+        self._hover_refresh_timer.timeout.connect(self._refresh_hover_preview)
         self._picker_exe: Optional[str] = None
         self._raw_windows: List[Dict[str, Any]] = []
         self._pending_actions: Dict[str, Tuple[Callable[[], Any], Optional[Callable[[], None]]]] = {}
@@ -2147,6 +2163,7 @@ class SeritDock(QWidget):
             self._draw_quick_pill(p, r_pill, bright_open, vol_open)
 
     def mousePressEvent(self, event) -> None:
+        self._hide_hover_preview(force=True)
         if event.button() == Qt.LeftButton:
             self._drag_start_pos = event.globalPosition().toPoint()
             self._window_start_pos = self.pos()
@@ -2225,9 +2242,11 @@ class SeritDock(QWidget):
             self._hover_app_idx = new_app_idx
             self._hover_tray_item = new_tray_item
             self.update()
+            self._on_tile_hover(new_app_idx)
+            hp_open = self.hover_preview is not None and self.hover_preview.is_open()
 
             # Show floating label bubble above hovered tile in normal mode
-            if new_app_idx is not None and new_app_idx < len(self.tiles) and not self.preview_mode:
+            if new_app_idx is not None and new_app_idx < len(self.tiles) and not self.preview_mode and not hp_open:
                 t_hov = self.tiles[new_app_idx]
                 r_tile = self._tile_rects[new_app_idx] if new_app_idx < len(self._tile_rects) else None
                 if r_tile:
@@ -2248,6 +2267,7 @@ class SeritDock(QWidget):
     def leaveEvent(self, event: QEvent) -> None:
         if not self.preview_mode:
             self.bubble.hide()
+        self._on_tile_hover(None)
         if (
             self._hover_key is not None
             or self._hover_app_idx is not None
@@ -2685,8 +2705,13 @@ class SeritDock(QWidget):
             return False
         self._picker_exe = exe
         anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+        cached = self._cached_thumbs(exe, [w["hwnd"] for w in wins])
         try:
-            picker.show_for(anchor_global, str(tile.get("name") or ""), self._icon_cache.get(exe), wins)
+            if cached:
+                picker.show_for(anchor_global, str(tile.get("name") or ""), self._icon_cache.get(exe), wins,
+                                thumbs=cached)
+            else:
+                picker.show_for(anchor_global, str(tile.get("name") or ""), self._icon_cache.get(exe), wins)
         except Exception as exc:
             sources.log_err("window_picker_show", exc)
             return False
@@ -2705,6 +2730,7 @@ class SeritDock(QWidget):
         self._fs_hidden = fs
         if fs:
             self.bubble.hide()
+            self._hide_hover_preview(force=True)
             self.hide()
         else:
             self.show()
@@ -2726,13 +2752,164 @@ class SeritDock(QWidget):
         sources.submit(f"picker_thumbs:{exe.lower()}", _worker)
 
     def _on_picker_thumbs(self, exe: Any, thumbs: Any) -> None:
+        if isinstance(exe, str) and isinstance(thumbs, dict) and thumbs:
+            now = time.monotonic()
+            self._thumb_cache = {k: v for k, v in self._thumb_cache.items() if now - v[0] < 10.0}
+            merged = dict(self._thumb_cache.get(exe, (now, {}))[1])
+            merged.update(thumbs)
+            self._thumb_cache[exe] = (now, merged)
         picker = getattr(self, "window_picker", None)
-        if picker is None or not picker.is_open() or exe != getattr(self, "_picker_exe", None):
+        if picker is not None and picker.is_open() and exe == getattr(self, "_picker_exe", None):
+            try:
+                picker.set_thumbnails(thumbs)
+            except Exception as exc:
+                sources.log_err("window_picker_thumbs", exc)
+        hp = getattr(self, "hover_preview", None)
+        if hp is not None and hp.current_app() == exe:
+            try:
+                hp.set_thumbnails(thumbs)
+            except Exception as exc:
+                sources.log_err("hover_preview_thumbs", exc)
+
+    def _cached_thumbs(self, exe: str, hwnds: List[int]) -> Dict[int, Any]:
+        """Son 5 sn içinde alınmış önizlemeler (önizlemeden seçiciye geçerken boş kutu görünmesin)."""
+        entry = self._thumb_cache.get(exe)
+        if not entry or time.monotonic() - entry[0] > 5.0:
+            return {}
+        want = {int(h) for h in hwnds}
+        return {h: img for h, img in entry[1].items() if h in want}
+
+    # ------------------------------------------------ üzerine gelince önizleme
+    def _ensure_hover_preview(self):
+        if self.hover_preview is None:
+            try:
+                import hover_preview
+                hp = hover_preview.HoverPreview()
+                hp.window_chosen.connect(self._on_picker_chosen)
+                hp.close_requested.connect(self._on_preview_close_requested)
+                hp.more_requested.connect(self._on_preview_more)
+                hp.hover_entered.connect(self._hover_hide_timer.stop)
+                hp.hover_left.connect(self._schedule_preview_hide)
+                self.hover_preview = hp
+            except Exception as exc:
+                sources.log_err("hover_preview_init", exc)
+                self.hover_preview = None
+        return self.hover_preview
+
+    def _on_tile_hover(self, idx: Optional[int]) -> None:
+        """Fare bir kütüğe geldi / ayrıldı. Çalışan kütükte bekleyince önizleme açılır."""
+        tile = self.tiles[idx] if idx is not None and 0 <= idx < len(self.tiles) else None
+        ok = (
+            tile is not None
+            and bool(tile.get("running"))
+            and bool(tile.get("hwnds"))
+            and bool(self.settings.get("hover_preview", True))
+            and not getattr(self, "_drag_tile_active", False)
+        )
+        hp = self.hover_preview
+        if not ok:
+            self._hover_open_timer.stop()
+            self._hover_tile_idx = None
+            if hp is not None and hp.is_open():
+                self._schedule_preview_hide()
             return
+        self._hover_hide_timer.stop()
+        self._hover_tile_idx = idx
+        if hp is not None and hp.is_open():
+            self._open_hover_preview()  # açıkken başka kütüğe geçiş: bekletmeden
+        else:
+            self._hover_open_timer.start(HOVER_OPEN_MS)
+
+    def _open_hover_preview(self) -> None:
+        idx = self._hover_tile_idx
+        if idx is None or idx >= len(self.tiles) or idx >= len(self._tile_rects):
+            return
+        if self._hover_app_idx != idx:  # fare çoktan ayrıldı
+            return
+        picker = getattr(self, "window_picker", None)
+        if picker is not None and picker.is_open():
+            return
+        tile = self.tiles[idx]
+        exe = str(tile.get("exe") or "")
+        wins = self._picker_windows(list(tile.get("hwnds") or []))
+        if not wins:
+            return
+        hp = self._ensure_hover_preview()
+        if hp is None:
+            return
+        rect = self._tile_rects[idx]
+        anchor = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+        if not self.preview_mode:
+            self.bubble.hide()
         try:
-            picker.set_thumbnails(thumbs)
+            hp.show_for(anchor, exe, str(tile.get("name") or ""), self._icon_cache.get(exe), wins,
+                        self._cached_thumbs(exe, [w["hwnd"] for w in wins]))
         except Exception as exc:
-            sources.log_err("window_picker_thumbs", exc)
+            sources.log_err("hover_preview_show", exc)
+            return
+        self._hover_tile_exe = exe
+        self._request_picker_thumbs(exe, [w["hwnd"] for w in wins[:4] if not w.get("minimized")])
+        self._hover_refresh_timer.start()
+
+    def _schedule_preview_hide(self) -> None:
+        self._hover_open_timer.stop()
+        hp = self.hover_preview
+        if hp is not None and hp.is_open():
+            self._hover_hide_timer.start(HOVER_HIDE_MS)
+
+    def _hide_hover_preview(self, force: bool = False) -> None:
+        self._hover_open_timer.stop()
+        self._hover_hide_timer.stop()
+        hp = self.hover_preview
+        if hp is None or not hp.isVisible():
+            self._hover_refresh_timer.stop()
+            return
+        if not force:
+            if hp.underMouse():
+                return  # fare önizlemenin üstünde
+            if self._hover_tile_idx is not None and self._hover_app_idx == self._hover_tile_idx:
+                return  # fare hâlâ çalışan bir kütükte
+        if force:
+            hp.hide_instant()
+        else:
+            hp.hide_animated()
+        self._hover_refresh_timer.stop()
+        self._hover_tile_exe = None
+
+    def _refresh_hover_preview(self) -> None:
+        """Önizleme açıkken pencere listesi ve görüntüler 1,5 sn'de bir tazelenir."""
+        hp = self.hover_preview
+        if hp is None or not hp.is_open():
+            self._hover_refresh_timer.stop()
+            return
+        exe = self._hover_tile_exe
+        tile = next((t for t in self.tiles if str(t.get("exe") or "") == exe), None)
+        wins = self._picker_windows(list((tile or {}).get("hwnds") or []))
+        if not wins:
+            self._hide_hover_preview(force=False if hp.underMouse() else True)
+            if hp.isVisible():
+                hp.hide_animated()
+            return
+        hp.set_windows(wins)
+        self._request_picker_thumbs(str(exe), [w["hwnd"] for w in wins[:4] if not w.get("minimized")])
+
+    def _on_preview_close_requested(self, hwnd: int) -> None:
+        if not self.preview_mode:
+            winapi.close_window(int(hwnd))
+
+        def _after() -> None:
+            self.update_windows()
+            self._refresh_hover_preview()
+
+        QTimer.singleShot(600, _after)
+
+    def _on_preview_more(self) -> None:
+        """Önizlemede '+N': tam pencere listesini (seçici) açar."""
+        exe = self._hover_tile_exe
+        idx = next((i for i, t in enumerate(self.tiles) if str(t.get("exe") or "") == exe), None)
+        self._hide_hover_preview(force=True)
+        if idx is not None and idx < len(self._tile_rects):
+            self._open_window_picker(self.tiles[idx], self._tile_rects[idx])
 
     def _on_picker_chosen(self, hwnd: int) -> None:
         if not self.preview_mode:
@@ -2754,6 +2931,7 @@ class SeritDock(QWidget):
         QTimer.singleShot(600, _refresh)
 
     def handle_tile_click(self, tile: dict, rect: Optional[QRectF] = None) -> None:
+        self._hide_hover_preview(force=True)
         if tile.get("running"):
             hwnds = tile.get("hwnds", [])
             if not hwnds:
