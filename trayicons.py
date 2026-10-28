@@ -164,6 +164,15 @@ _last_log_time: float = 0.0
 _log_lock = threading.Lock()
 
 
+def _info(msg: str) -> None:
+    """Routine success line (click received, app opened): kept out of serit.log unless SERIT_DEBUG_TRAY=1.
+
+    v24: every tray click wrote two such lines (49 clicks -> 94 lines by 28 Oct); errors still go to _log.
+    """
+    if os.environ.get("SERIT_DEBUG_TRAY") == "1":
+        _log(msg)
+
+
 def _log(msg: str) -> None:
     """Append a timestamped message to D:/Apps/serit/serit.log with 60s duplicate throttle."""
     global _last_log_msg, _last_log_time
@@ -687,7 +696,7 @@ def activate(item: Dict[str, Any], button: str = "left") -> bool:
     """
     btn = (button or "left").lower()
     name = item.get("name", "Unknown")
-    _log(f"activate() called for {name!r} button={btn!r}")
+    _info(f"activate() called for {name!r} button={btn!r}")
 
     try:
         rect = item.get("rect", (0, 0, 0, 0))
@@ -705,7 +714,7 @@ def activate(item: Dict[str, Any], button: str = "left") -> bool:
             else:
                 user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
                 user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-            _log(f"Performed on-screen click for {name!r} at ({cx}, {cy})")
+            _info(f"Performed on-screen click for {name!r} at ({cx}, {cy})")
             return True
 
         # 2. UIA Invoke Pattern (works for off-screen overflow items on left-click)
@@ -718,14 +727,14 @@ def activate(item: Dict[str, Any], button: str = "left") -> bool:
                     uia = comtypes.client.GetModule("UIAutomationCore.dll")
                     invoker = pat.QueryInterface(uia.IUIAutomationInvokePattern)
                     invoker.Invoke()
-                    _log(f"Successfully invoked UIA InvokePattern for {name!r}")
+                    _info(f"Successfully invoked UIA InvokePattern for {name!r}")
                     return True
             except Exception as e:
                 _log(f"UIA InvokePattern failed for {name!r}: {e}")
 
         # 3. Off-screen right-click limitation or fallback
         if btn == "right" and not on_screen:
-            _log(
+            _info(
                 f"Right-click on off-screen overflow item {name!r} cannot receive Win32 "
                 f"clicks without opening native flyout. Falling back to window focus."
             )
@@ -740,7 +749,7 @@ def activate(item: Dict[str, Any], button: str = "left") -> bool:
                     w_exe = str(w.get("exe", "")).lower()
                     if w_exe == exe_lower or os.path.basename(w_exe) == exe_base:
                         winapi.activate_or_minimize(w["hwnd"])
-                        _log(f"Focused window HWND {w['hwnd']:#x} for {name!r}")
+                        _info(f"Focused window HWND {w['hwnd']:#x} for {name!r}")
                         return True
             except Exception as e:
                 _log(f"Window search failed for {name!r}: {e}")
@@ -749,7 +758,7 @@ def activate(item: Dict[str, Any], button: str = "left") -> bool:
         if exe and os.path.exists(exe):
             try:
                 QDesktopServices.openUrl(QUrl.fromLocalFile(exe))
-                _log(f"Launched executable {exe!r} for {name!r}")
+                _info(f"Launched executable {exe!r} for {name!r}")
                 return True
             except Exception as e:
                 _log(f"Failed to launch executable {exe!r}: {e}")
