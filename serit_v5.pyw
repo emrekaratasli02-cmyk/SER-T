@@ -584,6 +584,17 @@ class SeritDock(QWidget):
         self.battery_panel = battery_panel.BatteryPanel()
         self.battery_panel.toggle_requested.connect(self._on_bat_toggle_requested)
         self.battery_panel.settings_requested.connect(self._on_bat_settings_requested)
+        # v22: ses ve parlaklık sürgüleri pil panelinde (kapsülde yalnız pil kaldı)
+        for sig_name, slot in (
+            ("volume_requested", self._on_bat_volume_requested),
+            ("mute_requested", self._on_bat_mute_requested),
+            ("brightness_requested", self._on_brightness_requested),
+            ("open_volume_mixer", self._on_bat_open_volume_mixer),
+            ("open_brightness", self._on_bat_open_brightness),
+        ):
+            sig = getattr(self.battery_panel, sig_name, None)
+            if sig is not None:
+                sig.connect(slot)
         self.brightness_popover.level_requested.connect(self._on_brightness_requested)
         self._pending_brightness: Dict[str, int] = {}
         self.bubble = BubbleWidget(self)
@@ -702,7 +713,37 @@ class SeritDock(QWidget):
         return bool(b.get("present")) and b.get("percent") is not None
 
     def _pill_width(self) -> float:
-        return ACTION_PILL_WIDTH_BAT if self._has_battery() else ACTION_PILL_WIDTH
+        return dock_cards.BATTERY_PILL_W if self._has_battery() else ACTION_PILL_WIDTH
+
+    def _draw_quick_pill(self, p: QPainter, r_pill: QRectF, bright_open: bool, vol_open: bool) -> None:
+        """Pil varsa yalnız pil kapsülü (ses/parlaklık pil panelinde); yoksa eski güneş | hoparlör kapsülü."""
+        bat_open = bool(self.battery_panel.is_open())
+        if self._has_battery():
+            r_bat = dock_cards.draw_battery_pill(
+                p,
+                r_pill,
+                float(self._bat_info.get("percent")),
+                bool(self._bat_info.get("charging")),
+                hovered=(self._hover_key == "bat"),
+                active=bat_open,
+            )
+            self.hit_boxes.append((r_bat, "bat", None))
+            return
+        hov_part = self._hover_key if self._hover_key in ("bright", "vol", "bat") else None
+        act_part = "bright" if bright_open else ("vol" if vol_open else ("bat" if bat_open else None))
+        pill_res = dock_cards.draw_quick_settings_pill(
+            p,
+            r_pill,
+            hovered_part=hov_part,
+            active_part=act_part,
+            vol_level=self._vol_level,
+            vol_muted=self._vol_muted,
+            bat_percent=self._bat_info.get("percent"),
+            bat_charging=bool(self._bat_info.get("charging")),
+            bat_present=False,
+        )
+        self.hit_boxes.append((pill_res[0], "bright", None))
+        self.hit_boxes.append((pill_res[1], "vol", None))
 
     def _actions_width(self) -> float:
         return ACTION_BTN_SIZE + ACTION_BTN_GAP + self._pill_width()
@@ -871,6 +912,8 @@ class SeritDock(QWidget):
             args = ()
             self.submit_fetch("bat")
             self.submit_fetch("batnet")
+            self.submit_fetch("bright")
+            self._push_bat_panel_controls()
         if switch_from is not None:
             try:
                 panel.show_for(anchor_global, *args, switch_from_x=switch_from)
@@ -1257,7 +1300,71 @@ class SeritDock(QWidget):
     def _on_volume_changed(self, lvl: float, muted: bool) -> None:
         self._vol_level = float(lvl)
         self._vol_muted = bool(muted)
+        self._push_bat_panel_controls()
         self.update()
+
+    # ---------------------------------------------- pil panelindeki ses / parlaklık
+    def _push_bat_panel_controls(self) -> None:
+        """Pil paneli açıksa ses ve parlaklık değerlerini ona da gönderir."""
+        panel = getattr(self, "battery_panel", None)
+        if panel is None or not hasattr(panel, "set_volume"):
+            return
+        try:
+            panel.set_volume(self._vol_level, self._vol_muted, self._vol_device or None)
+            panel.set_brightness(self._get_store_monitors())
+        except Exception as exc:
+            sources.log_err("bat_panel_controls", exc)
+
+    def _on_bat_volume_requested(self, level: float) -> None:
+        level = max(0.0, min(100.0, float(level)))
+        self._vol_level = level
+        if level > 0 and self._vol_muted:
+            self._on_bat_mute_requested(False)
+        if not self.preview_mode:
+            self._vol_coalescer.request(level, force=False)
+        if self.vol_popover.isVisible():
+            self.vol_popover.update_volume(level, self._vol_muted, self._vol_device)
+        self.update()
+
+    def _on_bat_mute_requested(self, muted: bool) -> None:
+        if bool(muted) == bool(self._vol_muted):
+            return
+        self._vol_muted = bool(muted)
+        if not self.preview_mode:
+            sources.submit("vol_mute", media.toggle_mute)
+        self._push_bat_panel_controls()
+        self.update()
+
+    def _on_bat_open_volume_mixer(self) -> None:
+        self._open_panel_from_battery("vol")
+
+    def _on_bat_open_brightness(self) -> None:
+        self._open_panel_from_battery("bright")
+
+    def _open_panel_from_battery(self, key: str) -> None:
+        """Pil panelindeki '›': ses mikserini / çok ekranlı parlaklığı aynı yerde açar."""
+        rect = next((r for r, k, _ in self.hit_boxes if k == "bat"), None)
+        if rect is None:
+            rect = QRectF(self.width() - 220.0, 16.0, 80.0, 32.0)
+        anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+        bp = self.battery_panel
+        switch_from = int(bp.x()) if bp.isVisible() else None
+        (getattr(bp, "hide_instant", None) or bp.hide)()
+        if key == "bright":
+            self.submit_fetch("bright")
+            panel, args = self.brightness_popover, (self._get_store_monitors(),)
+        else:
+            panel, args = self.vol_popover, (self._vol_level, self._vol_muted, self._vol_device)
+        try:
+            if switch_from is not None:
+                try:
+                    panel.show_for(anchor_global, *args, switch_from_x=switch_from)
+                    return
+                except TypeError:
+                    pass
+            panel.show_for(anchor_global, *args)
+        except Exception as exc:
+            sources.log_err("bat_open_panel", exc)
 
     @staticmethod
     def _fetch_tray_worker() -> dict:
@@ -1326,6 +1433,8 @@ class SeritDock(QWidget):
         if key == "bright":
             if self.brightness_popover.is_open():
                 self.brightness_popover.update_levels(res)
+            if self.battery_panel.is_open():
+                self._push_bat_panel_controls()
             self.update()
             return
 
@@ -1343,6 +1452,8 @@ class SeritDock(QWidget):
                 self._vol_device = dev
                 if self.vol_popover.isVisible():
                     self.vol_popover.update_volume(lvl, muted, dev)
+                if self.battery_panel.is_open():
+                    self._push_bat_panel_controls()
                 changed = True
 
             np = res.get("np")
@@ -1881,26 +1992,8 @@ class SeritDock(QWidget):
 
             dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
 
-            bat_open = bool(self.battery_panel.is_open())
-            hov_part = self._hover_key if self._hover_key in ("bright", "vol", "bat") else None
-            act_part = "bright" if bright_open else ("vol" if vol_open else ("bat" if bat_open else None))
-            pill_res = dock_cards.draw_quick_settings_pill(
-                p,
-                r_pill,
-                hovered_part=hov_part,
-                active_part=act_part,
-                vol_level=self._vol_level,
-                vol_muted=self._vol_muted,
-                bat_percent=self._bat_info.get("percent"),
-                bat_charging=bool(self._bat_info.get("charging")),
-                bat_present=self._has_battery(),
-            )
-
             self.hit_boxes.append((r_chv, "tray", None))
-            self.hit_boxes.append((pill_res[0], "bright", None))
-            self.hit_boxes.append((pill_res[1], "vol", None))
-            if len(pill_res) > 2:
-                self.hit_boxes.append((pill_res[2], "bat", None))
+            self._draw_quick_pill(p, r_pill, bright_open, vol_open)
         else:
             # Pill Style: One centered capsule in order Claude, Mail, Antigravity, apps, media, calendar, clock, chevron/sun/speaker
             r_dock = QRectF(0.5, 0.5, self.width() - 1.0, DOCK_HEIGHT - 1.0)
@@ -2040,26 +2133,8 @@ class SeritDock(QWidget):
 
             dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
 
-            bat_open = bool(self.battery_panel.is_open())
-            hov_part = self._hover_key if self._hover_key in ("bright", "vol", "bat") else None
-            act_part = "bright" if bright_open else ("vol" if vol_open else ("bat" if bat_open else None))
-            pill_res = dock_cards.draw_quick_settings_pill(
-                p,
-                r_pill,
-                hovered_part=hov_part,
-                active_part=act_part,
-                vol_level=self._vol_level,
-                vol_muted=self._vol_muted,
-                bat_percent=self._bat_info.get("percent"),
-                bat_charging=bool(self._bat_info.get("charging")),
-                bat_present=self._has_battery(),
-            )
-
             self.hit_boxes.append((r_chv, "tray", None))
-            self.hit_boxes.append((pill_res[0], "bright", None))
-            self.hit_boxes.append((pill_res[1], "vol", None))
-            if len(pill_res) > 2:
-                self.hit_boxes.append((pill_res[2], "bat", None))
+            self._draw_quick_pill(p, r_pill, bright_open, vol_open)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
