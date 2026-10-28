@@ -106,7 +106,7 @@ def _wheel(delta: int, pt: QPointF = QPointF(10, 10)) -> QWheelEvent:
 
 def test_width_header_rows():
     pnl = _pick(THREE)
-    assert wp.WindowPicker.WIDTH == wp.WIDTH == 320 == pnl.width()
+    assert wp.WindowPicker.WIDTH == wp.WIDTH == pnl.width()  # v22-B: 352 (önizlemeli liste)
     assert pnl.height() == pnl.compute_height()
     pnl.render_to_image(2.0)
     assert len(pnl._row_hit_rects) == 3
@@ -263,6 +263,49 @@ def test_recently_closed():
     assert pnl.recently_closed(10000.0)
 
 
+def _solid(color: str, w: int = 176, h: int = 99) -> QImage:
+    img = QImage(w, h, QImage.Format.Format_RGB32)
+    img.fill(QColor(color))
+    return img
+
+
+def test_split_title_cleans_app_suffix():
+    assert wp.split_title("Gelen Kutusu (12) - Gmail - Google Chrome", "Google Chrome") == ("Gelen Kutusu (12)", "Gmail")
+    assert wp.split_title("YouTube - Google Chrome", "Google Chrome") == ("YouTube", None)
+    assert wp.split_title("Örnek Rapor - Google E-Tablolar - Google Chrome", "Chrome") == ("Örnek Rapor", "Google E-Tablolar")
+    assert wp.split_title("Proje dokümanı", "Chrome") == ("Proje dokümanı", None)
+    long_tail = "Başlık - " + "x" * 40
+    assert wp.split_title(long_tail, "Chrome") == (long_tail, None)
+    assert wp.split_title("", "Chrome") == (wp.EMPTY_TITLE, None)
+
+
+def test_thumbnails_drawn_and_fallback_icon():
+    pnl = _pick(THREE, icon=_stub_icon())
+    pnl.set_thumbnails({40201: _solid("#FF0000"), 40203: _solid("#00FF00"), 99999: _solid("#0000FF"), 40202: "bozuk"})
+    assert set(pnl._thumbs) == {40201, 40203}  # bilinmeyen pencere ve bozuk görüntü atlanır
+    img = pnl.render_to_image(1.0)
+    rows = {h: r for h, r, _c in pnl._row_hit_rects}
+    # 1. satır: gerçek önizleme (kırmızı)
+    r0 = rows[40201]
+    c0 = QColor(img.pixel(int(r0.left() + 8 + wp.THUMB_W / 2), int(r0.center().y())))
+    assert c0.red() > 200 and c0.green() < 60, c0.name()
+    # 3. satır küçültülmüş: önizleme olsa bile simge gösterilir (yeşil değil)
+    r2 = rows[40203]
+    c2 = QColor(img.pixel(int(r2.left() + 8 + 4), int(r2.center().y())))
+    assert c2.green() < 120, c2.name()
+    pnl.set_windows([THREE[0]])
+    assert set(pnl._thumbs) == {40201}
+    pnl.hide_instant()
+
+
+def test_no_footer_and_compact_height():
+    pnl = _pick(TWO)
+    expected = round(wp.ps.PAD + wp.ps.HEADER_H + wp.LIST_GAP + 2 * wp.ROW_H + wp.LIST_GAP)
+    assert pnl.height() == expected, (pnl.height(), expected)
+    assert not hasattr(wp, "FOOTER_HINT")
+    pnl.hide_instant()
+
+
 def _render(name: str, windows: list, app_name: str = "Chrome", hover_index: int | None = None,
             hover_close: bool = False, scroll_frac: float = 0.0, icon=None) -> QImage:
     pnl = _pick(windows, app_name=app_name, icon=icon)
@@ -327,6 +370,9 @@ def run_all() -> None:
         test_wheel_scrolls_and_clamps,
         test_garbage_skipped_and_empty_title,
         test_recently_closed,
+        test_split_title_cleans_app_suffix,
+        test_thumbnails_drawn_and_fallback_icon,
+        test_no_footer_and_compact_height,
         test_render_sheet,
     ]
     for fn in tests:

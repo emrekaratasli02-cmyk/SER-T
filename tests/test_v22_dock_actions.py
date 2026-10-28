@@ -30,6 +30,7 @@ serit_mod.winapi.toggle_desktop = lambda: CALLS.append(("desktop",))
 serit_mod.winapi.activate_window = lambda h: CALLS.append(("activate", h))
 serit_mod.winapi.close_window = lambda h: CALLS.append(("close", h)) or True
 serit_mod.winapi.activate_or_minimize = lambda h: CALLS.append(("toggle", h))
+serit_mod.winapi.window_thumbnail = lambda h, *a, **k: None
 
 
 def _dock():
@@ -115,6 +116,9 @@ def test_multi_window_click_opens_picker_not_cycle() -> None:
         def hide_animated(self):
             self.open = False
 
+        def set_thumbnails(self, thumbs, repaint=True):
+            self.thumbs = thumbs
+
     d.window_picker = FakePicker()
     CALLS.clear()
     tile = {"exe": r"C:\Apps\Chrome\chrome.exe", "name": "Chrome", "running": True, "hwnds": [11, 12]}
@@ -162,6 +166,29 @@ def test_picker_signals_call_winapi() -> None:
     finally:
         d.preview_mode = True
     assert ("activate", 42) in CALLS and ("close", 43) in CALLS
+
+
+def test_picker_thumbs_only_for_open_picker() -> None:
+    d = _dock()
+    got: list = []
+
+    class P:
+        def __init__(self, open_):
+            self.open_ = open_
+
+        def is_open(self):
+            return self.open_
+
+        def set_thumbnails(self, thumbs, repaint=True):
+            got.append(thumbs)
+
+    d.window_picker = P(True)
+    d._picker_exe = "a.exe"
+    d._on_picker_thumbs("a.exe", {1: "x"})
+    d._on_picker_thumbs("b.exe", {2: "y"})  # başka uygulamanın geç gelen önizlemesi
+    d.window_picker = P(False)
+    d._on_picker_thumbs("a.exe", {3: "z"})  # liste kapanmış
+    assert got == [{1: "x"}], got
 
 
 if __name__ == "__main__":

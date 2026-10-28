@@ -463,6 +463,7 @@ class DataDispatcher(QObject):
     tray_resolved = Signal(object, object, object)
     action_done = Signal(str)
     end_task_done = Signal(object, object)  # (tray item, end_task result)
+    thumbs_ready = Signal(object, object)  # (exe, {hwnd: QImage}) pencere seçicisi önizlemeleri
 
 
 class SeritDock(QWidget):
@@ -681,6 +682,7 @@ class SeritDock(QWidget):
         self.dispatcher.tray_resolved.connect(self._on_tray_resolved)
         self.dispatcher.action_done.connect(self._on_action_task_done)
         self.dispatcher.end_task_done.connect(self._on_end_task_done)
+        self.dispatcher.thumbs_ready.connect(self._on_picker_thumbs)
         if not self.preview_mode:
             self.setup_timers()
             self._setup_battery_timers()
@@ -2678,10 +2680,35 @@ class SeritDock(QWidget):
         anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
         try:
             picker.show_for(anchor_global, str(tile.get("name") or ""), self._icon_cache.get(exe), wins)
-            return True
         except Exception as exc:
             sources.log_err("window_picker_show", exc)
             return False
+        self._request_picker_thumbs(exe, [w["hwnd"] for w in wins if not w.get("minimized")])
+        return True
+
+    def _request_picker_thumbs(self, exe: str, hwnds: List[int]) -> None:
+        """Önizlemeleri arka planda alır (GUI donmaz); liste açılınca yerlerine oturur. Diske yazılmaz."""
+        if self.preview_mode or not hwnds:
+            return
+
+        def _worker() -> None:
+            out = {}
+            for h in hwnds[:12]:
+                img = winapi.window_thumbnail(int(h))
+                if img is not None:
+                    out[int(h)] = img
+            self.dispatcher.thumbs_ready.emit(exe, out)
+
+        sources.submit(f"picker_thumbs:{exe.lower()}", _worker)
+
+    def _on_picker_thumbs(self, exe: Any, thumbs: Any) -> None:
+        picker = getattr(self, "window_picker", None)
+        if picker is None or not picker.is_open() or exe != getattr(self, "_picker_exe", None):
+            return
+        try:
+            picker.set_thumbnails(thumbs)
+        except Exception as exc:
+            sources.log_err("window_picker_thumbs", exc)
 
     def _on_picker_chosen(self, hwnd: int) -> None:
         if not self.preview_mode:

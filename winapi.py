@@ -15,8 +15,9 @@ import ctypes
 import ctypes.wintypes as w
 
 import psutil
-from PySide6.QtCore import QFileInfo
-from PySide6.QtGui import QPixmap
+from typing import Optional
+from PySide6.QtCore import QFileInfo, Qt
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QFileIconProvider
 
 __all__ = [
@@ -586,6 +587,115 @@ VK_D = 0x44
 WM_CLOSE = 0x0010
 user32.PostMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
 user32.PostMessageW.restype = w.BOOL
+
+
+# --- Pencere önizlemesi (PrintWindow) ---------------------------------------
+# Ayrı DLL nesneleri: argtypes ayarları diğer modüllerin user32/gdi32 çağrılarını etkilemesin.
+PW_RENDERFULLCONTENT = 0x00000002
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
+_t_u32 = ctypes.WinDLL("user32")
+_t_g32 = ctypes.WinDLL("gdi32")
+_t_u32.GetDC.argtypes = [w.HWND]
+_t_u32.GetDC.restype = w.HDC
+_t_u32.ReleaseDC.argtypes = [w.HWND, w.HDC]
+_t_u32.ReleaseDC.restype = ctypes.c_int
+_t_u32.GetWindowRect.argtypes = [w.HWND, ctypes.POINTER(w.RECT)]
+_t_u32.GetWindowRect.restype = w.BOOL
+_t_u32.PrintWindow.argtypes = [w.HWND, w.HDC, w.UINT]
+_t_u32.PrintWindow.restype = w.BOOL
+_t_u32.IsHungAppWindow.argtypes = [w.HWND]
+_t_u32.IsHungAppWindow.restype = w.BOOL
+_t_g32.CreateCompatibleDC.argtypes = [w.HDC]
+_t_g32.CreateCompatibleDC.restype = w.HDC
+_t_g32.CreateDIBSection.argtypes = [w.HDC, ctypes.c_void_p, w.UINT, ctypes.POINTER(ctypes.c_void_p), w.HANDLE, w.DWORD]
+_t_g32.CreateDIBSection.restype = w.HBITMAP
+_t_g32.SelectObject.argtypes = [w.HDC, w.HGDIOBJ]
+_t_g32.SelectObject.restype = w.HGDIOBJ
+_t_g32.DeleteObject.argtypes = [w.HGDIOBJ]
+_t_g32.DeleteObject.restype = w.BOOL
+_t_g32.DeleteDC.argtypes = [w.HDC]
+_t_g32.DeleteDC.restype = w.BOOL
+
+
+class _BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", w.DWORD), ("biWidth", w.LONG), ("biHeight", w.LONG), ("biPlanes", w.WORD),
+        ("biBitCount", w.WORD), ("biCompression", w.DWORD), ("biSizeImage", w.DWORD),
+        ("biXPelsPerMeter", w.LONG), ("biYPelsPerMeter", w.LONG), ("biClrUsed", w.DWORD),
+        ("biClrImportant", w.DWORD),
+    ]
+
+
+def window_thumbnail(hwnd: int, max_w: int = 176, max_h: int = 110) -> Optional[QImage]:
+    """Pencerenin küçük görüntüsü (yalnız bellekte; diske yazılmaz).
+
+    Küçültülmüş, asılı, geçersiz ya da tamamen siyah çıkan pencerede None döner.
+    Arka plan iş parçacığından çağrılabilir (QImage, QPixmap değil).
+    """
+    h = int(hwnd or 0)
+    try:
+        if not h or not user32.IsWindow(h) or user32.IsIconic(h) or _t_u32.IsHungAppWindow(h):
+            return None
+        r = w.RECT()
+        if not _t_u32.GetWindowRect(h, ctypes.byref(r)):
+            return None
+        width, height = r.right - r.left, r.bottom - r.top
+        if width < 16 or height < 16 or width > 12000 or height > 12000:
+            return None
+        crop = (0, 0, width, height)
+        fr = w.RECT()  # görünmez yeniden boyutlandırma kenarlarını kes
+        if dwmapi.DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(fr), ctypes.sizeof(fr)) == 0:
+            cx, cy = fr.left - r.left, fr.top - r.top
+            cw, ch = min(fr.right - fr.left, width - cx), min(fr.bottom - fr.top, height - cy)
+            if 0 <= cx < width and 0 <= cy < height and cw > 16 and ch > 16:
+                crop = (cx, cy, cw, ch)
+    except Exception as e:
+        _log(f"window_thumbnail rect error for hwnd {hwnd}: {e}")
+        return None
+
+    sdc = mdc = hbmp = old = None
+    try:
+        sdc = _t_u32.GetDC(None)
+        mdc = _t_g32.CreateCompatibleDC(sdc)
+        bmi = _BITMAPINFOHEADER()
+        bmi.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        bmi.biWidth, bmi.biHeight = width, -height  # üstten aşağı
+        bmi.biPlanes, bmi.biBitCount, bmi.biCompression = 1, 32, 0
+        bits = ctypes.c_void_p()
+        hbmp = _t_g32.CreateDIBSection(mdc, ctypes.byref(bmi), 0, ctypes.byref(bits), None, 0)
+        if not hbmp or not bits.value:
+            return None
+        old = _t_g32.SelectObject(mdc, hbmp)
+        if not _t_u32.PrintWindow(h, mdc, PW_RENDERFULLCONTENT):
+            return None
+        raw = ctypes.string_at(bits.value, width * height * 4)
+        full = QImage(raw, width, height, width * 4, QImage.Format.Format_RGB32).copy(*crop)
+        img = full.scaled(int(max_w), int(max_h), Qt.AspectRatioMode.KeepAspectRatio,
+                          Qt.TransformationMode.SmoothTransformation)
+        if img.isNull():
+            return None
+        lit = total = 0
+        for sy in range(1, 12):
+            for sx in range(1, 16):
+                total += 1
+                if img.pixel(int(img.width() * sx / 16), int(img.height() * sy / 12)) & 0xFFFFFF:
+                    lit += 1
+        return img if lit * 10 >= total else None  # %90'dan fazlası siyahsa görüntü alınamamıştır
+    except Exception as e:
+        _log(f"window_thumbnail error for hwnd {hwnd}: {e}")
+        return None
+    finally:
+        try:
+            if mdc and old:
+                _t_g32.SelectObject(mdc, old)
+            if hbmp:
+                _t_g32.DeleteObject(hbmp)
+            if mdc:
+                _t_g32.DeleteDC(mdc)
+            if sdc:
+                _t_u32.ReleaseDC(None, sdc)
+        except Exception:
+            pass
 
 
 def toggle_desktop() -> None:

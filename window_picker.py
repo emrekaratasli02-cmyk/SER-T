@@ -16,6 +16,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
+    QFont,
     QFontMetricsF,
     QGuiApplication,
     QImage,
@@ -31,11 +32,46 @@ if _dir not in sys.path:
 
 import panel_style as ps  # noqa: E402
 
-ROW_H = 36.0
-MAX_VISIBLE = 8
-WIDTH = 320
+ROW_H = 64.0
+MAX_VISIBLE = 6
+WIDTH = 352
 EMPTY_TITLE = "(adsız pencere)"
-FOOTER_HINT = "Tıkla: pencereye geç · orta tık: kapat"
+THUMB_W = 80.0
+THUMB_H = 50.0
+LIST_GAP = 10.0          # başlık ile liste arası
+ACTIVE_BG = QColor(10, 132, 255, 34)
+_SEPS = (" - ", " — ", " – ", " | ")
+
+
+def split_title(title: str, app_name: str = "") -> Tuple[str, Optional[str]]:
+    """'Gelen Kutusu - Gmail - Google Chrome' -> ('Gelen Kutusu', 'Gmail').
+
+    Sondaki uygulama adını atar; kalan son kısa parça (<=24 harf) alt satıra site/proje olarak iner.
+    """
+    t = str(title or "").strip()
+    app = str(app_name or "").strip().lower()
+
+    def _last_split(text: str) -> Tuple[str, Optional[str]]:
+        best = -1
+        sep_len = 0
+        for sep in _SEPS:
+            i = text.rfind(sep)
+            if i > best:
+                best, sep_len = i, len(sep)
+        if best <= 0:
+            return text, None
+        return text[:best].strip(), text[best + sep_len:].strip()
+
+    if app:
+        head, tail = _last_split(t)
+        if tail is not None and head:
+            tl = tail.lower()
+            if app in tl or tl in app:
+                t = head
+    head, tail = _last_split(t)
+    if tail and head and len(tail) <= 24:
+        return head, tail
+    return (t or EMPTY_TITLE), None
 
 
 def _sanitize_windows(windows: Any) -> List[Dict[str, Any]]:
@@ -60,7 +96,7 @@ def _sanitize_windows(windows: Any) -> List[Dict[str, Any]]:
 
 
 class WindowPicker(QWidget):
-    """Uygulamanın pencerelerini seçtiren 320 px panel."""
+    """Uygulamanın pencerelerini önizlemeli liste olarak seçtiren 352 px panel."""
 
     WIDTH = WIDTH
 
@@ -82,7 +118,7 @@ class WindowPicker(QWidget):
         self._app_name: str = "Pencereler"
         self._icon: Optional[QPixmap] = None
         self._windows: List[Dict[str, Any]] = []
-        self._stamp: str = time.strftime("%H:%M")
+        self._thumbs: Dict[int, QImage] = {}
 
         self._anchor_global: Optional[QRectF] = None
         self._last_close_time: float = 0.0
@@ -112,13 +148,11 @@ class WindowPicker(QWidget):
     def _max_scroll(self) -> float:
         return max(0.0, float(len(self._windows) - MAX_VISIBLE) * ROW_H)
 
-    def _card_height(self) -> float:
-        return ps.CARD_PAD * 2 + 15.0 + ps.CARD_GAP + self._row_count() * ROW_H
+    def _rows_height(self) -> float:
+        return self._row_count() * ROW_H
 
     def compute_height(self) -> int:
-        h = ps.PAD + ps.HEADER_H + ps.GAP + self._card_height()
-        h += ps.GAP + ps.FOOTER_H + ps.PAD * 0.5
-        return int(round(h))
+        return int(round(ps.PAD + ps.HEADER_H + LIST_GAP + self._rows_height() + LIST_GAP))
 
     def _active_index(self) -> int:
         for i, w in enumerate(self._windows):
@@ -139,7 +173,8 @@ class WindowPicker(QWidget):
         old_focus_hwnd = self._windows[self._focus]["hwnd"] if 0 <= self._focus < len(self._windows) else None
         old_hover = self._hover_hwnd
         self._windows = _sanitize_windows(windows)
-        self._stamp = time.strftime("%H:%M")
+        alive = {w["hwnd"] for w in self._windows}
+        self._thumbs = {h: img for h, img in self._thumbs.items() if h in alive}
 
         if not self._windows:
             self._focus = 0
@@ -160,6 +195,17 @@ class WindowPicker(QWidget):
         self._relayout_size()
         if self.isVisible() and not self._closing and self._anchor_global is not None:
             self.move(self._target_pos())
+
+    def set_thumbnails(self, thumbs: Any, repaint: bool = True) -> None:
+        """Pencere önizlemelerini ekler ({hwnd: QImage}); bilinmeyen pencere ve bozuk görüntü atlanır."""
+        if not isinstance(thumbs, dict):
+            return
+        alive = {w["hwnd"] for w in self._windows}
+        for h, img in thumbs.items():
+            if isinstance(h, int) and h in alive and isinstance(img, QImage) and not img.isNull():
+                self._thumbs[h] = img
+        if repaint:
+            self.update()
 
     def _relayout_size(self) -> None:
         h = self.compute_height()
@@ -182,12 +228,14 @@ class WindowPicker(QWidget):
         icon: Optional[QPixmap],
         windows: list,
         switch_from_x: Optional[int] = None,
+        thumbs: Optional[Dict[int, QImage]] = None,
     ) -> None:
         self._anchor_global = QRectF(anchor_global) if anchor_global is not None else None
         self._app_name = str(app_name).strip() if app_name else "Pencereler"
         self._icon = icon if isinstance(icon, QPixmap) and not icon.isNull() else None
         self._windows = _sanitize_windows(windows)
-        self._stamp = time.strftime("%H:%M")
+        self._thumbs = {}
+        self.set_thumbnails(thumbs or {}, repaint=False)
         self._closing = False
         self._scroll_y = 0.0
         self._hover_hwnd = None
@@ -434,16 +482,11 @@ class WindowPicker(QWidget):
         )
         if hd.get("close") is not None:
             self._rects["close"] = hd["close"]
-        y += ps.HEADER_H + ps.GAP
+        y += ps.HEADER_H + LIST_GAP
 
-        card_h = self._card_height()
-        inner = ps.draw_card(p, QRectF(x0, y, cw, card_h), "Pencereler")
-        self._rows_view = QRectF(inner)
-        self._paint_rows(p, inner)
-        y += card_h + ps.GAP
-
-        fr = QRectF(x0, y, cw, ps.FOOTER_H)
-        ps.draw_footer(p, fr, FOOTER_HINT, None)
+        rows = QRectF(x0 - 6.0, y, cw + 12.0, self._rows_height())
+        self._rows_view = QRectF(rows)
+        self._paint_rows(p, rows)
 
     def _paint_rows(self, p: QPainter, inner: QRectF) -> None:
         if not inner.isValid() or inner.width() <= 0.0 or inner.height() <= 0.0:
@@ -463,12 +506,10 @@ class WindowPicker(QWidget):
 
         p.save()
         p.setClipRect(QRectF(inner.left(), inner.top(), inner.width(), view_h))
-        f_title = ps.f_body()
-        f_mini = ps.font(10.5)
-        fm_title = QFontMetricsF(f_title)
-        fm_mini = QFontMetricsF(f_mini)
-        mini_text = "küçültülmüş"
-        mini_w = fm_mini.horizontalAdvance(mini_text)
+        f_title = ps.font(13.0)
+        f_title_b = ps.font(13.0, QFont.Weight.DemiBold)
+        f_sub = ps.font(11.0)
+        fm_sub = QFontMetricsF(f_sub)
 
         for i, item in enumerate(self._windows):
             hwnd = item["hwnd"]
@@ -482,48 +523,70 @@ class WindowPicker(QWidget):
             minimized = bool(item.get("minimized"))
             active = bool(item.get("active"))
 
-            if hovered or focused:
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(ps.BUTTON_HOVER if hovered else ps.BUTTON_BG)
-                p.drawPath(ps.rounded(row.adjusted(0.0, 1.0, 0.0, -1.0), 8.0))
+            bg = row.adjusted(0.0, 2.0, 0.0, -2.0)
+            p.setPen(Qt.PenStyle.NoPen)
+            if active:
+                p.setBrush(ACTIVE_BG)
+                p.drawPath(ps.rounded(bg, 10.0))
+            if hovered or (focused and not active):
+                p.setBrush(QColor(255, 255, 255, 16) if active else (ps.BUTTON_HOVER if hovered else ps.BUTTON_BG))
+                p.drawPath(ps.rounded(bg, 10.0))
+            if focused and not hovered:
+                p.setPen(QPen(QColor(10, 132, 255, 150), 1.2))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPath(ps.rounded(bg.adjusted(0.6, 0.6, -0.6, -0.6), 9.5))
+
+            tr = QRectF(row.left() + 8.0, row.center().y() - THUMB_H / 2.0, THUMB_W, THUMB_H)
+            self._draw_thumb(p, tr, hwnd, minimized)
 
             close_rect: Optional[QRectF] = None
-            right = row.right() - 8.0
-
+            right = row.right() - 12.0
             if hovered:
-                close_rect = QRectF(row.right() - 6.0 - 24.0, row.center().y() - 12.0, 24.0, 24.0)
+                close_rect = QRectF(row.right() - 8.0 - 24.0, row.center().y() - 12.0, 24.0, 24.0)
                 right = close_rect.left() - 6.0
 
-            label_rect: Optional[QRectF] = None
-            if minimized:
-                label_rect = QRectF(right - mini_w, row.top(), mini_w, ROW_H)
-                right = label_rect.left() - 8.0
-
+            tx = tr.right() + 12.0
+            tw = max(10.0, right - tx)
+            main, site = split_title(item["title"], self._app_name)
+            parts: List[Tuple[str, QColor]] = []
+            if site:
+                parts.append((site, ps.TEXT_META))
             if active:
-                bar = QRectF(row.left() + 3.0, row.center().y() - 9.0, 3.0, 18.0)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(ps.ACCENT)
-                p.drawPath(ps.rounded(bar, 1.5))
+                parts.append(("önde", ps.ACCENT))
+            if minimized:
+                parts.append(("küçültülmüş", ps.TEXT_META))
 
-            text_left = row.left() + (13.0 if active else 8.0)
-            title_w = max(0.0, right - text_left)
-            p.setFont(f_title)
+            ft = f_title_b if active else f_title
+            p.setFont(ft)
             p.setPen(ps.TEXT_MUTED if minimized else ps.TEXT)
-            elided = fm_title.elidedText(item["title"], Qt.TextElideMode.ElideMiddle, max(10.0, title_w))
-            p.drawText(
-                QRectF(text_left, row.top(), title_w, ROW_H),
-                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                elided,
-            )
+            if parts:
+                title_rect = QRectF(tx, row.center().y() - 19.0, tw, 19.0)
+                align = Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft
+            else:
+                title_rect = QRectF(tx, row.top(), tw, ROW_H)
+                align = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+            p.drawText(title_rect, align, QFontMetricsF(ft).elidedText(main, Qt.TextElideMode.ElideRight, tw))
 
-            if label_rect is not None:
-                p.setFont(f_mini)
-                p.setPen(ps.TEXT_MUTED)
-                p.drawText(
-                    label_rect,
-                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-                    mini_text,
-                )
+            if parts:
+                p.setFont(f_sub)
+                x = tx
+                sub_top = row.center().y() + 2.0
+                sep = " · "
+                for k, (txt, col) in enumerate(parts):
+                    if k:
+                        sw = fm_sub.horizontalAdvance(sep)
+                        if x + sw >= tx + tw:
+                            break
+                        p.setPen(ps.TEXT_META)
+                        p.drawText(QRectF(x, sub_top, sw, 16.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, sep)
+                        x += sw
+                    room = tx + tw - x
+                    if room <= 12.0:
+                        break
+                    shown = fm_sub.elidedText(txt, Qt.TextElideMode.ElideRight, room)
+                    p.setPen(col)
+                    p.drawText(QRectF(x, sub_top, room, 16.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, shown)
+                    x += fm_sub.horizontalAdvance(shown)
 
             if close_rect is not None:
                 close_hot = hwnd == self._hover_close_hwnd
@@ -549,8 +612,42 @@ class WindowPicker(QWidget):
             p.save()
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(255, 255, 255, 45))
-            p.drawRoundedRect(QRectF(inner.right() + 8.0, thumb_y, 3.0, thumb_h), 1.5, 1.5)
+            p.drawRoundedRect(QRectF(float(self.width()) - 6.5, thumb_y, 3.0, thumb_h), 1.5, 1.5)
             p.restore()
+
+    def _draw_thumb(self, p: QPainter, r: QRectF, hwnd: int, minimized: bool) -> None:
+        """Pencerenin gerçek küçük görüntüsü; yoksa (küçültülmüş / alınamadı / yükleniyor) uygulama simgesi."""
+        img = None if minimized else self._thumbs.get(hwnd)
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        p.setClipPath(ps.rounded(r, 6.0), Qt.ClipOperation.IntersectClip)
+        if img is not None and not img.isNull() and img.width() > 0 and img.height() > 0:
+            ia = img.width() / img.height()
+            ra = r.width() / r.height()
+            if ia > ra:  # görüntü daha geniş: ortadan kırp
+                sw = img.height() * ra
+                src = QRectF((img.width() - sw) / 2.0, 0.0, sw, float(img.height()))
+            else:  # görüntü daha uzun: üstten kırp (sekme / adres çubuğu görünsün)
+                sh = img.width() / ra
+                src = QRectF(0.0, 0.0, float(img.width()), sh)
+            p.drawImage(r, img, src)
+        else:
+            p.fillRect(r, QColor(0x26, 0x28, 0x2E))
+            s = 22.0
+            ir = QRectF(r.center().x() - s / 2.0, r.center().y() - s / 2.0, s, s)
+            p.setOpacity(0.5 if minimized else 0.8)
+            if self._icon is not None:
+                p.drawPixmap(ir.toRect(), self._icon)
+            else:
+                self._draw_app_glyph(p, ir)
+            p.setOpacity(1.0)
+        p.restore()
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(QPen(QColor(255, 255, 255, 30), 1.0))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(ps.rounded(r.adjusted(0.5, 0.5, -0.5, -0.5), 5.5))
+        p.restore()
 
     @staticmethod
     def _draw_app_glyph(p: QPainter, r: QRectF) -> None:
