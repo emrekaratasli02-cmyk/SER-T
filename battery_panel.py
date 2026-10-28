@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QCursor, QFontMetricsF, QGuiApplication, QImage, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetricsF, QGuiApplication, QImage, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 _dir = str(Path(__file__).resolve().parent)
@@ -27,9 +27,43 @@ try:
 except Exception:  # pragma: no cover
     winapi = None
 
+try:
+    from brightness_popover import draw_sun_icon as _draw_sun_icon  # noqa: E402
+except Exception:  # pragma: no cover
+    _draw_sun_icon = None
+
+try:
+    from volume_panel import draw_speaker_icon as _draw_speaker_icon  # noqa: E402
+except Exception:  # pragma: no cover
+    _draw_speaker_icon = None
+
 TOP_LOAD_MIN_W = 35.0
 LOW_PCT = 20
 WARN_PCT = 35
+WHEEL_STEP = 2.0
+
+AV_ROW_H = 42.0        # 'Ses ve parlaklık' satırı (etiket + 18 px iz + 20 px tutaç)
+AV_ROW_GAP = 8.0
+AV_OVER_H = 25.0       # kart üst başlığı (15 px + 10 px boşluk)
+AV_CHEV_SZ = 20.0      # satır sonu '›' hayalet düğmesi
+
+
+def _clamp_level(value: Any) -> Optional[float]:
+    """0-100 arası float; geçersiz/None ise None (uydurma yok)."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    return max(0.0, min(100.0, f))
+
+
+def _is_laptop(mon: Dict[str, Any]) -> bool:
+    name = str(mon.get("name", "")).lower()
+    return str(mon.get("kind", "")) == "wmi" or "dizüstü" in name or "laptop" in name
 
 
 def level_color(percent: Optional[float], charging: bool) -> QColor:
@@ -165,6 +199,11 @@ class BatteryPanel(QWidget):
 
     toggle_requested = Signal(str, bool)   # 'wifi' | 'bluetooth', istenen durum
     settings_requested = Signal(str)       # 'wifi' | 'bluetooth' | 'power'
+    volume_requested = Signal(float)       # 0-100 (basış, sürükleme, tekerlek)
+    mute_requested = Signal(bool)          # istenen yeni sessiz durumu
+    brightness_requested = Signal(str, int)  # monitör id, 0-100
+    open_volume_mixer = Signal()
+    open_brightness = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -180,6 +219,14 @@ class BatteryPanel(QWidget):
         self._busy: Dict[str, Optional[str]] = {"wifi": None, "bluetooth": None}  # None | 'on' | 'off' (istenen)
         self._supported: Dict[str, bool] = {"wifi": True, "bluetooth": True}
         self._stamp: str = "—"
+
+        self._volume: Optional[float] = None
+        self._muted: bool = False
+        self._volume_device: Optional[str] = None
+        self._monitors: List[Dict[str, Any]] = []
+        self._drag: Optional[str] = None          # 'vol' | 'bright'
+        self._drag_monitor_id: Optional[str] = None
+        self._av: Dict[str, Dict[str, Any]] = {}  # çizimde doldurulan satır isabet alanları
 
         self._anchor_global: Optional[QRectF] = None
         self._last_close_time: float = 0.0
@@ -221,6 +268,51 @@ class BatteryPanel(QWidget):
 
     def is_busy(self, kind: str) -> bool:
         return self._busy.get(kind) is not None
+
+    # ------------------------------------------------------- ses / parlaklık
+    def set_volume(self, level: Optional[float], muted: bool = False, device: Optional[str] = None) -> None:
+        """Ana ses düzeyi; sürükleme sırasında gelen güncelleme tutacı geri zıplatmasın."""
+        self._muted = bool(muted)
+        self._volume_device = str(device) if device is not None else None
+        if self._drag != "vol":
+            self._volume = _clamp_level(level)
+        self.update()
+
+    def set_brightness(self, monitors: List[Dict[str, Any]]) -> None:
+        """brightness_popover sözlük biçimi: id, name, level, ok (kind isteğe bağlı)."""
+        raw = monitors if isinstance(monitors, list) else []
+        old_levels = {m.get("id"): m.get("level") for m in self._monitors}
+        out: List[Dict[str, Any]] = []
+        for i, m in enumerate(raw):
+            if not isinstance(m, dict):
+                continue
+            lvl = _clamp_level(m.get("level"))
+            mid = str(m.get("id") or f"mon_{i}")
+            name = str(m.get("name") or ("Dizüstü" if _is_laptop(m) else f"Ekran {i + 1}"))
+            ok = bool(m.get("ok", lvl is not None)) and lvl is not None
+            out.append({
+                "id": mid,
+                "name": name,
+                "kind": str(m.get("kind") or ""),
+                "level": lvl,
+                "ok": ok,
+            })
+        if self._drag == "bright" and self._drag_monitor_id is not None:
+            for m in out:
+                if m["id"] == self._drag_monitor_id and self._drag_monitor_id in old_levels:
+                    m["level"] = old_levels[self._drag_monitor_id]
+        self._monitors = out
+        self.update()
+
+    def _bright_monitor(self) -> Optional[Dict[str, Any]]:
+        """Önce dizüstü ekranı, yoksa ilk denetlenebilir monitör."""
+        for m in self._monitors:
+            if _is_laptop(m) and m.get("ok") and m.get("level") is not None:
+                return m
+        for m in self._monitors:
+            if m.get("ok") and m.get("level") is not None:
+                return m
+        return None
 
     def _relayout(self) -> None:
         h = self.compute_height()
@@ -286,8 +378,13 @@ class BatteryPanel(QWidget):
     def _wireless_card_height(self) -> float:
         return ps.CARD_PAD * 2 + 15.0 + ps.CARD_GAP + 52.0
 
+    def _av_card_height(self) -> float:
+        return ps.CARD_PAD * 2 + AV_OVER_H + AV_ROW_H * 2 + AV_ROW_GAP
+
     def compute_height(self) -> int:
-        h = ps.PAD + ps.HEADER_H + ps.GAP + self._bat_card_height() + ps.GAP + self._wireless_card_height()
+        h = ps.PAD + ps.HEADER_H + ps.GAP + self._bat_card_height()
+        h += ps.GAP + self._av_card_height()
+        h += ps.GAP + self._wireless_card_height()
         h += ps.GAP + ps.FOOTER_H + ps.PAD * 0.5
         return int(round(h))
 
@@ -316,6 +413,8 @@ class BatteryPanel(QWidget):
                 tx = max(g.left() + m, min(g.right() - self.width() - m, tx))
                 if ty < g.top() + m:
                     ty = int(self._anchor_global.bottom() + ps.ANCHOR_GAP)
+                if ty + self.height() > g.bottom() - m:
+                    ty = max(g.top() + m, g.bottom() - self.height() - m)
         winid = int(self.winId())
         if winapi is not None and hasattr(winapi, "set_round_region"):
             try:
@@ -375,14 +474,77 @@ class BatteryPanel(QWidget):
         super().hideEvent(event)
 
     def _hit(self, pos: QPointF) -> Optional[str]:
-        for key in ("close", "wifi_main", "wifi_chev", "bt_main", "bt_chev", "footer_btn"):
+        for key in ("close", "vol_icon", "vol_chev", "bright_chev",
+                    "vol_slider", "bright_slider",
+                    "wifi_main", "wifi_chev", "bt_main", "bt_chev", "footer_btn"):
             r = self._rects.get(key)
             if r is not None and r.contains(pos):
                 return key
         return None
 
+    def _av_row(self, key: str) -> Optional[Dict[str, Any]]:
+        row = self._av.get(key)
+        return row if isinstance(row, dict) else None
+
+    def _update_volume_at(self, x: float) -> None:
+        row = self._av_row("vol")
+        if row is None or not row.get("draggable"):
+            return
+        lvl = float(ps.slider_value_at(row["track"], x))
+        self._volume = lvl
+        self.volume_requested.emit(lvl)
+        self.update()
+
+    def _update_brightness_at(self, x: float) -> None:
+        row = self._av_row("bright")
+        if row is None or not row.get("draggable"):
+            return
+        mon = row.get("monitor")
+        if not isinstance(mon, dict):
+            return
+        lvl = int(ps.slider_value_at(row["track"], x))
+        mon["level"] = float(lvl)
+        self.brightness_requested.emit(str(mon.get("id")), lvl)
+        self.update()
+
+    def _press_av(self, pos: QPointF) -> bool:
+        """Ses/parlaklık satırı: simge, '›' ve kaydırıcı basışı."""
+        vol = self._av_row("vol")
+        if vol is not None:
+            if vol["icon_rect"].contains(pos):
+                self.mute_requested.emit(not self._muted)
+                return True
+            if vol["chev_rect"].contains(pos):
+                self.activate("vol_chev")
+                return True
+            if vol.get("draggable") and vol["hit_rect"].contains(pos):
+                self._drag = "vol"
+                self._update_volume_at(pos.x())
+                return True
+        bright = self._av_row("bright")
+        if bright is not None:
+            if bright["chev_rect"].contains(pos):
+                self.activate("bright_chev")
+                return True
+            if bright.get("draggable") and bright["hit_rect"].contains(pos):
+                mon = bright.get("monitor")
+                self._drag = "bright"
+                self._drag_monitor_id = str(mon.get("id")) if isinstance(mon, dict) else None
+                self._update_brightness_at(pos.x())
+                return True
+        return False
+
     def mouseMoveEvent(self, event) -> None:
-        h = self._hit(event.position())
+        pos = event.position()
+        if self._drag == "vol":
+            self._update_volume_at(pos.x())
+            event.accept()
+            return
+        if self._drag == "bright":
+            self._update_brightness_at(pos.x())
+            event.accept()
+            return
+        h = self._hit(pos)
         if h != self._hover:
             self._hover = h
             self.update()
@@ -396,15 +558,67 @@ class BatteryPanel(QWidget):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            self.activate(self._hit(event.position()))
+            pos = event.position()
+            if self._press_av(pos):
+                event.accept()
+                return
+            self.activate(self._hit(pos))
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._drag is not None:
+            if self._drag == "vol" and self._volume is not None:
+                self.volume_requested.emit(float(self._volume))
+            elif self._drag == "bright":
+                row = self._av_row("bright")
+                mon = row.get("monitor") if row is not None else None
+                if isinstance(mon, dict) and mon.get("level") is not None:
+                    self.brightness_requested.emit(str(mon.get("id")), int(round(float(mon["level"]))))
+            self._drag = None
+            self._drag_monitor_id = None
+            self.update()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event) -> None:
+        pos = event.position()
+        delta = WHEEL_STEP if event.angleDelta().y() > 0 else -WHEEL_STEP
+        vol = self._av_row("vol")
+        if vol is not None and vol["row_rect"].contains(pos) and vol.get("draggable"):
+            cur = self._volume if self._volume is not None else 0.0
+            new_lvl = max(0.0, min(100.0, float(cur) + delta))
+            self._volume = new_lvl
+            self.volume_requested.emit(new_lvl)
+            self.update()
+            event.accept()
+            return
+        bright = self._av_row("bright")
+        if bright is not None and bright["row_rect"].contains(pos) and bright.get("draggable"):
+            mon = bright.get("monitor")
+            if isinstance(mon, dict) and mon.get("level") is not None:
+                new_lvl = int(max(0.0, min(100.0, float(mon["level"]) + delta)))
+                mon["level"] = float(new_lvl)
+                self.brightness_requested.emit(str(mon.get("id")), new_lvl)
+                self.update()
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def activate(self, key: Optional[str]) -> None:
         """Tıklama davranışı (testlerde doğrudan çağrılabilir)."""
         if key == "close":
             self.hide_animated()
+        elif key == "vol_icon":
+            self.mute_requested.emit(not self._muted)
+        elif key == "vol_chev":
+            self.hide_animated()
+            self.open_volume_mixer.emit()
+        elif key == "bright_chev":
+            self.hide_animated()
+            self.open_brightness.emit()
         elif key in ("wifi_main", "bt_main"):
             kind = "wifi" if key == "wifi_main" else "bluetooth"
             st = self._toggle_state(kind)
@@ -470,6 +684,12 @@ class BatteryPanel(QWidget):
         self._paint_battery(p, inner)
         y += card_h + ps.GAP
 
+        # ses ve parlaklık kartı
+        avh = self._av_card_height()
+        inner = ps.draw_card(p, QRectF(x0, y, cw, avh), "Ses ve parlaklık")
+        self._paint_av(p, inner)
+        y += avh + ps.GAP
+
         # kablosuz kartı
         wh = self._wireless_card_height()
         inner = ps.draw_card(p, QRectF(x0, y, cw, wh), "Kablosuz bağlantılar")
@@ -497,6 +717,95 @@ class BatteryPanel(QWidget):
         btn = ps.draw_footer(p, fr, f"Windows · {self._stamp}", "Güç ayarları", button_hover=(self._hover == "footer_btn"))
         if btn is not None:
             self._rects["footer_btn"] = btn
+
+    def _paint_av(self, p: QPainter, r: QRectF) -> None:
+        """'Ses ve parlaklık' kartı: iki draw_slider satırı + sağda '›' hayalet düğmesi."""
+        self._av = {}
+        ry = r.top()
+        mon = self._bright_monitor()
+        self._paint_av_row(
+            p, "bright", "Parlaklık", r, ry,
+            value=mon.get("level") if mon is not None else None,
+            fill=ps.BRIGHT_FILL,
+            icon=(lambda pp, rr, ok=(mon is not None): _draw_sun_icon(pp, rr, ps.BRIGHT if ok else ps.TEXT_LABEL))
+            if _draw_sun_icon is not None else None,
+            muted=False,
+            draggable=mon is not None,
+            monitor=mon,
+            disabled_text=None if mon is not None else "Desteklenmiyor",
+        )
+        ry += AV_ROW_H + AV_ROW_GAP
+        vol_muted = self._muted and self._volume is not None
+        self._paint_av_row(
+            p, "vol", "Ses", r, ry,
+            value=self._volume,
+            fill=ps.SOUND,
+            icon=(lambda pp, rr: _draw_speaker_icon(pp, rr, ps.TEXT_MUTED if self._muted else ps.SOUND,
+                                                    muted=self._muted))
+            if _draw_speaker_icon is not None else None,
+            muted=vol_muted,
+            draggable=self._volume is not None,
+            monitor=None,
+            disabled_text=None,
+        )
+
+    def _paint_av_row(self, p: QPainter, key: str, label: str, card: QRectF, y: float,
+                      value: Optional[float], fill: QColor, icon: Any, muted: bool,
+                      draggable: bool, monitor: Optional[Dict[str, Any]],
+                      disabled_text: Optional[str]) -> None:
+        row = QRectF(card.left(), y, card.width(), AV_ROW_H)
+        chev = QRectF(row.right() - AV_CHEV_SZ, row.center().y() - AV_CHEV_SZ / 2.0,
+                      AV_CHEV_SZ, AV_CHEV_SZ)
+        slider_rect = QRectF(row.left(), row.top(), max(40.0, row.width() - AV_CHEV_SZ - 6.0), AV_ROW_H)
+        hover_slider = self._hover == f"{key}_slider"
+        res = ps.draw_slider(p, slider_rect, label, value, fill=fill, icon=icon,
+                             hover=hover_slider, muted=muted)
+        track = QRectF(res["track"])
+        label_h = max(14.0, track.top() - slider_rect.top() - 4.0)
+        icon_rect = QRectF(slider_rect.left(), slider_rect.top() + label_h / 2.0 - 7.0, 14.0, 14.0)
+        self._rects[f"{key}_slider"] = track.adjusted(-3.0, -9.0, 3.0, 9.0)
+        self._rects[f"{key}_chev"] = chev
+        if key == "vol":
+            self._rects["vol_icon"] = icon_rect.adjusted(-3.0, -3.0, 3.0, 3.0)
+        if disabled_text:
+            self._paint_disabled_value(p, slider_rect, track, disabled_text)
+        # '›' hayalet düğmesi
+        hov = self._hover == f"{key}_chev"
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(QPen(ps.BUTTON_BORDER, 1.0))
+        p.setBrush(ps.BUTTON_HOVER if hov else ps.BUTTON_BG)
+        p.drawPath(ps.rounded(chev.adjusted(0.5, 0.5, -0.5, -0.5), ps.R_BUTTON))
+        p.setFont(ps.font(13.0, QFont.Weight.DemiBold))
+        p.setPen(ps.ACCENT if hov else ps.TEXT_BTN)
+        p.drawText(chev, Qt.AlignmentFlag.AlignCenter, "›")
+        p.restore()
+        self._av[key] = {
+            "row_rect": row,
+            "track": track,
+            "hit_rect": track.adjusted(-3.0, -9.0, 3.0, 9.0),
+            "icon_rect": icon_rect.adjusted(-3.0, -3.0, 3.0, 3.0),
+            "chev_rect": chev,
+            "draggable": bool(draggable),
+            "monitor": monitor,
+        }
+
+    @staticmethod
+    def _paint_disabled_value(p: QPainter, slider_rect: QRectF, track: QRectF, text: str) -> None:
+        """draw_slider'ın '—' değerini kart zeminiyle örtüp 'Desteklenmiyor' yazar."""
+        label_h = max(14.0, track.top() - slider_rect.top() - 4.0)
+        label_rect = QRectF(slider_rect.left(), slider_rect.top(), slider_rect.width(), label_h)
+        f = ps.font(12.0, QFont.Weight.Medium)
+        fm = QFontMetricsF(f)
+        tw = fm.horizontalAdvance(text) + 4.0
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(ps.TILE_BG)
+        p.drawRect(QRectF(label_rect.right() - tw, label_rect.top(), tw, label_rect.height()))
+        p.setFont(f)
+        p.setPen(ps.TEXT_LABEL)
+        p.drawText(label_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, text)
+        p.restore()
 
     @staticmethod
     def _draw_header_icon(p: QPainter, r: QRectF) -> None:
