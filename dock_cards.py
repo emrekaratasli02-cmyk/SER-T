@@ -1492,9 +1492,9 @@ BATTERY_TIP_H: float = 4.0
 BATTERY_FILL_INSET: float = 2.0
 BATTERY_GLYPH_W: float = 23.0   # v22-C yuvarlak pil gövdesi (kapsül)
 BATTERY_GLYPH_H: float = 11.5
-# Pil rozeti dış hale katmanları (taşma px, alfa); dıştan içe. En dış taşma 3.5 px:
+# Pil rozeti dış hale katmanları (taşma px, alfa); dıştan içe. En dış taşma 3 px:
 # solundaki ^ düğmesine 6 px, saate daha fazla boşluk var, komşuya değmez.
-BATTERY_HALO: Tuple[Tuple[float, int], ...] = ((3.5, 5), (2.2, 8), (1.0, 12))
+BATTERY_HALO: Tuple[Tuple[float, int], ...] = ((3.0, 3), (1.9, 5), (0.9, 8))  # Emre: "biraz daha hafif"
 
 
 def pill_width(has_battery: bool) -> float:
