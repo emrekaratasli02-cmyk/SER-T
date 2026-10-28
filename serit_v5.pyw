@@ -2493,23 +2493,11 @@ class SeritDock(QWidget):
     def _on_tray_panel_item_activated(self, item: dict, btn: str) -> None:
         if btn == "right":
             anchor_global = None
-            if self.tray_panel is not None:
+            if self.tray_panel is not None and hasattr(self.tray_panel, "item_anchor_global"):
                 try:
-                    items = getattr(self.tray_panel, "_items", [])
-                    if item in items:
-                        idx = items.index(item)
-                        list_rect = getattr(self.tray_panel, "_list_rect", None)
-                        stride = getattr(self.tray_panel, "ROW_STRIDE", 36.0)
-                        scroll_y = getattr(self.tray_panel, "_scroll_y", 0.0)
-                        row_h = getattr(self.tray_panel, "ROW_HEIGHT", 32.0)
-                        if list_rect is not None:
-                            row_top = list_rect.top() + idx * stride - scroll_y
-                            row_r = QRectF(list_rect.left(), row_top, list_rect.width(), row_h)
-                            anchor_global = QRectF(
-                                self.tray_panel.mapToGlobal(QPoint(int(row_r.x()), int(row_r.y()))),
-                                row_r.size(),
-                            )
-                except Exception:
+                    anchor_global = self.tray_panel.item_anchor_global(item)  # v22 ızgara hücresi
+                except Exception as exc:
+                    sources.log_err("tray_item_anchor", exc)
                     anchor_global = None
             if anchor_global is None:
                 anchor_global = QRectF(self.geometry())
