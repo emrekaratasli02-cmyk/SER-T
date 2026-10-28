@@ -98,6 +98,7 @@ class TestV10Menus(unittest.TestCase):
         # 14: Kapat (danger=True, confirm=True)
 
         expected = [
+            ("settings", "Ayarlar…", False, None),  # v21: Ayarlar penceresi
             ("refresh", "Yenile", False, None),
             ("sep", None, False, None),
             ("style_band", "Tam genişlik şerit", True, "style"),

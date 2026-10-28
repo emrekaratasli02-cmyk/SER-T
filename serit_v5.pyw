@@ -2750,6 +2750,7 @@ class SeritDock(QWidget):
             save_settings(self.settings)
 
         return [
+            {"id": "settings", "text": "Ayarlar…", "callback": self.action_open_settings},
             {"id": "refresh", "text": "Yenile", "callback": self.action_refresh},
             {"type": "separator"},
             {
@@ -2880,6 +2881,61 @@ class SeritDock(QWidget):
         self._content_w = 0.0
         self.compute_layout_and_resize(initial=True)
         self._register_appbar()  # ayrılan alt alan: bant 64, kapsül 80
+        self.place_dock()
+        self.update()
+
+    def action_open_settings(self) -> None:
+        """Sağ tık > Ayarlar…: tek pencere; açıksa öne getirir."""
+        win = getattr(self, "_settings_win", None)
+        if win is not None:
+            try:
+                if win.isVisible():
+                    win.raise_()
+                    win.activateWindow()
+                    return
+            except RuntimeError:
+                pass  # C++ nesnesi silinmiş
+        try:
+            import settings_window
+            monitor = getattr(self, "stall_monitor", None)
+            provider = monitor.stats if monitor is not None else None
+            self._settings_win = settings_window.open_settings(
+                self.settings, self.apply_settings_from_window, stats_provider=provider
+            )
+        except Exception as exc:
+            sources.log_err("settings_window", exc)
+
+    def apply_settings_from_window(self, new_cfg: dict) -> None:
+        """Ayarlar penceresinde 'Uygula': yalnız değişen ayarları bara uygular ve bir kez kaydeder."""
+        if not isinstance(new_cfg, dict):
+            return
+        old = self.settings
+        if bool(new_cfg.get("hide_taskbar", False)) != bool(old.get("hide_taskbar", False)):
+            self.action_toggle_taskbar(bool(new_cfg.get("hide_taskbar", False)))
+        if bool(new_cfg.get("alerts_enabled", True)) != bool(old.get("alerts_enabled", True)):
+            old["alerts_enabled"] = bool(new_cfg.get("alerts_enabled", True))
+            if self.alert_engine is not None:
+                self.alert_engine.enabled = old["alerts_enabled"]
+        if isinstance(new_cfg.get("cards"), dict):
+            old["cards"] = dict(new_cfg["cards"])
+        if isinstance(new_cfg.get("pinned"), list):
+            self.pins = [dict(p) for p in new_cfg["pinned"] if isinstance(p, dict)]
+            old["pinned"] = self.pins
+        reserve_changed = bool(new_cfg.get("reserve_space", True)) != bool(old.get("reserve_space", True))
+        if reserve_changed:
+            old["reserve_space"] = bool(new_cfg.get("reserve_space", True))
+        new_style = "pill" if new_cfg.get("style") == "pill" else "band"
+        if new_style != str(old.get("style", "band")):
+            self.set_dock_style(new_style)  # kaydeder, yerleşimi ve AppBar'ı yeniler
+        if reserve_changed:
+            if old["reserve_space"]:
+                self._register_appbar()
+            else:
+                self._unregister_appbar()
+        if not self.preview_mode:
+            save_settings(old)
+        self.update_windows()
+        self.compute_layout_and_resize()
         self.place_dock()
         self.update()
 
@@ -3106,6 +3162,7 @@ def main() -> None:
 
         _stall_monitor = stall_monitor.StallMonitor(dock)
         _stall_monitor.start()
+        dock.stall_monitor = _stall_monitor  # Ayarlar > Performans sayfası buradan okur
         app.aboutToQuit.connect(_stall_monitor.stop)
     except Exception as exc:
         sources.log_err("ui_stall_start", exc)
