@@ -1,11 +1,11 @@
-"""test_v20_tray.py - TrayPanel artık panel_style v2 ortak kitini kullanıyor.
+"""test_v20_tray.py - TrayPanel temel sözleşmeleri; v22 ızgara ölçüleriyle güncellendi.
 
 Doğrulanan davranışlar (yalnızca yerel sinyalia; GERÇEK tepsi simgesi ASLA etkinleştirilmez):
-- Genişlik pt.WIDTH['tray'] (352 px)
-- 24 px simge satırları, hover (soft, radius 8) ve klavye gezinmesi devam ediyor
-- × kapatır; Sol tık -> item_activated("left") + kapanır; Sağ tık -> item_activated("right") + açık kalır
-- Boş durum 'Simge yok'; rozet metni 'N öğe'
-- Footer: 'Windows sistem tepsisi · HH:MM' + tek Yenile düğmesi -> refresh_requested
+- Genişlik: >= 5 öğe -> 260 px; az öğe -> daralır (alt sınır 164)
+- 44x44 hücreler (5 sütun), hover (radius 8) ve klavye gezinmesi devam ediyor
+- Esc kapatır; Sol tık -> item_activated("left") + kapanır; Sağ tık -> item_activated("right") + açık kalır
+- Boş durum 'Gizli simge yok'; etiket rozeti 'N simge'
+- Başlık/footersız: _refresh_rect yok; refresh_requested sinyali yine declare edilir
 - show_for(..., switch_from_x=...) ve hide_instant() (animate_out instant) çevrimdışı çalışır
 - DPR 2.0 render kanıtı: _ref/out/tepsi_normal.png, tepsi_uzun.png, tepsi_bos.png
 """
@@ -22,7 +22,6 @@ from PySide6.QtCore import QEvent, QPointF, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPainter, QPixmap  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-import panel_style as ps  # noqa: E402
 import tray_panel as tp  # noqa: E402
 
 OUT = APP_DIR / "_ref" / "out"
@@ -93,34 +92,40 @@ def _mouse(widget, pos: QPointF, btn: Qt.MouseButton = Qt.MouseButton.LeftButton
 
 
 def test_width_matches_shared_kit():
+    """v22 ızgara genişliği sözleşmesi: >= 5 öğe -> 260; az öğe -> daralır."""
     panel = _panel()
-    assert ps.WIDTH["tray"] == 352
-    assert panel.WIDTH == 352
-    assert panel.width() == ps.WIDTH["tray"]
+    assert panel.WIDTH == 260
+    assert panel.width() == 260            # 5*44 + 4*4 + 2*12
+    p3 = _panel(3)
+    assert p3.width() == 164               # 3 sütun: 3*44 + 2*4 + 2*12
+    assert p3.width() - 2 * tp.TrayPanel.GRID_PAD >= 138.0   # etiket ~140 px sığar
 
 
-def test_close_button_closes():
+def test_esc_close_kept():
+    """v22'de ✕ yok; aynı niyet: panel Esc ile kapanır, Yenile tetiklenmez."""
     panel = _panel(3)
     closed: List[bool] = []
     panel.show_for(ANCHOR)
     assert panel.is_open()
     panel.refresh_requested.connect(lambda: closed.append(True))
-    _mouse(panel, panel._close_rect.center())
+    ev_esc = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+    assert not hasattr(panel, "_close_rect")     # başlık/✕ kaldırıldı
+    panel.keyPressEvent(ev_esc)
     assert not panel.is_open()
     panel.hide_instant()
     assert not panel.isVisible()
-    assert closed == []  # × Yenile'yi tetiklemez
+    assert closed == []  # kapanış Yenile'yi tetiklemez
 
 
 def test_row_hit_test_left_right():
-    """Satır vuruşu yerel listeye sinyal yollar (gerçek tepsi etkinleştirilmez)."""
+    """Hücre vuruşu yerel listeye sinyal yollar (gerçek tepsi etkinleştirilmez)."""
     panel = _panel(3)
     hits: List[Tuple[Any, str]] = []
     panel.item_activated.connect(lambda item, btn: hits.append((item, btn)))
     panel.show_for(ANCHOR)
 
-    lr = panel._list_rect
-    _mouse(panel, QPointF(lr.left() + 30.0, lr.top() + panel.ROW_HEIGHT / 2.0))
+    cell0 = panel._cell_rect(0)
+    _mouse(panel, cell0.center())
     assert len(hits) == 1 and hits[0][1] == "left"
     assert hits[0][0]["name"] == STUB_NAMES[0]
     assert not panel.is_open()                 # sol tık paneli kapatır
@@ -128,14 +133,14 @@ def test_row_hit_test_left_right():
     assert not panel.isVisible()
 
     panel.show_for(ANCHOR)
-    y1 = lr.top() + panel.ROW_STRIDE + panel.ROW_HEIGHT / 2.0
-    _mouse(panel, QPointF(lr.left() + 30.0, y1), btn=Qt.MouseButton.RightButton)
+    cell1 = panel._cell_rect(1)
+    _mouse(panel, cell1.center(), btn=Qt.MouseButton.RightButton)
     assert len(hits) == 2 and hits[1][1] == "right"
     assert panel.is_open()                     # sağ tık açık kalır
 
-    # Liste dışı alana tık: sinyal yok
+    # Izgara dışı alana tık: sinyal yok
     n_before = len(hits)
-    _mouse(panel, QPointF(panel.width() / 2.0, ps.PAD + 2.0))
+    _mouse(panel, QPointF(panel.width() / 2.0, 2.0))
     assert len(hits) == n_before
     panel.hide_instant()
     assert not panel.isVisible()
@@ -143,27 +148,26 @@ def test_row_hit_test_left_right():
 
 def test_empty_state_and_chip():
     panel = _panel(0, with_icons=False)
-    assert panel.EMPTY_TEXT == "Simge yok"
-    assert panel.chip_text() == "0 öğe"
+    assert panel.EMPTY_TEXT == "Gizli simge yok"
+    assert panel.chip_text() == "0 simge"
+    assert panel.height() == int(tp.TrayPanel.GRID_PAD + tp.TrayPanel.LABEL_H + tp.TrayPanel.GRID_PAD)
     img = panel.render_to_image(2.0)
     assert not img.isNull()
 
     five = _panel(5)
-    assert five.chip_text() == "5 öğe"
+    assert five.chip_text() == "5 simge"
     one = _panel(1, with_icons=False)
-    assert one.chip_text() == "1 öğe"
+    assert one.chip_text() == "1 simge"
 
 
-def test_footer_refresh_signal():
+def test_refresh_signal_kept():
+    """v22'de footer/Yenile yok; aynı niyet: refresh_requested sinyali bağlanabilir kalır."""
     for panel in (_panel(5), _panel(0, with_icons=False)):
         got: List[bool] = []
         panel.refresh_requested.connect(lambda: got.append(True))
-        assert not panel._refresh_rect.isNull()
-        center = panel._refresh_rect.center()
-        _mouse(panel, center)
-        assert panel._refresh_pressed is True
-        _mouse(panel, center, release=True)
-        assert got == [True] and panel._refresh_pressed is False
+        panel.refresh_requested.emit()
+        assert got == [True]
+        assert not hasattr(panel, "_refresh_rect")   # footer düğmesi kaldırıldı
 
 
 def test_show_for_switch_and_hide_instant():
@@ -188,17 +192,17 @@ def test_show_for_switch_and_hide_instant():
 
 
 def test_keyboard_and_scroll_kept():
-    """Klavye gezinmesi, kaydırma ve max yükseklik davranışı korunur."""
-    panel = _panel(14, with_icons=False)
-    assert panel._visible_list_height() == panel.LIST_MAX_HEIGHT
-    assert panel._total_list_height() == 14 * panel.ROW_STRIDE
+    """Klavye gezinmesi ve 4 satırla sınırlı ızgara kaydırma davranışı korunur."""
+    panel = _panel(23, with_icons=False)
+    assert panel._visible_rows() == panel.MAX_ROWS and panel._total_rows() == 5
+    assert panel.height() == 12 + (4 * 44 + 3 * 4) + 4 + 26 + 12   # 4 satır + etiket
 
     dn1 = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
     panel.keyPressEvent(dn1)
     assert panel._highlight_idx == 0
     dn2 = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
     panel.keyPressEvent(dn2)
-    assert panel._highlight_idx == 1
+    assert panel._highlight_idx == 5
     up = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Up, Qt.KeyboardModifier.NoModifier)
     panel.keyPressEvent(up)
     assert panel._highlight_idx == 0
@@ -206,14 +210,15 @@ def test_keyboard_and_scroll_kept():
     panel.keyPressEvent(esc)
     panel.hide_instant()
 
-    # Satır hizalama: sağ tık akışında serit_v5 kullanır
+    # Hücre hizalama: sağ tık akışında serit_v5 item_anchor_global kullanır
     panel.show_for(ANCHOR)
     panel.render_to_image(2.0)
-    idx = panel._row_at_point(
-        QPointF(panel._list_rect.left() + 10.0,
-                panel._list_rect.top() + 6 * panel.ROW_STRIDE + 5.0)
-    )
-    assert idx == 6
+    item = panel._items[6]
+    anchor = panel.item_anchor_global(item)
+    assert anchor is not None
+    cell6 = panel._cell_rect(6)
+    center_global = panel.mapToGlobal(cell6.center().toPoint())
+    assert anchor.contains(QPointF(center_global))
     panel.hide_instant()
     assert not panel.isVisible()
 
@@ -223,12 +228,12 @@ def test_renders_dpr2():
     normal = _panel(5)
     normal._hover_idx = 1
     img = normal.render_to_image(2.0)
-    assert not img.isNull() and img.width() == 2 * 352 and img.height() > 0
+    assert not img.isNull() and img.width() == 2 * 260 and img.height() > 0
     img.save(str(OUT / "tepsi_normal.png"))
 
-    uz = _panel(14, with_icons=False)
-    uz._hover_idx = 5                 # görünür aralıkta bir satır (kaydırma 120 px)
-    uz._scroll_y = (14 * uz.ROW_STRIDE - uz.LIST_MAX_HEIGHT) / 2.0  # kaydırılmış orta konum
+    uz = _panel(23, with_icons=False)
+    uz._hover_idx = 8                 # görünür aralıkta bir hücre (kaydırma yarım satır)
+    uz._scroll_y = (uz._total_grid_height() - uz._visible_grid_h()) / 2.0
     img2 = uz.render_to_image(2.0)
     assert not img2.isNull()
     img2.save(str(OUT / "tepsi_uzun.png"))
