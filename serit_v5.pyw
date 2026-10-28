@@ -723,7 +723,8 @@ class SeritDock(QWidget):
                 p,
                 r_pill,
                 float(self._bat_info.get("percent")),
-                bool(self._bat_info.get("charging")),
+                # fişteyken de yeşil: Windows %99-100'de 'şarj olmuyor' der ama makine prizde
+                bool(self._bat_info.get("charging")) or bool(self._bat_info.get("plugged")),
                 hovered=(self._hover_key == "bat"),
                 active=bat_open,
             )

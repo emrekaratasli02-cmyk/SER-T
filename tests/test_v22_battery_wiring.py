@@ -119,6 +119,20 @@ def test_chevrons_open_full_panels() -> None:
     assert opened == ["vol", "bright"], opened
 
 
+def test_plugged_but_not_charging_is_green() -> None:
+    d = _dock(True)
+    d._bat_info = {"present": True, "percent": 99.0, "charging": False, "plugged": True}
+    seen: list = []
+    real = dock_cards.draw_battery_pill
+    serit_mod.dock_cards.draw_battery_pill = lambda p, r, pct, chg, **k: seen.append(chg) or r
+    try:
+        d.hit_boxes = []
+        _paint(d)
+    finally:
+        serit_mod.dock_cards.draw_battery_pill = real
+    assert seen == [True], seen
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
