@@ -677,6 +677,16 @@ _LAST_GOOD_CALENDAR: Optional[Dict[str, Any]] = None
 _LAST_GOOD_MONTH_CALENDAR: Optional[Dict[str, Any]] = None
 
 
+def _log_calendar_source_error(source: str, hata: Any) -> None:
+    """Takvim güncelleyicisinin (Hermes zamanlanmış işi) yazdığı hatayı tek satır kaydeder.
+
+    Etkinlik bilgisi içermez; yalnız hata metninin son satırı (en çok 160 harf). Aynı metin 10 dk'da bir.
+    """
+    text = str(hata or "").strip().splitlines()
+    last = (text[-1] if text else "bilinmeyen hata")[-160:]
+    log_err(source, RuntimeError(f"güncelleyici hatası, son iyi veri gösteriliyor: {last}"))
+
+
 def _safe_read_json_file(path: Path) -> Tuple[Optional[Any], Optional[Exception]]:
     """Read and parse JSON file, retrying once after 150ms on a partial write.
 
@@ -795,6 +805,11 @@ def fetch_month_calendar(
         }
 
     if raw.get("hata"):
+        _log_calendar_source_error("month_calendar_source", raw.get("hata"))
+        if _LAST_GOOD_MONTH_CALENDAR is not None:
+            res = dict(_LAST_GOOD_MONTH_CALENDAR)
+            res["stale"] = True  # son iyi veri soluk gösterilir; kart boşalmaz
+            return res
         return {
             "events": [],
             "updated": "",
@@ -915,6 +930,12 @@ def fetch_calendar(now: Optional[dt.datetime] = None) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         return {"err": "Geçersiz veri"}
     if raw.get("hata"):
+        _log_calendar_source_error("calendar_source", raw.get("hata"))
+        if _LAST_GOOD_CALENDAR is not None:
+            res = dict(_LAST_GOOD_CALENDAR)
+            res["stale"] = True
+            res["stale_file"] = True
+            return res
         return {"err": "Takvim güncellenemedi"}
     try:
         now = now or dt.datetime.now(LOCAL_TZ)
