@@ -1,32 +1,26 @@
-"""settings_window.py - Settings window ('Ayarlar') for Şerit dock.
+"""settings_window.py - Şerit dock ayarlar penceresi (panel_style v2 ortak dili).
 
-Frameless dark window adhering to Windows 11 Fluent design:
-- 560 x 520 px, 12 px outer corner radius, opaque dark background
-- High-DPI Segoe UI Variable typography
-- Sections:
-  1. 'Görünüm': Tam genişlik şerit / Ortada kapsül, Windows görev çubuğunu gizle, Ekran alanını ayır
-  2. 'Kartlar': Claude, Mail, Antigravity, Sistem (işlemci/bellek halkaları), Takvim, Müzik
-  3. 'Sabitlenen uygulamalar': list from settings['pinned'] with 'Kaldır' button
-  4. 'Uyarılar': Uyarıları etkinleştir (alerts_enabled)
-  5. 'Hakkında': Şerit dock info, git version, log file path, 'Log klasörünü aç' button
-- Windows 11 Fluent styled toggles (custom painted)
-- Action buttons: 'Vazgeç' (cancel) and 'Uygula' (apply)
-- Esc key closes window without applying
+560 x 520 px, yuvarlatılmış 16 px köşe, gerçekten saydam dış köşeler. Sol tarafta 172 px
+gezinti çubuğu, sağda kartlardan oluşan içerik ve altta Vazgeç / Uygula çubuğu.
+Bölümler: Görünüm, Kartlar, Sabitlenen uygulamalar, Uyarılar, Performans, Hakkında.
 """
 
 from __future__ import annotations
 
 import copy
+import math
 import os
 from pathlib import Path
 import subprocess
-from typing import Any, Callable, List, Optional, Tuple
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetricsF,
+    QGuiApplication,
     QImage,
     QKeyEvent,
     QMouseEvent,
@@ -35,65 +29,44 @@ from PySide6.QtGui import (
     QPixmap,
     QWheelEvent,
 )
-from PySide6.QtWidgets import (
-    QWidget,
-)
+from PySide6.QtWidgets import QWidget
 
+import panel_style as ps
 import theme
 import winapi
 from logpath import get_log_path
 
-# ==============================================================================
-# COLOR & DIMENSION CONSTANTS
-# ==============================================================================
-
 WINDOW_WIDTH: int = 560
 WINDOW_HEIGHT: int = 520
-CORNER_RADIUS: float = 12.0
+CORNER_RADIUS: float = ps.R_PANEL
 SIDEBAR_WIDTH: float = 172.0
 BOTTOM_BAR_HEIGHT: float = 54.0
 
-# Colors (Windows 11 Dark Acrylic / Fluent Palette)
-COLOR_BG: QColor = QColor(24, 25, 29)  # Fully opaque dark surface
-COLOR_SIDEBAR_BG: QColor = QColor(19, 20, 24)
-COLOR_BORDER: QColor = QColor(255, 255, 255, 22)
-COLOR_HAIRLINE: QColor = QColor(255, 255, 255, 14)
-
-COLOR_TEXT_PRIMARY: QColor = QColor(255, 255, 255, 245)
-COLOR_TEXT_SECONDARY: QColor = QColor(255, 255, 255, 175)
-COLOR_TEXT_MUTED: QColor = QColor(255, 255, 255, 110)
-
-# Windows 11 Accent: Calm vibrant cyan-blue
-COLOR_ACCENT: QColor = QColor("#0078D4")  # Standard Fluent blue
-COLOR_ACCENT_HOVER: QColor = QColor("#1A86D9")
-COLOR_ACCENT_PRESS: QColor = QColor("#006CBE")
-
-COLOR_CARD_BG: QColor = QColor(255, 255, 255, 8)
-COLOR_CARD_BORDER: QColor = QColor(255, 255, 255, 16)
-COLOR_ROW_HOVER: QColor = QColor(255, 255, 255, 14)
-
-# Section IDs
 SECTIONS: List[Tuple[str, str]] = [
     ("appearance", "Görünüm"),
     ("cards", "Kartlar"),
     ("pinned", "Sabitlenen uygulamalar"),
     ("alerts", "Uyarılar"),
+    ("performance", "Performans"),
     ("about", "Hakkında"),
 ]
 
-# Supported cards mapping: (key, title, subtitle)
 CARD_DEFS: List[Tuple[str, str, str]] = [
     ("claude", "Claude", "Kullanım ve kota bilgisi"),
-    ("mail", "Mail", "Cevap bekleyen mailler (otomatik bildirimler hariç)"),
+    ("mail", "Mail", "Cevap bekleyen mailler"),
     ("ag", "Antigravity", "Model kotaları ve durum"),
     ("sys", "Sistem halkaları", "İşlemci ve bellek kullanımı"),
     ("cal", "Takvim", "Günün etkinlikleri ve saat"),
     ("media", "Müzik", "Şu an çalan medya ve kontroller"),
 ]
 
+STALL_NOTE = "300 ms ve üstü takılmalar sayılır · uyku süresi sayılmaz"
+STALL_UNAVAILABLE = "Donma ölçer çalışmıyor"
+STALL_NONE = "Bu oturumda donma yok"
+STALL_ROW_H = 21.0
+
 
 def _get_git_version() -> str:
-    """Retrieve git version or fallback."""
     try:
         app_dir = Path(__file__).resolve().parent
         res = subprocess.run(
@@ -109,18 +82,68 @@ def _get_git_version() -> str:
         return "—"
 
 
-# ==============================================================================
-# FLUENT TOGGLE WIDGET (Windows 11 Style)
-# ==============================================================================
+def _as_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return int(value)
+    return None
+
+
+def _as_float(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        return float(value)
+    return None
+
+
+def normalize_stall_stats(raw: Any) -> Optional[Dict[str, Any]]:
+    """StallMonitor.stats() çıktısını doğrular; bozuksa None döner, sayı uydurmaz."""
+    if not isinstance(raw, dict):
+        return None
+    count = _as_int(raw.get("count"))
+    worst = _as_int(raw.get("worst_ms"))
+    if count is None or worst is None or count < 0 or worst < 0:
+        return None
+    last = raw.get("last", [])
+    if last is None:
+        last = []
+    if not isinstance(last, list):
+        return None
+    items: List[Dict[str, Any]] = []
+    for entry in last:
+        if not isinstance(entry, dict):
+            return None
+        ms = _as_int(entry.get("ms"))
+        stamp = _as_float(entry.get("time"))
+        if ms is None or stamp is None or ms < 0:
+            return None
+        top = entry.get("top")
+        items.append({"ms": ms, "time": stamp, "top": str(top) if top is not None else "—"})
+    return {"count": count, "worst_ms": worst, "last": items[-20:]}
+
+
+def format_ms(ms: int) -> str:
+    """Türkçe binlik ayırıcı: 1250 -> '1.250 ms'."""
+    try:
+        return f"{int(ms):,}".replace(",", ".") + " ms"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def stall_color(ms: int) -> QColor:
+    if ms >= 1000:
+        return ps.DANGER
+    if ms >= 300:
+        return ps.WARN
+    return ps.TEXT_BODY
 
 
 class FluentToggle(QWidget):
-    """Windows 11 Fluent styled toggle switch.
-
-    Dimensions: 40px width x 20px height capsule.
-    Pill thumb: 12px circle moving from left (off) to right (on).
-    No iOS glossy thumb; clean flat Fluent pill.
-    """
+    """40 x 20 px pill anahtar; panel_style renkleriyle çizilir."""
 
     toggled = Signal(bool)
 
@@ -167,79 +190,55 @@ class FluentToggle(QWidget):
 
     def paintEvent(self, event) -> None:
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        w = float(self.width())
-        h = float(self.height())
-        r = h / 2.0  # 10.0 radius for 20px capsule
-
-        rect = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
-        path = theme.rounded_path(rect, r)
-
-        # Track background
-        if self._checked:
-            if self._pressed:
-                track_col = COLOR_ACCENT_PRESS
-            elif self._hover:
-                track_col = COLOR_ACCENT_HOVER
-            else:
-                track_col = COLOR_ACCENT
-            p.fillPath(path, track_col)
-            # Subtle accent border
-            p.setPen(QPen(QColor(255, 255, 255, 40), 1.0))
-            p.drawPath(path)
-
-            # Thumb (white on accent)
-            thumb_size = 12.0
-            if self._pressed:
-                thumb_w = 14.0  # Slight elongation when pressed
-            else:
-                thumb_w = 12.0
-            thumb_x = w - 4.0 - thumb_w
-            thumb_y = (h - thumb_size) / 2.0
-            thumb_rect = QRectF(thumb_x, thumb_y, thumb_w, thumb_size)
-            p.fillPath(theme.rounded_path(thumb_rect, thumb_size / 2.0), QColor(255, 255, 255))
-        else:
-            # Off state: dark subtle fill + stroke
-            if self._pressed:
-                bg_col = QColor(255, 255, 255, 24)
-                border_col = QColor(255, 255, 255, 120)
-            elif self._hover:
-                bg_col = QColor(255, 255, 255, 16)
-                border_col = QColor(255, 255, 255, 100)
-            else:
-                bg_col = QColor(255, 255, 255, 8)
-                border_col = QColor(255, 255, 255, 75)
-
-            p.fillPath(path, bg_col)
-            p.setPen(QPen(border_col, 1.0))
-            p.drawPath(path)
-
-            # Thumb (muted white off)
-            thumb_size = 10.0
-            thumb_w = 12.0 if self._pressed else 10.0
-            thumb_x = 4.0
-            thumb_y = (h - thumb_size) / 2.0
-            thumb_rect = QRectF(thumb_x, thumb_y, thumb_w, thumb_size)
-            thumb_col = QColor(255, 255, 255, 200) if self._hover else QColor(255, 255, 255, 160)
-            p.fillPath(theme.rounded_path(thumb_rect, thumb_size / 2.0), thumb_col)
-
-        p.end()
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            rect = QRectF(0.5, 0.5, float(self.width()) - 1.0, float(self.height()) - 1.0)
+            _paint_toggle_shape(p, rect, self._checked, self._hover, self._pressed)
+        finally:
+            p.end()
 
 
-# ==============================================================================
-# SETTINGS WINDOW WIDGET
-# ==============================================================================
+def _paint_toggle_shape(p: QPainter, rect: QRectF, checked: bool, hover: bool, pressed: bool) -> None:
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    radius = rect.height() / 2.0
+    path = ps.rounded(rect, radius)
+    w = rect.width()
+    h = rect.height()
+
+    if checked:
+        track = ps.ACCENT.lighter(112) if (hover or pressed) else ps.ACCENT
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(track)
+        p.drawPath(path)
+        thumb_sz = 12.0
+        thumb_w = 14.0 if pressed else thumb_sz
+        thumb = QRectF(rect.x() + w - 4.0 - thumb_w, rect.y() + (h - thumb_sz) / 2.0, thumb_w, thumb_sz)
+        p.setBrush(ps.TEXT)
+        p.drawPath(ps.rounded(thumb, thumb_sz / 2.0))
+    else:
+        p.setPen(QPen(ps.TEXT_MUTED if hover else ps.TRACK, 1.0))
+        p.setBrush(ps.TRACK)
+        p.drawPath(path)
+        thumb_sz = 10.0
+        thumb_w = 12.0 if pressed else thumb_sz
+        thumb = QRectF(rect.x() + 4.0, rect.y() + (h - thumb_sz) / 2.0, thumb_w, thumb_sz)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(ps.TEXT_MUTED)
+        p.drawPath(ps.rounded(thumb, thumb_sz / 2.0))
+    p.restore()
 
 
 class SettingsWindow(QWidget):
-    """Frameless settings window for Şerit dock."""
+    """Şerit dock ayarları; çalışma kopyası üzerinde değişir, Uygula ile geri verir."""
 
     def __init__(
         self,
         settings: dict,
         on_apply: Callable[[dict], None],
         parent: Optional[QWidget] = None,
+        *,
+        stats_provider: Optional[Callable[[], dict]] = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowFlags(
@@ -247,76 +246,221 @@ class SettingsWindow(QWidget):
             | Qt.WindowType.Window
             | Qt.WindowType.NoDropShadowWindowHint
         )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
         self.setFixedSize(WINDOW_WIDTH, WINDOW_HEIGHT)
 
         self._original_settings: dict = settings
         self._on_apply_cb: Callable[[dict], None] = on_apply
+        self._stats_provider = stats_provider
 
-        # Working copy of settings
         self.working_settings: dict = copy.deepcopy(settings)
-        # Ensure default structures
         if "cards" not in self.working_settings or not isinstance(self.working_settings["cards"], dict):
             self.working_settings["cards"] = {}
         if "pinned" not in self.working_settings or not isinstance(self.working_settings["pinned"], list):
             self.working_settings["pinned"] = []
         else:
-            # Deepcopy list of dicts
-            self.working_settings["pinned"] = [dict(p) for p in self.working_settings["pinned"] if isinstance(p, dict)]
+            self.working_settings["pinned"] = [
+                dict(item) for item in self.working_settings["pinned"] if isinstance(item, dict)
+            ]
 
         self.current_section: str = "appearance"
 
-        # Interactive state
         self._hover_section: Optional[str] = None
         self._hover_btn: Optional[str] = None
         self._hover_item_key: Optional[str] = None
 
-        # Hit testing records for content area
-        # (rect, kind, extra)
         self._content_hit_boxes: List[Tuple[QRectF, str, Any]] = []
+        self._toggle_rects: Dict[str, QRectF] = {}
+        self._toggle_checked: Dict[str, bool] = {}
+        self._close_rect: QRectF = QRectF()
 
-        # Pinned list scroll offset
         self._scroll_offset_y: float = 0.0
+        self._pinned_inner_h: float = 0.0
+        self._pinned_content_h: float = 0.0
 
-        # Pre-cache git version
         self._git_ver = _get_git_version()
 
-    # -------------------------------------------------------------------------
-    # Public API
-    # -------------------------------------------------------------------------
+        self._stats: Optional[Dict[str, Any]] = None
+        self._stats_ok: bool = False
+        self._last_close_time: float = 0.0
 
+        self._stats_timer = QTimer(self)
+        self._stats_timer.setInterval(1000)
+        self._stats_timer.timeout.connect(self._on_stats_tick)
+
+    # ------------------------------------------------------------------ API
     def switch_section(self, section_id: str) -> None:
-        """Switch active section in sidebar."""
         valid_ids = [s[0] for s in SECTIONS]
-        if section_id in valid_ids and self.current_section != section_id:
-            self.current_section = section_id
-            self._scroll_offset_y = 0.0
-            self.update()
+        if section_id not in valid_ids or self.current_section == section_id:
+            return
+        self.current_section = section_id
+        self._scroll_offset_y = 0.0
+        if section_id == "performance":
+            self._load_stats()
+        self._sync_stats_timer()
+        self.update()
 
     def apply_and_close(self) -> None:
-        """Invoke on_apply callback with deep-copied new settings and close."""
         cfg_out = copy.deepcopy(self.working_settings)
         if callable(self._on_apply_cb):
             self._on_apply_cb(cfg_out)
-        self.close()
+        self._hide_animated()
 
     def cancel_and_close(self) -> None:
-        """Close window without invoking callback."""
-        self.close()
+        self._hide_animated()
 
-    # -------------------------------------------------------------------------
-    # Event Handlers
-    # -------------------------------------------------------------------------
+    def show_for(self, anchor_global: Optional[QRectF] = None, *, switch_from_x: Optional[int] = None) -> None:
+        target = self._target_position(anchor_global)
+        dpr = 1.0
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            dpr = screen.devicePixelRatio()
+        if winapi is not None and hasattr(winapi, "set_round_region"):
+            try:
+                winapi.set_round_region(int(self.winId()), self.width(), self.height(), int(ps.R_PANEL), dpr)
+            except Exception:
+                pass
+        self._last_close_time = 0.0
+        if self.current_section == "performance":
+            self._load_stats()
+        ps.animate_in(self, target, switch_from_x=switch_from_x)
+        self.activateWindow()
+        self.setFocus()
 
+    def hide_instant(self) -> None:
+        if self.isVisible():
+            self._last_close_time = time.monotonic()
+        ps.animate_out(self, instant=True)
+
+    def recently_closed(self, threshold_ms: float = 250.0) -> bool:
+        if self._last_close_time <= 0.0:
+            return False
+        return (time.monotonic() - self._last_close_time) * 1000.0 <= threshold_ms
+
+    # --------------------------------------------------------------- konum
+    def _target_position(self, anchor_global: Optional[QRectF]) -> QPoint:
+        screen = QGuiApplication.primaryScreen()
+        if anchor_global is not None:
+            screen = QGuiApplication.screenAt(anchor_global.center().toPoint()) or screen
+        if screen is None:
+            return QPoint(100, 100)
+        geom = screen.availableGeometry()
+        margin = 8
+        if anchor_global is None:
+            tx = int(geom.center().x() - self.width() / 2.0)
+            ty = int(geom.center().y() - self.height() / 2.0)
+        else:
+            tx = int(anchor_global.center().x() - self.width() / 2.0)
+            ty = int(anchor_global.top() - self.height() - ps.ANCHOR_GAP)
+            if ty < geom.top() + margin:
+                ty = int(anchor_global.bottom() + ps.ANCHOR_GAP)
+        max_x = geom.right() - self.width() - margin
+        tx = max(geom.left() + margin, min(max_x, tx)) if max_x >= geom.left() + margin else geom.left() + margin
+        max_y = geom.bottom() - self.height() - margin
+        ty = max(geom.top() + margin, min(max_y, ty)) if max_y >= geom.top() + margin else geom.top() + margin
+        return QPoint(tx, ty)
+
+    # -------------------------------------------------------------- istatistik
+    def _load_stats(self) -> None:
+        self._stats = None
+        self._stats_ok = False
+        provider = self._stats_provider
+        if not callable(provider):
+            return
+        try:
+            raw = provider()
+        except Exception:
+            return
+        normalized = normalize_stall_stats(raw)
+        if normalized is None:
+            return
+        self._stats = normalized
+        self._stats_ok = True
+
+    def _on_stats_tick(self) -> None:
+        if self.current_section != "performance" or not self.isVisible():
+            self._stats_timer.stop()
+            return
+        self._load_stats()
+        self.update()
+
+    def _sync_stats_timer(self) -> None:
+        should_run = self.isVisible() and self.current_section == "performance"
+        if should_run and not self._stats_timer.isActive():
+            self._stats_timer.start()
+        elif not should_run and self._stats_timer.isActive():
+            self._stats_timer.stop()
+
+    def performance_strings(self) -> Dict[str, str]:
+        """Performans kartında çizilen metinler (testler de bunu okur)."""
+        if not self._stats_ok or self._stats is None:
+            return {"count": "—", "worst": "—", "status": STALL_UNAVAILABLE}
+        count = int(self._stats["count"])
+        worst = int(self._stats["worst_ms"])
+        if count == 0:
+            return {"count": "0", "worst": "—", "status": STALL_NONE}
+        return {"count": str(count), "worst": format_ms(worst), "status": ""}
+
+    def performance_rows(self) -> List[Dict[str, Any]]:
+        """En yeni önce, en çok 8 satır; renk eşikleriyle."""
+        if not self._stats_ok or self._stats is None:
+            return []
+        rows: List[Dict[str, Any]] = []
+        for entry in reversed(self._stats["last"][-8:]):
+            try:
+                stamp = time.strftime("%H:%M:%S", time.localtime(entry["time"]))
+            except (ValueError, OSError, OverflowError):
+                stamp = "—"
+            ms = int(entry["ms"])
+            rows.append(
+                {
+                    "time": stamp,
+                    "ms": ms,
+                    "ms_text": format_ms(ms),
+                    "top": str(entry.get("top") or "—"),
+                    "color": stall_color(ms),
+                }
+            )
+        return rows
+
+    def _card_checked(self, key: str) -> bool:
+        cards = self.working_settings.get("cards")
+        if not isinstance(cards, dict):
+            return True
+        return bool(cards.get(key, True))
+
+    # ---------------------------------------------------------------- olaylar
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self.cancel_and_close()
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def showEvent(self, event) -> None:
+        if self.current_section == "performance":
+            self._load_stats()
+        self._sync_stats_timer()
+        super().showEvent(event)
+
+    def hideEvent(self, event) -> None:
+        self._stats_timer.stop()
+        self._last_close_time = time.monotonic()
+        super().hideEvent(event)
+
+    def closeEvent(self, event) -> None:
+        self._stats_timer.stop()
+        super().closeEvent(event)
+
+    def _hide_animated(self) -> None:
+        if self.isVisible():
+            self._last_close_time = time.monotonic()
+            ps.animate_out(self)
+        else:
+            self.hide()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
@@ -325,60 +469,53 @@ class SettingsWindow(QWidget):
 
         pos = QPointF(event.position())
 
-        # Check Close button (top right 'X')
-        close_rect = QRectF(float(self.width()) - 36.0, 10.0, 26.0, 26.0)
-        if close_rect.contains(pos):
+        if self._close_rect.isNull():
+            self._close_rect = QRectF(
+                float(self.width()) - 40.0, 24.0, ps.CLOSE_SZ, ps.CLOSE_SZ
+            )
+        if self._close_rect.contains(pos):
             self.cancel_and_close()
             return
 
-        # Check Bottom buttons (Vazgeç / Uygula)
-        btn_apply = self._get_apply_button_rect()
-        btn_cancel = self._get_cancel_button_rect()
-        if btn_apply.contains(pos):
+        if self._get_apply_button_rect().contains(pos):
             self.apply_and_close()
             return
-        if btn_cancel.contains(pos):
+        if self._get_cancel_button_rect().contains(pos):
             self.cancel_and_close()
             return
 
-        # Check Sidebar section click
         for s_rect, sid, _ in self._get_sidebar_items():
             if s_rect.contains(pos):
                 self.switch_section(sid)
                 return
 
-        # Check Content hit boxes
         for r, kind, extra in self._content_hit_boxes:
-            if r.contains(pos):
-                if kind == "toggle_style":
-                    # extra is 'band' or 'pill'
-                    self.working_settings["style"] = str(extra)
+            if not r.contains(pos):
+                continue
+            if kind == "toggle_style":
+                self.working_settings["style"] = str(extra)
+                self.update()
+                return
+            if kind == "toggle_setting":
+                cur_val = bool(self.working_settings.get(extra, False))
+                self.working_settings[extra] = not cur_val
+                self.update()
+                return
+            if kind == "toggle_card":
+                cards = self.working_settings.setdefault("cards", {})
+                cur_val = bool(cards.get(extra, True))
+                cards[extra] = not cur_val
+                self.update()
+                return
+            if kind == "remove_pin":
+                pins = self.working_settings.get("pinned", [])
+                if 0 <= extra < len(pins):
+                    del pins[extra]
                     self.update()
-                    return
-                elif kind == "toggle_setting":
-                    # extra is key name (e.g. 'hide_taskbar', 'reserve_space', 'alerts_enabled')
-                    cur_val = bool(self.working_settings.get(extra, False))
-                    self.working_settings[extra] = not cur_val
-                    self.update()
-                    return
-                elif kind == "toggle_card":
-                    # extra is card key
-                    cards = self.working_settings.setdefault("cards", {})
-                    # default fallback depends on card key
-                    cur = bool(cards.get(extra, True)) if extra != "sys" else bool(cards.get("sys", False))
-                    cards[extra] = not cur
-                    self.update()
-                    return
-                elif kind == "remove_pin":
-                    # extra is index in pinned list
-                    pins = self.working_settings.get("pinned", [])
-                    if 0 <= extra < len(pins):
-                        del pins[extra]
-                        self.update()
-                    return
-                elif kind == "open_logs":
-                    self._on_open_logs_clicked()
-                    return
+                return
+            if kind == "open_logs":
+                self._on_open_logs_clicked()
+                return
 
         super().mousePressEvent(event)
 
@@ -393,24 +530,19 @@ class SettingsWindow(QWidget):
         self._hover_btn = None
         self._hover_item_key = None
 
-        # Check Close button
-        close_rect = QRectF(float(self.width()) - 36.0, 10.0, 26.0, 26.0)
-        if close_rect.contains(pos):
+        if self._close_rect.contains(pos):
             self._hover_btn = "close"
 
-        # Sidebar
         for s_rect, sid, _ in self._get_sidebar_items():
             if s_rect.contains(pos):
                 self._hover_section = sid
                 break
 
-        # Bottom buttons
         if self._get_apply_button_rect().contains(pos):
             self._hover_btn = "apply"
         elif self._get_cancel_button_rect().contains(pos):
             self._hover_btn = "cancel"
 
-        # Content hit boxes
         for r, kind, extra in self._content_hit_boxes:
             if r.contains(pos):
                 self._hover_item_key = f"{kind}:{extra}"
@@ -433,17 +565,17 @@ class SettingsWindow(QWidget):
         super().leaveEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        # Only pinned section has scrolling
         if self.current_section == "pinned":
             delta = event.angleDelta().y()
             self._scroll_offset_y = min(0.0, self._scroll_offset_y + delta * 0.4)
+            min_offset = min(0.0, self._pinned_inner_h - self._pinned_content_h)
+            self._scroll_offset_y = max(min_offset, self._scroll_offset_y)
             self.update()
             event.accept()
             return
         super().wheelEvent(event)
 
     def _on_open_logs_clicked(self) -> None:
-        """Open log folder with explorer. Uses os.startfile ONLY when clicked by user."""
         try:
             log_p = get_log_path()
             folder = log_p.parent
@@ -452,19 +584,15 @@ class SettingsWindow(QWidget):
         except Exception:
             pass
 
-    # -------------------------------------------------------------------------
-    # Layout & Geometry Helpers
-    # -------------------------------------------------------------------------
-
+    # -------------------------------------------------------------- yerleşim
     def _get_sidebar_items(self) -> List[Tuple[QRectF, str, str]]:
-        items = []
+        items: List[Tuple[QRectF, str, str]] = []
         top_y = 60.0
         row_h = 36.0
         gap = 4.0
         for i, (sid, title) in enumerate(SECTIONS):
             y = top_y + i * (row_h + gap)
-            rect = QRectF(12.0, y, SIDEBAR_WIDTH - 24.0, row_h)
-            items.append((rect, sid, title))
+            items.append((QRectF(12.0, y, SIDEBAR_WIDTH - 24.0, row_h), sid, title))
         return items
 
     def _get_apply_button_rect(self) -> QRectF:
@@ -481,12 +609,16 @@ class SettingsWindow(QWidget):
         y = float(self.height()) - 16.0 - btn_h
         return QRectF(x, y, btn_w, btn_h)
 
-    # -------------------------------------------------------------------------
-    # Offscreen Rendering for Tests / Showcase
-    # -------------------------------------------------------------------------
+    def _content_rect(self) -> QRectF:
+        return QRectF(
+            SIDEBAR_WIDTH + 24.0,
+            24.0,
+            float(self.width()) - SIDEBAR_WIDTH - 48.0,
+            float(self.height()) - BOTTOM_BAR_HEIGHT - 36.0,
+        )
 
+    # ------------------------------------------------------------ görüntü
     def render_to_image(self, dpr: float = 2.0) -> QImage:
-        """Render entire window offscreen to high-DPI QImage."""
         w_phys = max(1, int(round(float(self.width()) * dpr)))
         h_phys = max(1, int(round(float(self.height()) * dpr)))
         img = QImage(w_phys, h_phys, QImage.Format.Format_ARGB32_Premultiplied)
@@ -494,574 +626,615 @@ class SettingsWindow(QWidget):
         img.fill(Qt.GlobalColor.transparent)
 
         p = QPainter(img)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-
-        self._paint_all(p)
-        p.end()
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            self._paint_all(p)
+        finally:
+            p.end()
         return img
-
-    # -------------------------------------------------------------------------
-    # Painting Implementation
-    # -------------------------------------------------------------------------
 
     def paintEvent(self, event) -> None:
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        self._paint_all(p)
-        p.end()
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            self._paint_all(p)
+        finally:
+            p.end()
 
     def _paint_all(self, p: QPainter) -> None:
         self._content_hit_boxes.clear()
+        self._toggle_rects.clear()
+        self._toggle_checked.clear()
 
         w = float(self.width())
         h = float(self.height())
-        outer_rect = QRectF(0.0, 0.0, w, h)
-        outer_path = theme.rounded_path(outer_rect, CORNER_RADIUS)
+        ps.draw_panel_shell(p, QRectF(0.0, 0.0, w, h))
+        shell = ps.rounded(QRectF(0.0, 0.0, w, h), ps.R_PANEL)
 
-        # 1. Base window background (fully opaque dark surface)
-        p.fillPath(outer_path, COLOR_BG)
-
-        # 2. Sidebar background
         p.save()
-        p.setClipPath(outer_path)
-        sidebar_rect = QRectF(0.0, 0.0, SIDEBAR_WIDTH, h)
-        p.fillRect(sidebar_rect, COLOR_SIDEBAR_BG)
-
-        # Hairline separator between sidebar and content
-        p.setPen(QPen(COLOR_HAIRLINE, 1.0))
-        p.drawLine(QPointF(SIDEBAR_WIDTH, 0.0), QPointF(SIDEBAR_WIDTH, h - BOTTOM_BAR_HEIGHT))
-
-        # Bottom bar hairline
-        p.drawLine(QPointF(0.0, h - BOTTOM_BAR_HEIGHT), QPointF(w, h - BOTTOM_BAR_HEIGHT))
+        p.setClipPath(shell)
+        p.fillRect(QRectF(0.0, 0.0, SIDEBAR_WIDTH, h), QColor(ps.TILE_BG.red(), ps.TILE_BG.green(), ps.TILE_BG.blue(), 120))
+        p.setPen(QPen(ps.FOOTER_LINE, 1.0))
+        p.drawLine(QPointF(0.0, h - BOTTOM_BAR_HEIGHT + 0.5), QPointF(w, h - BOTTOM_BAR_HEIGHT + 0.5))
         p.restore()
 
-        # 3. Outer border
-        p.setPen(QPen(COLOR_BORDER, 1.0))
-        p.drawPath(outer_path)
+        p.setFont(ps.f_title())
+        p.setPen(ps.TEXT)
+        p.drawText(
+            QRectF(16.0, 16.0, SIDEBAR_WIDTH - 32.0, 28.0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            "Ayarlar",
+        )
 
-        # 4. Window Title / App brand in top-left sidebar
-        p.setFont(theme.make_font(13.0, QFont.Weight.DemiBold))
-        p.setPen(COLOR_TEXT_PRIMARY)
-        p.drawText(QRectF(16.0, 18.0, SIDEBAR_WIDTH - 32.0, 24.0), Qt.AlignmentFlag.AlignVCenter, "Ayarlar")
-
-        # Close 'X' button in top-right
-        close_rect = QRectF(w - 34.0, 10.0, 24.0, 24.0)
-        is_close_hover = (self._hover_btn == "close")
-        if is_close_hover:
-            p.fillPath(theme.rounded_path(close_rect, 6.0), QColor(255, 255, 255, 20))
-        p.setFont(theme.make_font(11.0, QFont.Weight.Normal))
-        p.setPen(COLOR_TEXT_PRIMARY if is_close_hover else COLOR_TEXT_MUTED)
-        p.drawText(close_rect, Qt.AlignmentFlag.AlignCenter, "✕")
-
-        # 5. Sidebar Navigation Items
         self._paint_sidebar(p)
 
-        # 6. Main Content Area
-        content_rect = QRectF(
-            SIDEBAR_WIDTH + 24.0,
-            24.0,
-            w - SIDEBAR_WIDTH - 48.0,
-            h - BOTTOM_BAR_HEIGHT - 36.0,
-        )
+        content = self._content_rect()
         p.save()
-        p.setClipRect(content_rect)
-        self._paint_content(p, content_rect)
+        p.setClipRect(content)
+        hdr = ps.draw_header(
+            p,
+            QRectF(content.x(), content.y(), content.width(), ps.HEADER_H),
+            dict(SECTIONS).get(self.current_section, ""),
+            chip=None,
+            close_hover=(self._hover_btn == "close"),
+        )
+        close = hdr.get("close")
+        self._close_rect = QRectF(close) if isinstance(close, QRectF) else QRectF()
+        self._paint_section(p, content)
         p.restore()
 
-        # 7. Bottom Bar Buttons (Vazgeç & Uygula)
         self._paint_bottom_bar(p)
 
     def _paint_sidebar(self, p: QPainter) -> None:
         for rect, sid, title in self._get_sidebar_items():
-            is_active = (self.current_section == sid)
-            is_hover = (self._hover_section == sid)
+            is_active = self.current_section == sid
+            is_hover = self._hover_section == sid
 
             if is_active:
-                p.fillPath(theme.rounded_path(rect, 6.0), QColor(255, 255, 255, 18))
-                # Active pill accent indicator on left
-                ind_rect = QRectF(rect.x() - 6.0, rect.y() + 9.0, 3.0, 18.0)
-                p.fillPath(theme.rounded_path(ind_rect, 1.5), COLOR_ACCENT)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(ps.BUTTON_HOVER)
+                p.drawPath(ps.rounded(rect, ps.R_BUTTON))
+                p.setBrush(ps.ACCENT)
+                p.drawPath(ps.rounded(QRectF(rect.left() - 6.0, rect.top() + 9.0, 3.0, 18.0), 1.5))
             elif is_hover:
-                p.fillPath(theme.rounded_path(rect, 6.0), COLOR_ROW_HOVER)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(ps.BUTTON_BG)
+                p.drawPath(ps.rounded(rect, ps.R_BUTTON))
 
-            p.setFont(theme.make_font(11.0, QFont.Weight.Medium if is_active else QFont.Weight.Normal))
-            if is_active:
-                p.setPen(COLOR_TEXT_PRIMARY)
-            elif is_hover:
-                p.setPen(COLOR_TEXT_PRIMARY)
-            else:
-                p.setPen(COLOR_TEXT_SECONDARY)
-
-            text_rect = QRectF(rect.x() + 8.0, rect.y(), rect.width() - 14.0, rect.height())
-            p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, title)
+            p.setFont(ps.font(11.0, QFont.Weight.Medium if is_active else QFont.Weight.Normal))
+            p.setPen(ps.TEXT if is_active else ps.TEXT_BODY)
+            fm = QFontMetricsF(p.font())
+            text = fm.elidedText(title, Qt.TextElideMode.ElideRight, max(10.0, rect.width() - 20.0))
+            p.drawText(
+                QRectF(rect.left() + 10.0, rect.top(), rect.width() - 16.0, rect.height()),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                text,
+            )
 
     def _paint_bottom_bar(self, p: QPainter) -> None:
         h = float(self.height())
-
-        # Subtle info text on bottom-left
-        p.setFont(theme.make_font(10.0, QFont.Weight.Normal))
-        p.setPen(COLOR_TEXT_MUTED)
+        p.setFont(ps.f_small())
+        p.setPen(ps.TEXT_MUTED)
         p.drawText(
-            QRectF(20.0, h - BOTTOM_BAR_HEIGHT, SIDEBAR_WIDTH + 80.0, BOTTOM_BAR_HEIGHT),
+            QRectF(20.0, h - BOTTOM_BAR_HEIGHT, SIDEBAR_WIDTH - 24.0, BOTTOM_BAR_HEIGHT),
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
             "Şerit",
         )
 
-        # Cancel Button ('Vazgeç')
         r_cancel = self._get_cancel_button_rect()
-        is_cancel_hover = (self._hover_btn == "cancel")
-        bg_cancel = QColor(255, 255, 255, 22) if is_cancel_hover else QColor(255, 255, 255, 12)
-        p.fillPath(theme.rounded_path(r_cancel, 6.0), bg_cancel)
-        p.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
-        p.drawPath(theme.rounded_path(r_cancel, 6.0))
-
-        p.setFont(theme.make_font(11.0, QFont.Weight.Medium))
-        p.setPen(COLOR_TEXT_PRIMARY if is_cancel_hover else COLOR_TEXT_SECONDARY)
+        hover_cancel = self._hover_btn == "cancel"
+        p.setPen(QPen(ps.BUTTON_BORDER, 1.0))
+        p.setBrush(ps.BUTTON_HOVER if hover_cancel else ps.BUTTON_BG)
+        p.drawPath(ps.rounded(r_cancel.adjusted(0.5, 0.5, -0.5, -0.5), ps.R_BUTTON))
+        p.setFont(ps.font(11.5, QFont.Weight.Medium))
+        p.setPen(ps.TEXT if hover_cancel else ps.TEXT_BTN)
         p.drawText(r_cancel, Qt.AlignmentFlag.AlignCenter, "Vazgeç")
 
-        # Apply Button ('Uygula')
         r_apply = self._get_apply_button_rect()
-        is_apply_hover = (self._hover_btn == "apply")
-        bg_apply = COLOR_ACCENT_HOVER if is_apply_hover else COLOR_ACCENT
-        p.fillPath(theme.rounded_path(r_apply, 6.0), bg_apply)
-        p.setPen(QPen(QColor(255, 255, 255, 40), 1.0))
-        p.drawPath(theme.rounded_path(r_apply, 6.0))
-
-        p.setFont(theme.make_font(11.0, QFont.Weight.DemiBold))
-        p.setPen(QColor(255, 255, 255))
+        hover_apply = self._hover_btn == "apply"
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(ps.ACCENT.lighter(112) if hover_apply else ps.ACCENT)
+        p.drawPath(ps.rounded(r_apply.adjusted(0.5, 0.5, -0.5, -0.5), ps.R_BUTTON))
+        p.setFont(ps.font(11.5, QFont.Weight.DemiBold))
+        p.setPen(ps.TEXT)
         p.drawText(r_apply, Qt.AlignmentFlag.AlignCenter, "Uygula")
 
-    # -------------------------------------------------------------------------
-    # Section Content Painting
-    # -------------------------------------------------------------------------
-
-    def _paint_content(self, p: QPainter, area: QRectF) -> None:
-        title_rect = QRectF(area.x(), area.y(), area.width(), 28.0)
-        p.setFont(theme.make_font(16.0, QFont.Weight.DemiBold))
-        p.setPen(COLOR_TEXT_PRIMARY)
-
-        sec_title = dict(SECTIONS).get(self.current_section, "")
-        p.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, sec_title)
-
-        start_y = area.y() + 38.0
-        avail_w = area.width()
+    # ------------------------------------------------------------- bölümler
+    def _paint_section(self, p: QPainter, area: QRectF) -> None:
+        x = area.x()
+        w = area.width()
+        y = area.y() + ps.HEADER_H + ps.GAP
+        bottom = area.bottom()
 
         if self.current_section == "appearance":
-            self._paint_appearance_section(p, area.x(), start_y, avail_w)
+            self._paint_appearance(p, x, y, w)
         elif self.current_section == "cards":
-            self._paint_cards_section(p, area.x(), start_y, avail_w)
+            self._paint_cards(p, x, y, w)
         elif self.current_section == "pinned":
-            self._paint_pinned_section(p, area.x(), start_y, avail_w, area.height() - 38.0)
+            self._paint_pinned(p, x, y, w, max(0.0, bottom - y))
         elif self.current_section == "alerts":
-            self._paint_alerts_section(p, area.x(), start_y, avail_w)
+            self._paint_alerts(p, x, y, w)
+        elif self.current_section == "performance":
+            self._paint_performance(p, x, y, w)
         elif self.current_section == "about":
-            self._paint_about_section(p, area.x(), start_y, avail_w)
+            self._paint_about(p, x, y, w)
 
-    def _paint_fluent_toggle_at(self, p: QPainter, rect: QRectF, checked: bool, hovered: bool) -> None:
-        """Custom-paint Windows 11 Fluent style toggle inside content rows."""
-        w = rect.width()
-        h = rect.height()
-        r = h / 2.0
-        path = theme.rounded_path(rect, r)
+    @staticmethod
+    def _card_height(row_heights: List[float]) -> float:
+        seps = max(0, len(row_heights) - 1)
+        return ps.CARD_PAD * 2 + 15.0 + ps.CARD_GAP + sum(row_heights) + seps
 
-        if checked:
-            track_col = COLOR_ACCENT_HOVER if hovered else COLOR_ACCENT
-            p.fillPath(path, track_col)
-            p.setPen(QPen(QColor(255, 255, 255, 40), 1.0))
-            p.drawPath(path)
+    @staticmethod
+    def _paint_separator(p: QPainter, x: float, y: float, w: float) -> None:
+        p.setPen(QPen(ps.FOOTER_LINE, 1.0))
+        p.drawLine(QPointF(x, y + 0.5), QPointF(x + w, y + 0.5))
 
-            thumb_size = 12.0
-            thumb_x = rect.x() + w - 4.0 - thumb_size
-            thumb_y = rect.y() + (h - thumb_size) / 2.0
-            thumb_rect = QRectF(thumb_x, thumb_y, thumb_size, thumb_size)
-            p.fillPath(theme.rounded_path(thumb_rect, thumb_size / 2.0), QColor(255, 255, 255))
-        else:
-            bg_col = QColor(255, 255, 255, 14) if hovered else QColor(255, 255, 255, 8)
-            border_col = QColor(255, 255, 255, 90) if hovered else QColor(255, 255, 255, 70)
-            p.fillPath(path, bg_col)
-            p.setPen(QPen(border_col, 1.0))
-            p.drawPath(path)
-
-            thumb_size = 10.0
-            thumb_x = rect.x() + 4.0
-            thumb_y = rect.y() + (h - thumb_size) / 2.0
-            thumb_rect = QRectF(thumb_x, thumb_y, thumb_size, thumb_size)
-            thumb_col = QColor(255, 255, 255, 210) if hovered else QColor(255, 255, 255, 160)
-            p.fillPath(theme.rounded_path(thumb_rect, thumb_size / 2.0), thumb_col)
-
-    def _paint_card_row(
+    def _draw_row(
         self,
         p: QPainter,
-        x: float,
-        y: float,
-        w: float,
-        h: float,
+        rect: QRectF,
         title: str,
         subtitle: Optional[str] = None,
         checked: Optional[bool] = None,
-        action_text: Optional[str] = None,
-        hit_kind: Optional[str] = None,
-        hit_extra: Any = None,
-        is_radio: bool = False,
-    ) -> QRectF:
-        card_rect = QRectF(x, y, w, h)
-        key_str = f"{hit_kind}:{hit_extra}" if hit_kind else ""
-        is_hover = (self._hover_item_key == key_str)
+        radio: bool = False,
+        kind: Optional[str] = None,
+        extra: Any = None,
+    ) -> None:
+        key = f"{kind}:{extra}" if kind else ""
+        hovered = bool(key) and self._hover_item_key == key
 
-        # Card container background
-        bg_col = QColor(255, 255, 255, 12) if is_hover else COLOR_CARD_BG
-        p.fillPath(theme.rounded_path(card_rect, 8.0), bg_col)
-        p.setPen(QPen(COLOR_CARD_BORDER, 1.0))
-        p.drawPath(theme.rounded_path(card_rect, 8.0))
+        if hovered:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(ps.BUTTON_BG)
+            p.drawPath(ps.rounded(rect.adjusted(0.0, 1.0, 0.0, -1.0), ps.R_BUTTON))
 
-        # Title & Subtitle
-        text_x = x + 14.0
-        text_w = w - (58.0 if (checked is not None or is_radio) else (78.0 if action_text else 24.0))
+        control_w = 0.0
+        if checked is not None:
+            control_w = 34.0 if radio else 56.0
+        text_left = rect.left() + 10.0
+        text_w = max(0.0, rect.width() - 20.0 - control_w)
+
         if subtitle:
-            p.setFont(theme.make_font(11.5, QFont.Weight.Medium))
-            p.setPen(COLOR_TEXT_PRIMARY)
-            p.drawText(QRectF(text_x, y + 8.0, text_w, 20.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
-
-            f_sub = theme.make_font(9.5, QFont.Weight.Normal)
-            p.setFont(f_sub)
-            fm_sub = QFontMetricsF(f_sub)
-            elided_sub = fm_sub.elidedText(subtitle, Qt.TextElideMode.ElideRight, text_w)
-            p.setPen(COLOR_TEXT_MUTED)
-            p.drawText(QRectF(text_x, y + 26.0, text_w, 18.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_sub)
-        else:
-            p.setFont(theme.make_font(11.5, QFont.Weight.Medium))
-            p.setPen(COLOR_TEXT_PRIMARY)
-            p.drawText(QRectF(text_x, y, text_w, h), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
-
-        # Right control: Toggle or Radio or Action Button
-        if is_radio and checked is not None:
-            r_radio = QRectF(x + w - 34.0, y + (h - 18.0) / 2.0, 18.0, 18.0)
-            p.setPen(QPen(COLOR_ACCENT if checked else QColor(255, 255, 255, 90), 1.5))
-            p.drawEllipse(r_radio)
-            if checked:
-                p.fillPath(theme.rounded_path(QRectF(r_radio.x() + 4.5, r_radio.y() + 4.5, 9.0, 9.0), 4.5), COLOR_ACCENT)
-        elif checked is not None:
-            toggle_rect = QRectF(x + w - 52.0, y + (h - 20.0) / 2.0, 40.0, 20.0)
-            self._paint_fluent_toggle_at(p, toggle_rect, checked, is_hover)
-        elif action_text:
-            btn_w = 64.0
-            btn_h = 26.0
-            btn_rect = QRectF(x + w - btn_w - 12.0, y + (h - btn_h) / 2.0, btn_w, btn_h)
-            btn_bg = QColor(230, 80, 80, 36) if is_hover else QColor(255, 255, 255, 10)
-            p.fillPath(theme.rounded_path(btn_rect, 5.0), btn_bg)
-            p.setPen(QPen(QColor(230, 80, 80, 120) if is_hover else QColor(255, 255, 255, 20), 1.0))
-            p.drawPath(theme.rounded_path(btn_rect, 5.0))
-
-            p.setFont(theme.make_font(10.5, QFont.Weight.Medium))
-            p.setPen(QColor("#FF7B7B") if is_hover else COLOR_TEXT_SECONDARY)
-            p.drawText(btn_rect, Qt.AlignmentFlag.AlignCenter, action_text)
-
-        if hit_kind:
-            self._content_hit_boxes.append((card_rect, hit_kind, hit_extra))
-
-        return card_rect
-
-    # -------------------------------------------------------------------------
-    # Section: Görünüm (Appearance)
-    # -------------------------------------------------------------------------
-
-    def _paint_appearance_section(self, p: QPainter, x: float, y: float, w: float) -> None:
-        cur_style = str(self.working_settings.get("style", "band"))
-        is_band = (cur_style != "pill")
-
-        # Section 1: Dock Style (Tam genişlik şerit vs Ortada kapsül)
-        p.setFont(theme.make_font(10.5, QFont.Weight.DemiBold))
-        p.setPen(COLOR_TEXT_MUTED)
-        p.drawText(QRectF(x, y, w, 18.0), Qt.AlignmentFlag.AlignLeft, "ŞERİT DÜZENİ")
-        y += 24.0
-
-        row_h = 44.0
-        gap = 8.0
-        self._paint_card_row(
-            p, x, y, w, row_h,
-            title="Tam genişlik şerit",
-            subtitle="Ekranın solundan sağına uzanan koyu taban şeridi",
-            checked=is_band,
-            hit_kind="toggle_style",
-            hit_extra="band",
-            is_radio=True,
-        )
-        y += row_h + gap
-
-        self._paint_card_row(
-            p, x, y, w, row_h,
-            title="Ortada kapsül",
-            subtitle="Yalnızca öğelerin etrafını saran yüzen kapsül",
-            checked=(not is_band),
-            hit_kind="toggle_style",
-            hit_extra="pill",
-            is_radio=True,
-        )
-        y += row_h + 18.0
-
-        # Section 2: Windows Entegrasyonu
-        p.setFont(theme.make_font(10.5, QFont.Weight.DemiBold))
-        p.setPen(COLOR_TEXT_MUTED)
-        p.drawText(QRectF(x, y, w, 18.0), Qt.AlignmentFlag.AlignLeft, "WINDOWS ENTEGRASYONU")
-        y += 24.0
-
-        hide_tb = bool(self.working_settings.get("hide_taskbar", False))
-        self._paint_card_row(
-            p, x, y, w, row_h,
-            title="Görev çubuğunu gizle",
-            subtitle="Windows görev çubuğunu otomatik gizle",
-            checked=hide_tb,
-            hit_kind="toggle_setting",
-            hit_extra="hide_taskbar",
-        )
-        y += row_h + gap
-
-        reserve_sp = bool(self.working_settings.get("reserve_space", True))
-        self._paint_card_row(
-            p, x, y, w, row_h,
-            title="Ekran alanını ayır",
-            subtitle="Pencerelerin şerit altına girmesini engelle (AppBar)",
-            checked=reserve_sp,
-            hit_kind="toggle_setting",
-            hit_extra="reserve_space",
-        )
-
-    # -------------------------------------------------------------------------
-    # Section: Kartlar (Cards)
-    # -------------------------------------------------------------------------
-
-    def _paint_cards_section(self, p: QPainter, x: float, y: float, w: float) -> None:
-        cards_cfg = dict(self.working_settings.get("cards") or {})
-
-        p.setFont(theme.make_font(10.5, QFont.Weight.DemiBold))
-        p.setPen(COLOR_TEXT_MUTED)
-        p.drawText(QRectF(x, y, w, 18.0), Qt.AlignmentFlag.AlignLeft, "GÖSTERİLECEK KARTLAR")
-        y += 24.0
-
-        row_h = 44.0
-        gap = 6.0
-
-        for key, title, subtitle in CARD_DEFS:
-            # Check default behavior: sys defaults to False if omitted, others True
-            if key == "sys":
-                checked = bool(cards_cfg.get(key, False))
-            else:
-                checked = bool(cards_cfg.get(key, True))
-
-            self._paint_card_row(
-                p, x, y, w, row_h,
-                title=title,
-                subtitle=subtitle,
-                checked=checked,
-                hit_kind="toggle_card",
-                hit_extra=key,
+            block_h = min(rect.height(), 38.0)
+            ty = rect.top() + (rect.height() - block_h) / 2.0
+            p.setFont(ps.f_body())
+            p.setPen(ps.TEXT)
+            fm_t = QFontMetricsF(p.font())
+            p.drawText(
+                QRectF(text_left, ty, text_w, 20.0),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                fm_t.elidedText(title, Qt.TextElideMode.ElideRight, max(10.0, text_w)),
             )
-            y += row_h + gap
+            p.setFont(ps.f_small())
+            p.setPen(ps.TEXT_MUTED)
+            fm_s = QFontMetricsF(p.font())
+            p.drawText(
+                QRectF(text_left, ty + 20.0, text_w, 18.0),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                fm_s.elidedText(subtitle, Qt.TextElideMode.ElideRight, max(10.0, text_w)),
+            )
+        else:
+            p.setFont(ps.f_body())
+            p.setPen(ps.TEXT)
+            fm_t = QFontMetricsF(p.font())
+            p.drawText(
+                QRectF(text_left, rect.top(), text_w, rect.height()),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                fm_t.elidedText(title, Qt.TextElideMode.ElideRight, max(10.0, text_w)),
+            )
 
-    # -------------------------------------------------------------------------
-    # Section: Sabitlenen uygulamalar (Pinned apps)
-    # -------------------------------------------------------------------------
+        if checked is not None:
+            if radio:
+                r_radio = QRectF(rect.right() - 32.0, rect.center().y() - 9.0, 18.0, 18.0)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(ps.ACCENT if checked else ps.TEXT_MUTED, 1.5))
+                p.drawEllipse(r_radio)
+                if checked:
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(ps.ACCENT)
+                    p.drawPath(ps.rounded(QRectF(r_radio.x() + 4.5, r_radio.y() + 4.5, 9.0, 9.0), 4.5))
+                if key:
+                    self._toggle_rects[key] = r_radio
+            else:
+                r_toggle = QRectF(rect.right() - 52.0, rect.center().y() - 10.0, 40.0, 20.0)
+                _paint_toggle_shape(p, r_toggle, bool(checked), hovered, False)
+                if key:
+                    self._toggle_rects[key] = r_toggle
+            if key:
+                self._toggle_checked[key] = bool(checked)
 
-    def _paint_pinned_section(self, p: QPainter, x: float, y: float, w: float, max_h: float) -> None:
-        pinned_list: List[dict] = self.working_settings.get("pinned", [])
+        if kind:
+            self._content_hit_boxes.append((QRectF(rect), kind, extra))
 
-        p.setFont(theme.make_font(10.5, QFont.Weight.DemiBold))
-        p.setPen(COLOR_TEXT_MUTED)
-        p.drawText(
-            QRectF(x, y, w, 18.0),
-            Qt.AlignmentFlag.AlignLeft,
-            f"SABİTLENENLER ({len(pinned_list)})",
+    # ------------------------------------------------------------- Görünüm
+    def _paint_appearance(self, p: QPainter, x: float, y: float, w: float) -> None:
+        cur_style = str(self.working_settings.get("style", "band"))
+        is_band = cur_style != "pill"
+
+        rows = [46.0, 46.0]
+        card_h = self._card_height(rows)
+        inner = ps.draw_card(p, QRectF(x, y, w, card_h), "Şerit düzeni")
+        r1 = QRectF(inner.left(), inner.top(), inner.width(), rows[0])
+        self._draw_row(
+            p, r1, "Tam genişlik şerit", "Ekranın solundan sağına uzanan koyu taban şeridi",
+            checked=is_band, radio=True, kind="toggle_style", extra="band",
         )
-        y += 24.0
+        self._paint_separator(p, inner.left(), r1.bottom(), inner.width())
+        r2 = QRectF(inner.left(), r1.bottom() + 1.0, inner.width(), rows[1])
+        self._draw_row(
+            p, r2, "Ortada kapsül", "Yalnızca öğelerin etrafını saran yüzen kapsül",
+            checked=not is_band, radio=True, kind="toggle_style", extra="pill",
+        )
 
-        if not pinned_list:
-            empty_rect = QRectF(x, y, w, 100.0)
-            p.setFont(theme.make_font(11.0, QFont.Weight.Normal))
-            p.setPen(COLOR_TEXT_MUTED)
-            p.drawText(empty_rect, Qt.AlignmentFlag.AlignCenter, "Henüz sabitlenmiş bir uygulama yok.")
+        y += card_h + ps.GAP
+        rows2 = [52.0, 52.0]
+        card2_h = self._card_height(rows2)
+        inner2 = ps.draw_card(p, QRectF(x, y, w, card2_h), "Görev çubuğu")
+        hide_tb = bool(self.working_settings.get("hide_taskbar", False))
+        r3 = QRectF(inner2.left(), inner2.top(), inner2.width(), rows2[0])
+        self._draw_row(
+            p, r3, "Görev çubuğunu gizle", "Windows görev çubuğunu otomatik gizle",
+            checked=hide_tb, kind="toggle_setting", extra="hide_taskbar",
+        )
+        self._paint_separator(p, inner2.left(), r3.bottom(), inner2.width())
+        reserve_sp = bool(self.working_settings.get("reserve_space", True))
+        r4 = QRectF(inner2.left(), r3.bottom() + 1.0, inner2.width(), rows2[1])
+        self._draw_row(
+            p, r4, "Ekran alanını ayır", "Pencereler şeridin altına girmesin",
+            checked=reserve_sp, kind="toggle_setting", extra="reserve_space",
+        )
+
+    # -------------------------------------------------------------- Kartlar
+    def _paint_cards(self, p: QPainter, x: float, y: float, w: float) -> None:
+        row_h = 52.0
+        rows = [row_h] * len(CARD_DEFS)
+        card_h = self._card_height(rows)
+        inner = ps.draw_card(p, QRectF(x, y, w, card_h), "Gösterilecek kartlar")
+
+        ry = inner.top()
+        for idx, (key, title, subtitle) in enumerate(CARD_DEFS):
+            rect = QRectF(inner.left(), ry, inner.width(), row_h)
+            self._draw_row(
+                p, rect, title, subtitle,
+                checked=self._card_checked(key), kind="toggle_card", extra=key,
+            )
+            if idx < len(CARD_DEFS) - 1:
+                self._paint_separator(p, inner.left(), rect.bottom(), inner.width())
+            ry += row_h + 1.0
+
+    # --------------------------------------------------- Sabitlenen uygulamalar
+    def _paint_pinned(self, p: QPainter, x: float, y: float, w: float, max_h: float) -> None:
+        pins = self.working_settings.get("pinned", [])
+        row_h = 44.0
+        gap = 1.0
+        content_h = len(pins) * (row_h + gap) - gap if pins else 0.0
+        needed = ps.CARD_PAD * 2 + 15.0 + ps.CARD_GAP + max(44.0, content_h)
+        card_h = min(max_h, max(120.0, needed))
+        inner = ps.draw_card(
+            p, QRectF(x, y, w, card_h), f"Sabitlenen uygulamalar ({len(pins)})"
+        )
+        self._pinned_inner_h = inner.height()
+        self._pinned_content_h = content_h
+
+        if not pins:
+            p.setFont(ps.f_small())
+            p.setPen(ps.TEXT_MUTED)
+            p.drawText(
+                QRectF(inner.left(), inner.top(), inner.width(), inner.height()),
+                Qt.AlignmentFlag.AlignCenter,
+                "Henüz sabitlenmiş bir uygulama yok.",
+            )
             return
 
-        row_h = 42.0
-        gap = 6.0
-        clip_rect = QRectF(x, y, w, max_h - 24.0)
+        min_offset = min(0.0, inner.height() - content_h)
+        self._scroll_offset_y = max(min_offset, min(0.0, self._scroll_offset_y))
+
         p.save()
-        p.setClipRect(clip_rect)
-
-        cur_y = y + self._scroll_offset_y
-        for idx, item in enumerate(pinned_list):
+        p.setClipRect(inner)
+        cur_y = inner.top() + self._scroll_offset_y
+        for idx, item in enumerate(pins):
             if not isinstance(item, dict):
+                cur_y += row_h + gap
                 continue
-            name = str(item.get("name") or "Uygulama")
-            exe = str(item.get("path") or "")
+            if cur_y + row_h >= inner.top() and cur_y <= inner.bottom():
+                r_row = QRectF(inner.left(), cur_y, inner.width(), row_h)
+                key = f"remove_pin:{idx}"
+                hovered = self._hover_item_key == key
+                if hovered:
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(ps.BUTTON_BG)
+                    p.drawPath(ps.rounded(r_row.adjusted(0.0, 1.0, 0.0, -1.0), ps.R_BUTTON))
 
-            # Only draw visible rows
-            if cur_y + row_h >= clip_rect.top() and cur_y <= clip_rect.bottom():
-                r_row = QRectF(x, cur_y, w, row_h)
-                key_str = f"remove_pin:{idx}"
-                is_hover = (self._hover_item_key == key_str)
+                name = str(item.get("name") or "Uygulama")
+                exe = str(item.get("path") or "")
 
-                # Row background
-                bg_col = QColor(255, 255, 255, 12) if is_hover else COLOR_CARD_BG
-                p.fillPath(theme.rounded_path(r_row, 6.0), bg_col)
-                p.setPen(QPen(COLOR_CARD_BORDER, 1.0))
-                p.drawPath(theme.rounded_path(r_row, 6.0))
+                icon_rect = QRectF(inner.left() + 9.0, cur_y + (row_h - 24.0) / 2.0, 24.0, 24.0)
+                drawn = False
+                if exe:
+                    try:
+                        pix = winapi.app_icon(exe, 32)
+                        if isinstance(pix, QPixmap) and not pix.isNull():
+                            theme.draw_icon_crisp(p, pix, icon_rect)
+                            drawn = True
+                    except Exception:
+                        drawn = False
+                if not drawn:
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QColor(255, 255, 255, 18))
+                    p.drawPath(ps.rounded(icon_rect, 4.0))
+                    p.setFont(ps.font(10.0, QFont.Weight.Bold))
+                    p.setPen(ps.TEXT)
+                    p.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter, name[:1].upper())
 
-                # App Icon
-                icon_rect = QRectF(x + 10.0, cur_y + (row_h - 24.0) / 2.0, 24.0, 24.0)
-                try:
-                    pix = winapi.app_icon(exe, 32) if exe else QPixmap()
-                    if pix and not pix.isNull():
-                        theme.draw_icon_crisp(p, pix, icon_rect)
-                    else:
-                        # Fallback initial circle
-                        p.fillPath(theme.rounded_path(icon_rect, 4.0), QColor(255, 255, 255, 18))
-                        p.setFont(theme.make_font(10.0, QFont.Weight.Bold))
-                        p.setPen(COLOR_TEXT_PRIMARY)
-                        p.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter, name[:1].upper())
-                except Exception:
-                    pass
-
-                # Name and path
-                text_rect = QRectF(x + 42.0, cur_y, w - 120.0, row_h)
-                p.setFont(theme.make_font(11.0, QFont.Weight.Medium))
-                p.setPen(COLOR_TEXT_PRIMARY)
-                p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, name)
-
-                # 'Kaldır' button
                 btn_w = 58.0
                 btn_h = 24.0
-                btn_rect = QRectF(x + w - btn_w - 10.0, cur_y + (row_h - btn_h) / 2.0, btn_w, btn_h)
-                btn_bg = QColor(230, 80, 80, 36) if is_hover else QColor(255, 255, 255, 10)
-                p.fillPath(theme.rounded_path(btn_rect, 4.0), btn_bg)
-                p.setPen(QPen(QColor(230, 80, 80, 110) if is_hover else QColor(255, 255, 255, 20), 1.0))
-                p.drawPath(theme.rounded_path(btn_rect, 4.0))
+                btn_rect = QRectF(inner.right() - btn_w - 8.0, cur_y + (row_h - btn_h) / 2.0, btn_w, btn_h)
 
-                p.setFont(theme.make_font(10.0, QFont.Weight.Medium))
-                p.setPen(QColor("#FF7B7B") if is_hover else COLOR_TEXT_SECONDARY)
+                text_left = icon_rect.right() + 9.0
+                text_w = max(10.0, btn_rect.left() - 8.0 - text_left)
+                p.setFont(ps.f_body())
+                p.setPen(ps.TEXT)
+                fm_name = QFontMetricsF(p.font())
+                p.drawText(
+                    QRectF(text_left, cur_y + 5.0, text_w, 18.0),
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    fm_name.elidedText(name, Qt.TextElideMode.ElideRight, text_w),
+                )
+                p.setFont(ps.f_small())
+                p.setPen(ps.TEXT_MUTED)
+                fm_path = QFontMetricsF(p.font())
+                p.drawText(
+                    QRectF(text_left, cur_y + 23.0, text_w, 16.0),
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    fm_path.elidedText(exe or "—", Qt.TextElideMode.ElideMiddle, text_w),
+                )
+
+                p.setPen(QPen(ps.BUTTON_BORDER, 1.0))
+                p.setBrush(ps.BUTTON_HOVER if hovered else ps.BUTTON_BG)
+                p.drawPath(ps.rounded(btn_rect, ps.R_BUTTON))
+                p.setFont(ps.font(11.0, QFont.Weight.Medium))
+                p.setPen(ps.TEXT if hovered else ps.TEXT_BTN)
                 p.drawText(btn_rect, Qt.AlignmentFlag.AlignCenter, "Kaldır")
 
-                # Register hit box
                 self._content_hit_boxes.append((btn_rect, "remove_pin", idx))
 
+            if idx < len(pins) - 1:
+                self._paint_separator(p, inner.left(), cur_y + row_h, inner.width())
             cur_y += row_h + gap
 
         p.restore()
 
-    # -------------------------------------------------------------------------
-    # Section: Uyarılar (Alerts)
-    # -------------------------------------------------------------------------
-
-    def _paint_alerts_section(self, p: QPainter, x: float, y: float, w: float) -> None:
-        p.setFont(theme.make_font(10.5, QFont.Weight.DemiBold))
-        p.setPen(COLOR_TEXT_MUTED)
-        p.drawText(QRectF(x, y, w, 18.0), Qt.AlignmentFlag.AlignLeft, "SİSTEM VE KULLANIM BİLDİRİMLERİ")
-        y += 24.0
-
+    # ------------------------------------------------------------- Uyarılar
+    def _paint_alerts(self, p: QPainter, x: float, y: float, w: float) -> None:
+        card_h = self._card_height([52.0])
+        inner = ps.draw_card(p, QRectF(x, y, w, card_h), "Sistem ve kullanım bildirimleri")
         alerts_enabled = bool(self.working_settings.get("alerts_enabled", True))
-        row_h = 50.0
-        self._paint_card_row(
-            p, x, y, w, row_h,
-            title="Uyarıları etkinleştir",
-            subtitle="Yüksek kaynak kullanımı ve kota bildirimlerini ekranda belirt",
-            checked=alerts_enabled,
-            hit_kind="toggle_setting",
-            hit_extra="alerts_enabled",
+        rect = QRectF(inner.left(), inner.top(), inner.width(), 52.0)
+        self._draw_row(
+            p, rect, "Uyarıları etkinleştir",
+            "Kota, döviz ve bellek uyarıları",
+            checked=alerts_enabled, kind="toggle_setting", extra="alerts_enabled",
         )
 
-    # -------------------------------------------------------------------------
-    # Section: Hakkında (About)
-    # -------------------------------------------------------------------------
+    # ----------------------------------------------------------- Performans
+    def _paint_performance(self, p: QPainter, x: float, y: float, w: float) -> None:
+        texts = self.performance_strings()
 
-    def _paint_about_section(self, p: QPainter, x: float, y: float, w: float) -> None:
-        p.setFont(theme.make_font(10.5, QFont.Weight.DemiBold))
-        p.setPen(COLOR_TEXT_MUTED)
-        p.drawText(QRectF(x, y, w, 18.0), Qt.AlignmentFlag.AlignLeft, "UYGULAMA BİLGİSİ")
-        y += 24.0
+        card1_h = ps.CARD_PAD * 2 + 15.0 + ps.CARD_GAP + 72.0
+        inner = ps.draw_card(p, QRectF(x, y, w, card1_h), "Arayüz donmaları")
+        col_w = inner.width() / 2.0
 
-        # Info card
-        info_rect = QRectF(x, y, w, 140.0)
-        p.fillPath(theme.rounded_path(info_rect, 8.0), COLOR_CARD_BG)
-        p.setPen(QPen(COLOR_CARD_BORDER, 1.0))
-        p.drawPath(theme.rounded_path(info_rect, 8.0))
+        f_label = ps.f_small()
+        f_num = ps.font(26.0, QFont.Weight.Bold, tabular=True)
 
-        # Title
-        p.setFont(theme.make_font(14.0, QFont.Weight.Bold))
-        p.setPen(COLOR_TEXT_PRIMARY)
-        p.drawText(QRectF(x + 16.0, y + 14.0, w - 32.0, 22.0), Qt.AlignmentFlag.AlignLeft, "Şerit Dock")
-
-        p.setFont(theme.make_font(10.5, QFont.Weight.Normal))
-        p.setPen(COLOR_TEXT_SECONDARY)
+        p.setFont(f_label)
+        p.setPen(ps.TEXT_MUTED)
         p.drawText(
-            QRectF(x + 16.0, y + 38.0, w - 32.0, 18.0),
-            Qt.AlignmentFlag.AlignLeft,
-            "Windows 11 için modern akrilik görev çubuğu ve bilgi şeridi",
+            QRectF(inner.left(), inner.top(), col_w - 8.0, 14.0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            "Bu oturumda",
         )
-
-        # Hairline divider inside card
-        p.setPen(QPen(COLOR_HAIRLINE, 1.0))
-        p.drawLine(QPointF(x + 16.0, y + 64.0), QPointF(x + w - 16.0, y + 64.0))
-
-        # Version & Commit
-        p.setFont(theme.make_font(10.5, QFont.Weight.Medium))
-        p.setPen(COLOR_TEXT_MUTED)
-        p.drawText(QRectF(x + 16.0, y + 74.0, 80.0, 20.0), Qt.AlignmentFlag.AlignLeft, "Sürüm:")
-        p.setPen(COLOR_TEXT_PRIMARY)
-        p.drawText(QRectF(x + 90.0, y + 74.0, w - 106.0, 20.0), Qt.AlignmentFlag.AlignLeft, self._git_ver)
-
-        # Log Path
-        log_file = get_log_path()
-        p.setPen(COLOR_TEXT_MUTED)
-        p.drawText(QRectF(x + 16.0, y + 98.0, 80.0, 20.0), Qt.AlignmentFlag.AlignLeft, "Günlük:")
-
-        log_str = str(log_file)
-        f_log = theme.make_font(9.0, QFont.Weight.Normal)
-        p.setFont(f_log)
-        fm_log = QFontMetricsF(f_log)
-        avail_log_w = w - 106.0
-        elided_log = fm_log.elidedText(log_str, Qt.TextElideMode.ElideMiddle, avail_log_w)
-
-        p.setPen(COLOR_TEXT_SECONDARY)
         p.drawText(
-            QRectF(x + 90.0, y + 98.0, avail_log_w, 20.0),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            elided_log,
+            QRectF(inner.left() + col_w, inner.top(), col_w, 14.0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            "En uzun",
         )
 
-        y += 140.0 + 16.0
+        count = texts["count"]
+        worst = texts["worst"]
+        p.setFont(f_num)
+        p.setPen(ps.TEXT)
+        p.drawText(
+            QRectF(inner.left(), inner.top() + 16.0, col_w - 8.0, 36.0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            count,
+        )
+        if self._stats_ok and self._stats is not None and int(self._stats["count"]) > 0:
+            worst_col = stall_color(int(self._stats["worst_ms"]))
+        else:
+            worst_col = ps.TEXT_LABEL
+        p.setPen(worst_col)
+        p.drawText(
+            QRectF(inner.left() + col_w, inner.top() + 16.0, col_w, 36.0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            worst,
+        )
 
-        # Button: 'Log klasörünü aç'
-        btn_w = 150.0
-        btn_h = 32.0
-        btn_rect = QRectF(x, y, btn_w, btn_h)
-        is_hover = (self._hover_item_key == "open_logs:btn")
+        status = texts["status"]
+        if status:
+            p.setFont(f_label)
+            p.setPen(ps.TEXT_MUTED)
+            p.drawText(
+                QRectF(inner.left(), inner.top() + 54.0, inner.width(), 18.0),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                status,
+            )
 
-        btn_bg = QColor(255, 255, 255, 18) if is_hover else QColor(255, 255, 255, 10)
-        p.fillPath(theme.rounded_path(btn_rect, 6.0), btn_bg)
-        p.setPen(QPen(QColor(255, 255, 255, 28) if is_hover else QColor(255, 255, 255, 18), 1.0))
-        p.drawPath(theme.rounded_path(btn_rect, 6.0))
+        y += card1_h + ps.GAP
 
-        p.setFont(theme.make_font(10.5, QFont.Weight.Medium))
-        p.setPen(COLOR_TEXT_PRIMARY if is_hover else COLOR_TEXT_SECONDARY)
+        rows = self.performance_rows()
+        if rows:
+            rows_h = len(rows) * STALL_ROW_H + (len(rows) - 1)
+        else:
+            rows_h = 18.0
+        card2_h = ps.CARD_PAD * 2 + 15.0 + ps.CARD_GAP + rows_h
+        right = f"son {len(rows)}" if rows else None
+        inner2 = ps.draw_card(p, QRectF(x, y, w, card2_h), "Son donmalar", right)
+
+        if not self._stats_ok:
+            p.setFont(ps.f_small())
+            p.setPen(ps.TEXT_MUTED)
+            p.drawText(
+                QRectF(inner2.left(), inner2.top(), inner2.width(), 18.0),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                "—",
+            )
+        elif not rows:
+            p.setFont(ps.f_small())
+            p.setPen(ps.TEXT_MUTED)
+            p.drawText(
+                QRectF(inner2.left(), inner2.top(), inner2.width(), 18.0),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                "Kayıt yok",
+            )
+        else:
+            ry = inner2.top()
+            for idx, row in enumerate(rows):
+                r_row = QRectF(inner2.left(), ry, inner2.width(), STALL_ROW_H)
+                time_w = 58.0
+                ms_w = 66.0
+
+                p.setFont(ps.f_small())
+                p.setPen(ps.TEXT_MUTED)
+                p.drawText(
+                    QRectF(r_row.left(), r_row.top(), time_w, r_row.height()),
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    row["time"],
+                )
+
+                p.setFont(ps.font(11.5, QFont.Weight.Medium, tabular=True))
+                p.setPen(row["color"])
+                p.drawText(
+                    QRectF(r_row.left() + time_w + 2.0, r_row.top(), ms_w, r_row.height()),
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    row["ms_text"],
+                )
+
+                top_left = r_row.left() + time_w + 2.0 + ms_w + 6.0
+                top_w = max(10.0, r_row.right() - top_left)
+                p.setFont(ps.f_small())
+                p.setPen(ps.TEXT_MUTED)
+                fm_top = QFontMetricsF(p.font())
+                p.drawText(
+                    QRectF(top_left, r_row.top(), top_w, r_row.height()),
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    fm_top.elidedText(str(row["top"]), Qt.TextElideMode.ElideMiddle, top_w),
+                )
+
+                if idx < len(rows) - 1:
+                    self._paint_separator(p, inner2.left(), r_row.bottom() - 0.5, inner2.width())
+                ry += STALL_ROW_H + 1.0
+
+        y += card2_h + 8.0
+        p.setFont(ps.f_small())
+        p.setPen(ps.TEXT_MUTED)
+        fm_note = QFontMetricsF(p.font())
+        p.drawText(
+            QRectF(x, y, w, 16.0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            fm_note.elidedText(STALL_NOTE, Qt.TextElideMode.ElideRight, w),
+        )
+
+    # ------------------------------------------------------------- Hakkında
+    def _paint_about(self, p: QPainter, x: float, y: float, w: float) -> None:
+        card_h = 140.0
+        inner = ps.draw_card(p, QRectF(x, y, w, card_h), "Uygulama bilgisi")
+
+        p.setFont(ps.f_body())
+        p.setPen(ps.TEXT)
+        p.drawText(
+            QRectF(inner.left(), inner.top(), inner.width(), 20.0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            "Şerit Dock",
+        )
+
+        p.setFont(ps.f_small())
+        p.setPen(ps.TEXT_MUTED)
+        p.drawText(
+            QRectF(inner.left(), inner.top() + 20.0, inner.width(), 16.0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            "Windows 11 için görev çubuğu ve bilgi şeridi",
+        )
+
+        p.setPen(QPen(ps.FOOTER_LINE, 1.0))
+        p.drawLine(
+            QPointF(inner.left(), inner.top() + 44.0),
+            QPointF(inner.right(), inner.top() + 44.0),
+        )
+
+        label_w = 62.0
+        row1_y = inner.top() + 52.0
+        p.setFont(ps.f_small())
+        p.setPen(ps.TEXT_MUTED)
+        p.drawText(
+            QRectF(inner.left(), row1_y, label_w, 18.0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            "Sürüm",
+        )
+        p.setPen(ps.TEXT_BODY)
+        p.drawText(
+            QRectF(inner.left() + label_w, row1_y, inner.width() - label_w, 18.0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            self._git_ver,
+        )
+
+        row2_y = row1_y + 22.0
+        p.setFont(ps.f_small())
+        p.setPen(ps.TEXT_MUTED)
+        p.drawText(
+            QRectF(inner.left(), row2_y, label_w, 18.0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            "Günlük",
+        )
+        log_str = str(get_log_path())
+        avail = max(10.0, inner.width() - label_w)
+        fm_log = QFontMetricsF(ps.f_small())
+        p.setPen(ps.TEXT_BODY)
+        p.drawText(
+            QRectF(inner.left() + label_w, row2_y, avail, 18.0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            fm_log.elidedText(log_str, Qt.TextElideMode.ElideMiddle, avail),
+        )
+
+        y += card_h + 14.0
+        btn_rect = QRectF(x, y, 150.0, 32.0)
+        hovered = self._hover_item_key == "open_logs:btn"
+        p.setPen(QPen(ps.BUTTON_BORDER, 1.0))
+        p.setBrush(ps.BUTTON_HOVER if hovered else ps.BUTTON_BG)
+        p.drawPath(ps.rounded(btn_rect.adjusted(0.5, 0.5, -0.5, -0.5), ps.R_BUTTON))
+        p.setFont(ps.font(11.5, QFont.Weight.Medium))
+        p.setPen(ps.TEXT if hovered else ps.TEXT_BTN)
         p.drawText(btn_rect, Qt.AlignmentFlag.AlignCenter, "Log klasörünü aç")
-
         self._content_hit_boxes.append((btn_rect, "open_logs", "btn"))
-
-
-# ==============================================================================
-# ENTRY POINT FUNCTION
-# ==============================================================================
 
 
 def open_settings(
     settings: dict,
     on_apply: Callable[[dict], None],
     parent: Optional[QWidget] = None,
+    *,
+    stats_provider: Optional[Callable[[], dict]] = None,
 ) -> SettingsWindow:
-    """Instantiate and return the SettingsWindow without writing to disk."""
-    win = SettingsWindow(settings=settings, on_apply=on_apply, parent=parent)
-    win.show()
+    """Pencereyi oluşturur ve ortak panel hareketiyle gösterir; diske yazmaz."""
+    win = SettingsWindow(
+        settings=settings,
+        on_apply=on_apply,
+        parent=parent,
+        stats_provider=stats_provider,
+    )
+    win.show_for()
     return win
