@@ -157,6 +157,7 @@ ACTION_BTN_GAP: float = 6.0
 ACTION_PILL_WIDTH: float = 74.0
 ACTION_PILL_WIDTH_BAT: float = 136.0   # gunes | hoparlor | pil
 ACTION_PILL_HEIGHT: float = 32.0
+DESKTOP_STRIP_W: float = 8.0   # sol alt köşedeki "masaüstünü göster" şeridi
 TRAY_ICON_SIZE: float = 26.0
 TRAY_ICON_GAP: float = 2.0
 
@@ -620,6 +621,9 @@ class SeritDock(QWidget):
         self._action_menu_item: Optional[dict] = None
         self._dock_action_menu: Optional[action_menu.ActionMenu] = None
         self._app_action_menu: Optional[action_menu.ActionMenu] = None
+        self.window_picker = None  # çok pencereli uygulama döşemesine tıklayınca (ilk kullanımda kurulur)
+        self._picker_exe: Optional[str] = None
+        self._raw_windows: List[Dict[str, Any]] = []
         self._pending_actions: Dict[str, Tuple[Callable[[], Any], Optional[Callable[[], None]]]] = {}
         try:
             if hasattr(action_menu, "ActionMenu"):
@@ -1410,6 +1414,7 @@ class SeritDock(QWidget):
     def update_windows(self) -> None:
         """Y6 Protected window update: skips layout and repaint if list is unchanged."""
         raw_wins = winapi.list_windows()
+        self._raw_windows = raw_wins  # pencere seçicisi başlık / küçültülmüş bilgisini buradan alır
         groups = winapi.group_by_app(raw_wins)
         tiles = pinned.merge_tiles(self.pins, groups)
 
@@ -1658,6 +1663,14 @@ class SeritDock(QWidget):
             # Tam genişlik koyu şerit (köşesiz) + üstte ince ayırıcı çizgi
             p.fillRect(QRectF(0, 0, self.width(), DOCK_HEIGHT), QColor(13, 15, 19))
             p.fillRect(QRectF(0, 0, self.width(), 1.0), QColor(255, 255, 255, 18))
+
+            # Sol alt köşe: masaüstünü göster / geri getir (ekran kenarında, fareyi köşeye atınca bulunur)
+            r_desk = QRectF(0.0, 1.0, DESKTOP_STRIP_W, DOCK_HEIGHT - 1.0)
+            self.hit_boxes.append((r_desk, "desktop", None))
+            if self._hover_key == "desktop":
+                alpha = 34 if self._pressed_key == "desktop" else 22
+                p.fillRect(r_desk, QColor(255, 255, 255, alpha))
+            p.fillRect(QRectF(DESKTOP_STRIP_W, 14.0, 1.0, DOCK_HEIGHT - 28.0), QColor(255, 255, 255, 20))
 
             sw = float(self.width())
             apps_x = round(sw / 2.0 - w_apps / 2.0) if w_apps > 0 else round(sw / 2.0)
@@ -2242,11 +2255,15 @@ class SeritDock(QWidget):
         super().wheelEvent(event)
 
     def handle_click(self, key: str, extra: Any, rect: QRectF, pos: Optional[QPointF] = None) -> None:
+        if key == "desktop":
+            if not self.preview_mode:
+                winapi.toggle_desktop()
+            return
         if key == "tray_icon" and extra:
             if not self.preview_mode:
                 trayicons.activate(extra, button="left")
         elif key.startswith("app_") and extra:
-            self.handle_tile_click(extra)
+            self.handle_tile_click(extra, rect)
         elif key in ("bright", "vol", "bat"):
             self._handle_pill_click(key, rect)
         elif key == "media":
@@ -2552,7 +2569,76 @@ class SeritDock(QWidget):
         except Exception as exc:
             sources.log_err("tray_end_toast", exc)
 
-    def handle_tile_click(self, tile: dict) -> None:
+    # ------------------------------------------------------- pencere seçicisi
+    def _picker_windows(self, hwnds: List[int]) -> List[Dict[str, Any]]:
+        by_hwnd = {int(w.get("hwnd") or 0): w for w in (getattr(self, "_raw_windows", None) or [])}
+        out: List[Dict[str, Any]] = []
+        for h in hwnds:
+            w = by_hwnd.get(int(h or 0))
+            if w is None:
+                continue
+            out.append({
+                "hwnd": int(h),
+                "title": str(w.get("title") or ""),
+                "minimized": bool(w.get("minimized")),
+                "active": bool(w.get("active")),
+            })
+        return out
+
+    def _ensure_window_picker(self):
+        if getattr(self, "window_picker", None) is None:
+            try:
+                import window_picker
+                self.window_picker = window_picker.WindowPicker()
+                self.window_picker.window_chosen.connect(self._on_picker_chosen)
+                self.window_picker.close_requested.connect(self._on_picker_close_requested)
+            except Exception as exc:
+                sources.log_err("window_picker_init", exc)
+                self.window_picker = None
+        return self.window_picker
+
+    def _open_window_picker(self, tile: dict, rect: QRectF) -> bool:
+        picker = self._ensure_window_picker()
+        if picker is None:
+            return False
+        exe = str(tile.get("exe") or "")
+        if picker.is_open() and getattr(self, "_picker_exe", None) == exe:
+            picker.hide_animated()
+            return True
+        if picker.recently_closed() and getattr(self, "_picker_exe", None) == exe:
+            return True  # aynı tık pencereyi kapattı; hemen yeniden açma
+        wins = self._picker_windows(list(tile.get("hwnds") or []))
+        if len(wins) < 2:
+            return False
+        self._picker_exe = exe
+        anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+        try:
+            picker.show_for(anchor_global, str(tile.get("name") or ""), self._icon_cache.get(exe), wins)
+            return True
+        except Exception as exc:
+            sources.log_err("window_picker_show", exc)
+            return False
+
+    def _on_picker_chosen(self, hwnd: int) -> None:
+        if not self.preview_mode:
+            winapi.activate_window(int(hwnd))
+        QTimer.singleShot(250, self.update_windows)
+
+    def _on_picker_close_requested(self, hwnd: int) -> None:
+        if not self.preview_mode:
+            winapi.close_window(int(hwnd))
+
+        def _refresh() -> None:
+            self.update_windows()
+            picker = getattr(self, "window_picker", None)
+            if picker is None or not picker.is_open():
+                return
+            tile = next((t for t in self.tiles if str(t.get("exe") or "") == getattr(self, "_picker_exe", None)), None)
+            picker.set_windows(self._picker_windows(list((tile or {}).get("hwnds") or [])))
+
+        QTimer.singleShot(600, _refresh)
+
+    def handle_tile_click(self, tile: dict, rect: Optional[QRectF] = None) -> None:
         if tile.get("running"):
             hwnds = tile.get("hwnds", [])
             if not hwnds:
@@ -2561,6 +2647,8 @@ class SeritDock(QWidget):
             if len(hwnds) == 1:
                 if not self.preview_mode:
                     winapi.activate_or_minimize(hwnds[0])
+            elif rect is not None and self._open_window_picker(tile, rect):
+                return
             else:
                 last_idx = self._app_cycle_indices.get(exe, -1)
                 next_idx = (last_idx + 1) % len(hwnds)
@@ -2575,6 +2663,8 @@ class SeritDock(QWidget):
 
     def get_tooltip_text(self, key: str, extra: Any) -> str:
         now_dt = dt.datetime.now(sources.LOCAL_TZ)
+        if key == "desktop":
+            return "Masaüstünü göster · tekrar tıkla: pencereler geri gelir"
         if key == "bat":
             return battery_panel.pill_tooltip(self._bat_info) or ""
         if key == "claude":
@@ -2693,7 +2783,7 @@ class SeritDock(QWidget):
                     self.settings["pinned"] = self.pins
                     save_settings(self.settings)
                 self.update_windows()
-            return [{"id": "unpin", "text": "Sabitlemeyi kaldır", "callback": do_unpin}]
+            actions: List[Dict[str, Any]] = [{"id": "unpin", "text": "Sabitlemeyi kaldır", "callback": do_unpin}]
         else:
             def do_pin():
                 self.pins = pinned.pin(self.pins, extra)
@@ -2701,7 +2791,42 @@ class SeritDock(QWidget):
                     self.settings["pinned"] = self.pins
                     save_settings(self.settings)
                 self.update_windows()
-            return [{"id": "pin", "text": "Sabitle", "callback": do_pin}]
+            actions = [{"id": "pin", "text": "Sabitle", "callback": do_pin}]
+
+        exe = str(extra.get("exe") or "")
+        if extra.get("running") and exe:
+            def do_end_task():
+                self.end_app_task(extra)
+
+            actions.append({"type": "separator"})
+            actions.append({
+                "id": "end_task",
+                "text": "Görevi sonlandır",
+                "icon": "stop",
+                "danger": True,
+                "confirm": True,
+                "callback": do_end_task,
+            })
+        return actions
+
+    def end_app_task(self, tile: dict) -> None:
+        """Uygulama döşemesi > Görevi sonlandır: tepsideki ile aynı güvenli yol (korumalı işlemler atlanır)."""
+        exe = str(tile.get("exe") or "")
+        if not exe or self.preview_mode:
+            return
+        item = {"name": str(tile.get("name") or Path(exe).stem), "exe": exe}
+        try:
+            import tray_actions
+
+            def _worker() -> None:
+                res = tray_actions.end_task(item)
+                self.dispatcher.end_task_done.emit(item, res)
+
+            sources.submit(f"app_end_task:{exe.lower()}", _worker)
+        except Exception as exc:
+            sources.log_err("app_end_task", exc)
+        QTimer.singleShot(900, self.update_windows)
+        QTimer.singleShot(3000, self.update_windows)
 
     def build_dock_menu_actions(self) -> List[Dict[str, Any]]:
         cards_cfg = dict(self.settings.get("cards") or {})
@@ -2832,6 +2957,13 @@ class SeritDock(QWidget):
                 if self._app_action_menu is None:
                     self._app_action_menu = action_menu.ActionMenu()
                 actions = self.build_app_tile_menu_actions(extra)
+                try:
+                    n_win = len(extra.get("hwnds") or [])
+                    sub = f"{n_win} pencere" if n_win else ("Sabitlenmiş" if extra.get("pinned") else "")
+                    icon = self._icon_cache.get(str(extra.get("exe") or extra.get("path") or ""))
+                    self._app_action_menu.set_header(str(extra.get("name") or ""), sub, icon)
+                except Exception as exc:
+                    sources.log_err("app_menu_header", exc)
                 self._app_action_menu.set_actions(actions)
                 self._app_action_menu.show_at(anchor_global)
                 return

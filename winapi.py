@@ -581,6 +581,65 @@ def set_round_region(
         return False
 
 
+VK_LWIN = 0x5B
+VK_D = 0x44
+WM_CLOSE = 0x0010
+user32.PostMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
+user32.PostMessageW.restype = w.BOOL
+
+
+def toggle_desktop() -> None:
+    """Masaüstünü göster / pencereleri geri getir (Win+D ile aynı; ikinci çağrı geri getirir)."""
+    try:
+        user32.keybd_event(VK_LWIN, 0, 0, 0)
+        try:
+            user32.keybd_event(VK_D, 0, 0, 0)
+            user32.keybd_event(VK_D, 0, KEYEVENTF_KEYUP, 0)
+        finally:
+            user32.keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, 0)  # Win tuşu asla basılı kalmasın
+    except Exception as e:
+        _log(f"toggle_desktop error: {e}")
+
+
+def activate_window(hwnd: int) -> None:
+    """Pencereyi öne getirir; zaten öndeyse küçültmez (pencere seçicisi için)."""
+    try:
+        target_hwnd = int(hwnd or 0)
+        if not target_hwnd or not user32.IsWindow(target_hwnd):
+            return
+        if bool(user32.IsIconic(target_hwnd)):
+            user32.ShowWindow(target_hwnd, SW_RESTORE)
+        fg_hwnd = int(user32.GetForegroundWindow() or 0)
+        if fg_hwnd == target_hwnd:
+            return
+        fg_tid = user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
+        cur_tid = kernel32.GetCurrentThreadId()
+        attached = False
+        if fg_tid and cur_tid and fg_tid != cur_tid:
+            attached = bool(user32.AttachThreadInput(cur_tid, fg_tid, True))
+        try:
+            user32.keybd_event(VK_MENU, 0, 0, 0)
+            user32.SetForegroundWindow(target_hwnd)
+            user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+        finally:
+            if attached:
+                user32.AttachThreadInput(cur_tid, fg_tid, False)
+    except Exception as e:
+        _log(f"activate_window error for hwnd {hwnd}: {e}")
+
+
+def close_window(hwnd: int) -> bool:
+    """Pencereye kibarca 'kapan' der (WM_CLOSE; uygulama kaydet sorusunu kendisi sorar)."""
+    try:
+        target_hwnd = int(hwnd or 0)
+        if not target_hwnd or not user32.IsWindow(target_hwnd):
+            return False
+        return bool(user32.PostMessageW(target_hwnd, WM_CLOSE, 0, 0))
+    except Exception as e:
+        _log(f"close_window error for hwnd {hwnd}: {e}")
+        return False
+
+
 def taskbar_autohide_get() -> bool:
     """Check if the Windows taskbar has auto-hide enabled."""
     try:
