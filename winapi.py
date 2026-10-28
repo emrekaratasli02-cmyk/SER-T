@@ -736,6 +736,17 @@ def covers_monitor(win: tuple, mon: tuple) -> bool:
     return wl <= ml and wt <= mt and wr >= mr and wb >= mb
 
 
+WS_CAPTION = 0x00C00000
+
+
+def is_fullscreen_window(win: tuple, mon: tuple, zoomed: bool, has_caption: bool) -> bool:
+    """Tam ekran kararı. Chrome/oyunlar tam ekranda da 'büyütülmüş' görünür ama başlık çubukları yoktur;
+    gerçek büyütülmüş pencerenin başlık çubuğu vardır (görev çubuğu gizliyken ekranı kaplasa bile)."""
+    if zoomed and has_caption:
+        return False
+    return covers_monitor(win, mon)
+
+
 def foreground_fullscreen(own_pid: Optional[int] = None, dock_hwnd: Optional[int] = None) -> bool:
     """Öndeki pencere bulunduğu monitörü tamamen kaplıyorsa (video, oyun, sunum) True.
 
@@ -755,8 +766,9 @@ def foreground_fullscreen(own_pid: Optional[int] = None, dock_hwnd: Optional[int
             _t_u32.GetWindowThreadProcessId(h, ctypes.byref(pid))
             if int(pid.value) == int(own_pid):
                 return False
-        if _t_u32.IsZoomed(h):
-            return False  # büyütülmüş pencere tam ekran değildir (görev çubuğu otomatik gizliyken de)
+        zoomed = bool(_t_u32.IsZoomed(h))
+        style = (GetWindowLongPtrW(h, -16) & 0xFFFFFFFF) if GetWindowLongPtrW is not None else WS_CAPTION
+        has_caption = (style & WS_CAPTION) == WS_CAPTION
         r = w.RECT()
         if not _t_u32.GetWindowRect(h, ctypes.byref(r)):
             return False
@@ -771,7 +783,8 @@ def foreground_fullscreen(own_pid: Optional[int] = None, dock_hwnd: Optional[int
         if not _t_u32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
             return False
         m = mi.rcMonitor
-        return covers_monitor((r.left, r.top, r.right, r.bottom), (m.left, m.top, m.right, m.bottom))
+        return is_fullscreen_window((r.left, r.top, r.right, r.bottom), (m.left, m.top, m.right, m.bottom),
+                                    zoomed, has_caption)
     except Exception as e:
         _log(f"foreground_fullscreen error: {e}")
         return False

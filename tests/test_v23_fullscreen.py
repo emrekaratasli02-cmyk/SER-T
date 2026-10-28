@@ -89,6 +89,18 @@ def test_covers_monitor_rules() -> None:
     assert not winapi.covers_monitor(("x", 0, 0, 0), mon)            # bozuk veri
 
 
+def test_zoomed_caption_rule() -> None:
+    mon = (0, 0, 1920, 1080)
+    # Chrome tam ekran: büyütülmüş bayrağı açık ama başlık çubuğu yok -> tam ekran
+    assert winapi.is_fullscreen_window((0, 0, 1920, 1080), mon, zoomed=True, has_caption=False)
+    # Görev çubuğu gizliyken büyütülmüş pencere ekranı kaplar ama başlık çubuğu var -> tam ekran değil
+    assert not winapi.is_fullscreen_window((-8, -8, 1928, 1088), mon, zoomed=True, has_caption=True)
+    # Kenarlıksız oyun / video oynatıcı
+    assert winapi.is_fullscreen_window((0, 0, 1920, 1080), mon, zoomed=False, has_caption=False)
+    # Normal pencere
+    assert not winapi.is_fullscreen_window((100, 100, 900, 700), mon, zoomed=False, has_caption=True)
+
+
 def test_real_call_is_safe_and_fast() -> None:
     """Gerçek çağrı yalnız okur; hata vermez ve bool döner (değeri ortama bağlı, kontrol edilmez)."""
     import time
