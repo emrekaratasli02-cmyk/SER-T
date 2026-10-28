@@ -122,11 +122,36 @@ def battery_state(b: Dict[str, Any]) -> str:
     return "battery"
 
 
+def on_ac_full(b: Dict[str, Any]) -> bool:
+    """Prizde, şarj olmuyor ve dolu (>=95): makine prizden çalışıyor, pil boşta (v24 bant göstergesi)."""
+    return battery_state(b) == "full"
+
+
+def health_parts(b: Dict[str, Any]) -> Optional[tuple]:
+    """Pil sağlığı satırı: (etiket, değer, sağ metin, değer rengi) ya da veri yoksa None.
+
+    Kaynak: Windows WMI tam dolum / tasarım kapasitesi (power_net). Uyarı rengi yalnız gerçekten zayıfta:
+    <%50 kırmızı, <%70 turuncu, aksi halde normal yazı (v24: %79 için turuncu fazla alarmlıydı).
+    """
+    full, design = b.get("full_mwh"), b.get("design_mwh")
+    if full is None or design is None:
+        return None
+    cap = b.get("capacity_pct")
+    try:
+        right = f"{float(full) / 1000:.1f} / {float(design) / 1000:.1f} Wh".replace(".", ",")
+    except (TypeError, ValueError):
+        return None
+    if cap is None:
+        return "Pil sağlığı ", "—", right, ps.TEXT_MUTED
+    col = ps.DANGER if cap < 50 else (ps.WARN if cap < 70 else ps.TEXT_BODY)
+    return "Pil sağlığı ", f"%{int(round(cap))}", right, col
+
+
 def state_label(b: Dict[str, Any]) -> str:
     st = battery_state(b)
     return {
         "charging": "Şarj oluyor",
-        "full": "Prizde, dolu",
+        "full": "Prizden çalışıyor",
         "plugged": "Prizde",
         "battery": "Pilde",
     }.get(st, "—")
@@ -155,7 +180,9 @@ def pill_tooltip(b: Dict[str, Any]) -> Optional[str]:
     st = battery_state(b)
     if st == "charging":
         return f"{pct} · Şarj oluyor"
-    if st in ("full", "plugged"):
+    if st == "full":
+        return f"{pct} · Prizden çalışıyor"
+    if st == "plugged":
         return f"{pct} · Prizde"
     rem = fmt_remaining(b.get("secs_left"))
     return f"{pct} · Pilde · {rem}" if rem else f"{pct} · Pilde"
@@ -678,9 +705,8 @@ class BatteryPanel(QWidget):
 
         # pil durumu kartı
         card_h = self._bat_card_height()
-        cap = b.get("capacity_pct")
-        right = f"Kapasite {ps.pct(cap)}" if cap is not None else None
-        inner = ps.draw_card(p, QRectF(x0, y, cw, card_h), "Pil durumu", right)
+        # v24: kapasite artık kart içindeki "Pil sağlığı" satırında (başlıkta tekrar yok)
+        inner = ps.draw_card(p, QRectF(x0, y, cw, card_h), "Pil durumu")
         self._paint_battery(p, inner)
         y += card_h + ps.GAP
 
@@ -855,9 +881,19 @@ class BatteryPanel(QWidget):
         y += 12.0 + 8.0
         # telemetri
         p.setFont(ps.f_small())
+        hp = health_parts(b)
+        if hp is not None:
+            lbl, val, right, val_col = hp
+            row = QRectF(r.left(), y, r.width(), 18.0)
+            p.setPen(ps.TEXT_MUTED)
+            p.drawText(row, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, lbl)
+            p.setPen(val_col)
+            p.drawText(row.adjusted(QFontMetricsF(ps.f_small()).horizontalAdvance(lbl), 0, 0, 0),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, val)
+            p.setPen(ps.TEXT_MUTED)
+            p.drawText(row, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, right)
+            y += 18.0
         lines = []
-        if b.get("full_mwh") is not None and b.get("design_mwh") is not None:
-            lines.append(f"Tam dolum: {fmt_mwh(b['full_mwh'])} / {fmt_mwh(b['design_mwh'])} mWh")
         w = fmt_watt(b.get("rate_w"))
         if w and battery_state(b) == "battery":
             lines.append(f"Deşarj: {w}")

@@ -1782,6 +1782,30 @@ def _paint_round_battery(p: QPainter, x: float, cy: float, percent: Optional[flo
     return body.width() + 3.0
 
 
+PLUG_GLYPH_W: float = 20.0  # v24 fiş simgesi (kablo 6 + gövde 9 + uçlar 5), yükseklik 12
+
+
+def _paint_plug(p: QPainter, x: float, cy: float, col: QColor, dpr: float) -> float:
+    """Yatay fiş, pil simgesiyle aynı ağırlıkta: kablo, 9x12 gövde (r2.6), iki uç 5.5x2. Genişliği döndürür."""
+    def snap(v: float) -> float:
+        return round(v * dpr) / dpr
+
+    body = QRectF(snap(x + 6.0), snap(cy - 6.0), snap(9.0), snap(12.0))
+    path = QPainterPath()
+    path.addRoundedRect(body, 2.6, 2.6)
+    for py in (cy - 4.0, cy + 2.0):
+        path.addRoundedRect(QRectF(body.right() - 0.5, snap(py), 5.5, 2.0), 0.9, 0.9)
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setPen(QPen(col, 1.9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    p.drawLine(QPointF(x + 1.0, snap(cy)), QPointF(body.left() + 0.5, snap(cy)))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(col)
+    p.drawPath(path)
+    p.restore()
+    return PLUG_GLYPH_W
+
+
 def draw_battery_pill(
     p: QPainter,
     rect: QRectF,
@@ -1789,15 +1813,33 @@ def draw_battery_pill(
     charging: bool,
     hovered: bool = False,
     active: bool = False,
+    on_ac_full: bool = False,
 ) -> QRectF:
     """Yalnız pil (v23 sade): zemin ve ışıma yok; renkli pil simgesi + yüzde doğrudan bantta.
 
     Renk: şarjda yeşil, <=%20 ve şarjda değilse kırmızı, aksi halde beyaz.
     Üzerine gelince / panel açıkken hafif gri hap zemin (tıklanabilir olduğu belli olsun).
+    on_ac_full (v24, Emre): prizde, şarj olmuyor ve dolu -> yeşil fiş + "Prizde" (pil boşta, makine prizden
+    çalışıyor); üzerine gelince / panel açıkken yine pil + yüzde görünür.
     Tüm kapsül tek isabet alanıdır; kapsül dikdörtgeni döndürülür.
     """
     col = battery_color(percent, charging)
     dpr = _device_ratio(p)
+
+    if on_ac_full and not hovered and not active:
+        f = theme.make_font(13.0, QFont.Weight.DemiBold)
+        fm = _get_fm(f)
+        txt, gap = "Prizde", 6.0
+        x = rect.center().x() - (PLUG_GLYPH_W + gap + _text_width(fm, txt)) / 2.0
+        cy = rect.center().y()
+        green = QColor(panel_style.OK)
+        _paint_plug(p, x, cy, green, dpr)
+        p.save()
+        p.setFont(f)
+        p.setPen(green)
+        p.drawText(QPointF(x + PLUG_GLYPH_W + gap, cy + fm.capHeight() / 2.0), txt)
+        p.restore()
+        return QRectF(rect)
 
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)

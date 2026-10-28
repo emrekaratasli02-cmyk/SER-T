@@ -794,6 +794,7 @@ class SeritDock(QWidget):
                 bool(self._bat_info.get("charging")) or bool(self._bat_info.get("plugged")),
                 hovered=(self._hover_key == "bat"),
                 active=bat_open,
+                on_ac_full=battery_panel.on_ac_full(self._bat_info),  # v24: fiş + "Prizde"
             )
             if register_hitboxes:
                 self.hit_boxes.append((r_bat, "bat", None))
