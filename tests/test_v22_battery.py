@@ -151,21 +151,25 @@ def test_pill_states_all_dprs():
 
 
 def test_pill_c_badge_tint():
-    """v22-C: kapsül zemini durum rengine boyanır (şarj yeşil, düşük kırmızı, pilde nötr)."""
-    def bg_at(percent, charging):
+    """v23 sade pil: zemin yok (bant rengi aynen kalır); üzerine gelince hafif gri zemin; simge renkli."""
+    def render(percent, charging, hovered=False):
         img = QImage(96, 48, QImage.Format.Format_ARGB32_Premultiplied)
         img.fill(QColor(13, 15, 19))
         p = QPainter(img)
-        dock_cards.draw_battery_pill(p, QRectF(8.0, 8.0, dock_cards.BATTERY_PILL_W, 32.0), percent, charging)
+        dock_cards.draw_battery_pill(p, QRectF(8.0, 8.0, dock_cards.BATTERY_PILL_W, 32.0), percent, charging,
+                                     hovered=hovered)
         p.end()
-        return img.pixelColor(14, 24)  # sol kenara yakın, içerik dışında kalan zemin
+        return img
 
-    green, red, neutral = bg_at(99.0, True), bg_at(15.0, False), bg_at(64.0, False)
-    assert green.green() > green.red() + 4 and green.green() > green.blue(), green.name()
-    assert red.red() > red.green() + 4 and red.red() > red.blue(), red.name()
-    # nötr: zemine (13,15,19) eklenen ton her kanalda eşit (renksiz beyaz), ama zemin yine hafif seçiliyor
-    d = (neutral.red() - 13, neutral.green() - 15, neutral.blue() - 19)
-    assert d[0] > 0 and max(d) - min(d) <= 2, (neutral.name(), d)
+    for pct, chg in ((99.0, True), (15.0, False), (64.0, False)):
+        bg = render(pct, chg).pixelColor(14, 24)  # sol kenara yakın, içerik dışı
+        assert (bg.red(), bg.green(), bg.blue()) == (13, 15, 19), (pct, chg, bg.name())
+        out = render(pct, chg).pixelColor(4, 24)  # kapsül dışı: ışıma yok
+        assert (out.red(), out.green(), out.blue()) == (13, 15, 19), (pct, chg, out.name())
+    hov = render(64.0, False, hovered=True).pixelColor(14, 24)
+    d = (hov.red() - 13, hov.green() - 15, hov.blue() - 19)
+    assert d[0] > 0 and max(d) - min(d) <= 2, (hov.name(), d)  # renksiz gri, hafif
+    assert _contains(render(99.0, True), GREEN), "şarjda simge yeşil olmalı"
 
 
 def test_pill_sheet():

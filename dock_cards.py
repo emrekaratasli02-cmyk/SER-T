@@ -1492,9 +1492,6 @@ BATTERY_TIP_H: float = 4.0
 BATTERY_FILL_INSET: float = 2.0
 BATTERY_GLYPH_W: float = 23.0   # v22-C yuvarlak pil gövdesi (kapsül)
 BATTERY_GLYPH_H: float = 11.5
-# Pil rozeti dış hale katmanları (taşma px, alfa); dıştan içe. En dış taşma 3 px:
-# solundaki ^ düğmesine 6 px, saate daha fazla boşluk var, komşuya değmez.
-BATTERY_HALO: Tuple[Tuple[float, int], ...] = ((3.0, 3), (1.9, 5), (0.9, 8))  # Emre: "biraz daha hafif"
 
 
 def pill_width(has_battery: bool) -> float:
@@ -1715,37 +1712,22 @@ def draw_battery_pill(
     hovered: bool = False,
     active: bool = False,
 ) -> QRectF:
-    """Yalnız pil kapsülü (v22-C renkli rozet): kenarsız hap zemin durum rengine boyanır.
+    """Yalnız pil (v23 sade): zemin ve ışıma yok; renkli pil simgesi + yüzde doğrudan bantta.
 
-    Şarjda yeşil, <=%20 ve şarjda değilse kırmızı, aksi halde nötr beyaz.
+    Renk: şarjda yeşil, <=%20 ve şarjda değilse kırmızı, aksi halde beyaz.
+    Üzerine gelince / panel açıkken hafif gri hap zemin (tıklanabilir olduğu belli olsun).
     Tüm kapsül tek isabet alanıdır; kapsül dikdörtgeni döndürülür.
     """
     col = battery_color(percent, charging)
-    neutral = col == QColor(255, 255, 255)
     dpr = _device_ratio(p)
 
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    # v22-B ışıma: kenarlar cihaz pikseline oturur (1.25 ölçekte bulanık kenar olmasın),
-    # dışa taşan 3 katmanlı yumuşak hale + net iç zemin. Nötr (pilde) durumda hale yarı güçte.
-    sr = _snap_rect(rect, dpr)
-    halo_scale = 0.5 if neutral else 1.0
-    p.setPen(Qt.PenStyle.NoPen)
-    for grow, a in BATTERY_HALO:
-        c = QColor(col)
-        c.setAlpha(int(round(a * halo_scale)))
-        p.setBrush(c)
-        rg = sr.adjusted(-grow, -grow, grow, grow)
-        p.drawPath(_rounded_path(rg, rg.height() / 2.0))
-    tint = QColor(col)
-    alpha = 14 if neutral else 36
-    if active:
-        alpha += 26
-    elif hovered:
-        alpha += 14
-    tint.setAlpha(alpha)
-    p.setBrush(tint)
-    p.drawPath(_rounded_path(sr, sr.height() / 2.0))
+    if hovered or active:
+        sr = _snap_rect(rect, dpr)  # kesirli ölçekte keskin kenar
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 34 if active else 22))
+        p.drawPath(_rounded_path(sr, sr.height() / 2.0))
 
     f = theme.make_font(13.0, QFont.Weight.DemiBold, tabular=True)
     fm = QFontMetricsF(f)
