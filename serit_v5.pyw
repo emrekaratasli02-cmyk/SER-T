@@ -634,6 +634,7 @@ class SeritDock(QWidget):
         self._dock_action_menu: Optional[action_menu.ActionMenu] = None
         self._app_action_menu: Optional[action_menu.ActionMenu] = None
         self.window_picker = None  # çok pencereli uygulama döşemesine tıklayınca (ilk kullanımda kurulur)
+        self._fs_hidden: bool = False  # tam ekran uygulama yüzünden gizli mi
         self._picker_exe: Optional[str] = None
         self._raw_windows: List[Dict[str, Any]] = []
         self._pending_actions: Dict[str, Tuple[Callable[[], Any], Optional[Callable[[], None]]]] = {}
@@ -1110,6 +1111,12 @@ class SeritDock(QWidget):
         self.win_timer.setInterval(1500)
         self.win_timer.timeout.connect(self.update_windows)
         self.win_timer.start()
+
+        # Tam ekran (video, oyun, sunum) öndeyken bar gizlenir; 1 s yoklama, tek çağrı ~0.1 ms
+        self.fs_timer = QTimer(self)
+        self.fs_timer.setInterval(1000)
+        self.fs_timer.timeout.connect(self._check_fullscreen)
+        self.fs_timer.start()
 
         # Media & Volume polling timer (3 s)
         self.media_timer = QTimer(self)
@@ -2685,6 +2692,23 @@ class SeritDock(QWidget):
             return False
         self._request_picker_thumbs(exe, [w["hwnd"] for w in wins if not w.get("minimized")])
         return True
+
+    # ------------------------------------------------------- tam ekranda gizlen
+    def _check_fullscreen(self) -> None:
+        """Öndeki pencere barın ekranını tamamen kaplıyorsa barı gizler, çıkınca geri getirir."""
+        if self.preview_mode or not bool(self.settings.get("hide_on_fullscreen", True)):
+            fs = False
+        else:
+            fs = bool(winapi.foreground_fullscreen(os.getpid(), int(self.winId() or 0)))
+        if fs == self._fs_hidden:
+            return
+        self._fs_hidden = fs
+        if fs:
+            self.bubble.hide()
+            self.hide()
+        else:
+            self.show()
+            self.update()
 
     def _request_picker_thumbs(self, exe: str, hwnds: List[int]) -> None:
         """Önizlemeleri arka planda alır (GUI donmaz); liste açılınca yerlerine oturur. Diske yazılmaz."""

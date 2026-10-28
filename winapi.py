@@ -698,6 +698,85 @@ def window_thumbnail(hwnd: int, max_w: int = 176, max_h: int = 110) -> Optional[
             pass
 
 
+# --- Tam ekran algılama ------------------------------------------------------
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", w.DWORD), ("rcMonitor", w.RECT), ("rcWork", w.RECT), ("dwFlags", w.DWORD)]
+
+
+_t_u32.GetForegroundWindow.argtypes = []
+_t_u32.GetForegroundWindow.restype = w.HWND
+_t_u32.MonitorFromWindow.argtypes = [w.HWND, w.DWORD]
+_t_u32.MonitorFromWindow.restype = w.HMONITOR
+_t_u32.GetMonitorInfoW.argtypes = [w.HMONITOR, ctypes.POINTER(_MONITORINFO)]
+_t_u32.GetMonitorInfoW.restype = w.BOOL
+_t_u32.GetClassNameW.argtypes = [w.HWND, w.LPWSTR, ctypes.c_int]
+_t_u32.GetClassNameW.restype = ctypes.c_int
+_t_u32.GetWindowThreadProcessId.argtypes = [w.HWND, w.LPDWORD]
+_t_u32.GetWindowThreadProcessId.restype = w.DWORD
+_t_u32.IsZoomed.argtypes = [w.HWND]
+_t_u32.IsZoomed.restype = w.BOOL
+MONITOR_DEFAULTTONEAREST = 2
+# Masaüstü, kabuk, Alt+Tab ve görev görünümü ekranı kaplasa da "tam ekran uygulama" sayılmaz.
+_SHELL_CLASSES = frozenset({
+    "Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd",
+    "XamlExplorerHostIslandWindow", "MultitaskingViewFrame", "ForegroundStaging",
+})
+
+
+def covers_monitor(win: tuple, mon: tuple) -> bool:
+    """(left, top, right, bottom) pencere monitörün tamamını kaplıyor mu? Büyütülmüş pencere kaplamaz
+    (alt kenarı bar/görev çubuğu alanında biter)."""
+    try:
+        wl, wt, wr, wb = (int(v) for v in win)
+        ml, mt, mr, mb = (int(v) for v in mon)
+    except Exception:
+        return False
+    if mr - ml < 200 or mb - mt < 200:
+        return False
+    return wl <= ml and wt <= mt and wr >= mr and wb >= mb
+
+
+def foreground_fullscreen(own_pid: Optional[int] = None, dock_hwnd: Optional[int] = None) -> bool:
+    """Öndeki pencere bulunduğu monitörü tamamen kaplıyorsa (video, oyun, sunum) True.
+
+    Masaüstü/kabuk/Alt+Tab, büyütülmüş pencereler ve Şerit'in kendi pencereleri hariç; dock_hwnd
+    verilirse yalnız barın bulunduğu monitördeki tam ekran sayılır. Hata olursa False (bar görünür kalır).
+    """
+    try:
+        h = _t_u32.GetForegroundWindow()
+        if not h:
+            return False
+        buf = ctypes.create_unicode_buffer(64)
+        _t_u32.GetClassNameW(h, buf, 64)
+        if buf.value in _SHELL_CLASSES:
+            return False
+        if own_pid is not None:
+            pid = w.DWORD(0)
+            _t_u32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+            if int(pid.value) == int(own_pid):
+                return False
+        if _t_u32.IsZoomed(h):
+            return False  # büyütülmüş pencere tam ekran değildir (görev çubuğu otomatik gizliyken de)
+        r = w.RECT()
+        if not _t_u32.GetWindowRect(h, ctypes.byref(r)):
+            return False
+        hmon = _t_u32.MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST)
+        if not hmon:
+            return False
+        if dock_hwnd:
+            if _t_u32.MonitorFromWindow(int(dock_hwnd), MONITOR_DEFAULTTONEAREST) != hmon:
+                return False  # tam ekran başka monitörde; barın ekranı etkilenmez
+        mi = _MONITORINFO()
+        mi.cbSize = ctypes.sizeof(_MONITORINFO)
+        if not _t_u32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+            return False
+        m = mi.rcMonitor
+        return covers_monitor((r.left, r.top, r.right, r.bottom), (m.left, m.top, m.right, m.bottom))
+    except Exception as e:
+        _log(f"foreground_fullscreen error: {e}")
+        return False
+
+
 def toggle_desktop() -> None:
     """Masaüstünü göster / pencereleri geri getir (Win+D ile aynı; ikinci çağrı geri getirir)."""
     try:
