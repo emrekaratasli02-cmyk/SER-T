@@ -262,13 +262,13 @@ def draw_claude_icon(p: QPainter, rect: QRectF) -> None:
 
 
 def draw_sys_icon(p: QPainter, rect: QRectF) -> None:
-    """Draw Direction C desktop monitor icon in Cyan accent (#64D2FF)."""
+    """Draw Direction C desktop monitor icon in ACCENT blue."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing, True)
     cx, cy = rect.center().x(), rect.center().y()
     scale = min(rect.width(), rect.height()) / 24.0
 
-    pen = QPen(QColor("#64D2FF"), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    pen = QPen(QColor(panel_style.ACCENT), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.NoBrush)
 
@@ -1774,7 +1774,7 @@ class PopoverV2(QWidget):
         stale = bool(content.get("stale"))
 
         chip = content.get("badge")
-        dot = ps.DANGER if err else (ps.WARN if stale else ps.OK)
+        dot = ps.DANGER if err else (ps.WARN if stale else None)
         hdr = ps.draw_header(
             p, QRectF(x0, y, cw, ps.HEADER_H), "Sistem", icon=draw_sys_icon,
             chip=chip, chip_dot=dot if chip else None, close_hover=self._close_hovered,
@@ -1865,7 +1865,7 @@ class PopoverV2(QWidget):
             p, QRectF(x0, y, cw, ps.HEADER_H), str(content.get("title") or "Hava Durumu"),
             icon=lambda pp, r, ic=icon_name: theme.draw_weather_icon(pp, r, ic),
             chip=content.get("badge"),
-            chip_dot=ps.DANGER if err else ps.OK,
+            chip_dot=ps.DANGER if err else None,
             close_hover=self._close_hovered,
         )
         if hdr.get("close") is not None:
@@ -1945,7 +1945,7 @@ class PopoverV2(QWidget):
             p, QRectF(x0, y, cw, ps.HEADER_H), str(content.get("title") or "Döviz"),
             icon=draw_fx_icon,
             chip=content.get("badge"),
-            chip_dot=ps.DANGER if err else ps.OK,
+            chip_dot=ps.DANGER if err else None,
             close_hover=self._close_hovered,
         )
         if hdr.get("close") is not None:

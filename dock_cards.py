@@ -73,15 +73,15 @@ COLOR_RAM_BAR: QColor = QColor(COLOR_ACCENT_BLUE)
 
 COLOR_TXT_PRIMARY: QColor = QColor(255, 255, 255, int(255 * 0.95))
 COLOR_TXT_MUTED: QColor = QColor(235, 238, 245, int(255 * 0.58))
-COLOR_TXT_FAINT: QColor = QColor(235, 238, 245, 102)           # sıfırlanma saati gibi ikincil bilgi
+COLOR_TXT_FAINT: QColor = QColor(235, 238, 245, 133)           # sıfırlanma saati (.52)
 COLOR_CAL_RED: QColor = QColor("#FF453A")
 
 TR_DAYS_SHORT = {0: "Pzt", 1: "Sal", 2: "Çar", 3: "Per", 4: "Cum", 5: "Cmt", 6: "Paz"}
 
-CLAUDE_CARD_WIDTH: float = 192.0
+CLAUDE_CARD_WIDTH: float = 204.0  # v24: %100 + Oturum + '23 sa 59 dk' sığsın (metin alanı 135)
 MEDIA_CARD_WIDTH: float = 314.0
 MEDIA_CARD_WIDTH_COMPACT: float = 240.0
-AG_CARD_WIDTH: float = 192.0
+AG_CARD_WIDTH: float = 204.0
 # Sol kanat sığmazsa Claude/Antigravity kartları bu genişliğe kadar daralır (sıfırlanma yazısı sığmazsa gizlenir)
 CONC_CARD_MIN_WIDTH: float = 132.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
@@ -329,13 +329,13 @@ def draw_concentric_text_rows(
 ) -> None:
     """Draw two text rows for concentric card (v24):
 
-    Each row: percentage 12.5 DemiBold tabular in ring colour, label 10.5 muted, reset time 9.5 faint
+    Each row: percentage 12 DemiBold tabular in ring colour, label 11 muted, reset time 10 faint
     right-aligned (only when it fits). All three share one baseline per row (different sizes centred
     vertically used to sit on different baselines).
     """
-    f_pct = theme.make_font(12.5, QFont.Weight.DemiBold, tabular=True)
-    f_lbl = theme.make_font(10.5, QFont.Weight.Normal)
-    f_rst = theme.make_font(9.5, QFont.Weight.Normal)
+    f_pct = theme.make_font(12.0, QFont.Weight.DemiBold, tabular=True)  # 13 olursa %100 satırında saat sığmaz
+    f_lbl = theme.make_font(11.0, QFont.Weight.Normal)
+    f_rst = theme.make_font(10.0, QFont.Weight.Normal)
 
     rx = text_rect.x()
     rw = text_rect.width()
@@ -572,7 +572,7 @@ def draw_claude_card(
     p.save()
     if has_err:
         p.setOpacity(0.65)
-        f_err = theme.make_font(10.5, QFont.Weight.Normal)
+        f_err = theme.make_font(11.0, QFont.Weight.Normal)
         p.setFont(f_err)
         p.setPen(COLOR_TXT_MUTED)
         p.drawText(QRectF(bx, rect.y(), bw, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, "Claude okunamadı")
@@ -660,7 +660,7 @@ def draw_media_card(
     artist = str(media_info.get("artist") or "web yayını")
     sub = f"{app_name} · {artist}"
 
-    f_lbl = theme.make_font(12.0, QFont.Weight.DemiBold)
+    f_lbl = theme.make_font(13.0, QFont.Weight.DemiBold)
     f_sub = theme.make_font(11.0, QFont.Weight.Normal)
 
     fm_l = _get_fm(f_lbl)
@@ -844,7 +844,7 @@ def format_mail_card_text(mail_data: Dict[str, Any]) -> Tuple[str, str, bool, bo
 def measure_mail_card_width(mail_data: Dict[str, Any]) -> float:
     """Measure dynamic width for mail card based on content (clamped 112..150 px)."""
     val_str, lbl_str, _err, _stale = format_mail_card_text(mail_data)
-    f_val = theme.make_font(14.5, QFont.Weight.DemiBold, tabular=True)
+    f_val = theme.make_font(13.0, QFont.Weight.DemiBold, tabular=True)
     f_lbl = theme.make_font(11.0, QFont.Weight.Normal)
     fm_v = QFontMetricsF(f_val)
     fm_l = QFontMetricsF(f_lbl)
@@ -879,7 +879,7 @@ def draw_mail_card(
     by = rect.y() + 8.0
     bw = max(20.0, rect.right() - 10.0 - bx)
 
-    f_val = theme.make_font(14.5, QFont.Weight.DemiBold, tabular=True)
+    f_val = theme.make_font(13.0, QFont.Weight.DemiBold, tabular=True)
     f_lbl = theme.make_font(11.0, QFont.Weight.Normal)
 
     p.save()
@@ -982,7 +982,7 @@ def draw_ag_card(
     p.save()
     if has_err:
         p.setOpacity(0.65)
-        f_err = theme.make_font(10.5, QFont.Weight.Normal)
+        f_err = theme.make_font(11.0, QFont.Weight.Normal)
         p.setFont(f_err)
         p.setPen(COLOR_TXT_MUTED)
         p.drawText(QRectF(bx, rect.y(), bw, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, "Antigravity okunamadı")
@@ -1168,7 +1168,7 @@ def draw_market_card(
         gold_d_str = "—"
 
     f_sub = theme.make_font(11.0, QFont.Weight.Normal)
-    f_lbl = theme.make_font(12.0, QFont.Weight.DemiBold, tabular=True)
+    f_lbl = theme.make_font(13.0, QFont.Weight.DemiBold, tabular=True)
     f_delta = theme.make_font(11.0, QFont.Weight.DemiBold, tabular=True)
 
     pad_x = 12.0
@@ -1290,7 +1290,7 @@ def measure_calendar_card_width(cal_data: Dict[str, Any]) -> float:
     """Measure dynamic width of Calendar card (min 96, max 170)."""
     when, line2, line3 = parse_calendar_event(cal_data)
     f_when = theme.make_font(11.0, QFont.Weight.Bold, letter_spacing=0.2)
-    f_lbl = theme.make_font(12.0, QFont.Weight.DemiBold)
+    f_lbl = theme.make_font(13.0, QFont.Weight.DemiBold)
     f_sub = theme.make_font(11.0, QFont.Weight.Normal)
 
     fm_w = QFontMetricsF(f_when)
@@ -1319,7 +1319,7 @@ def draw_calendar_card(
     when, line2, line3 = parse_calendar_event(cal_data)
 
     f_when = theme.make_font(11.0, QFont.Weight.Bold, letter_spacing=0.2)
-    f_lbl = theme.make_font(12.0, QFont.Weight.DemiBold)
+    f_lbl = theme.make_font(13.0, QFont.Weight.DemiBold)
     f_sub = theme.make_font(11.0, QFont.Weight.Normal)
 
     pad_x = 12.0
@@ -1685,7 +1685,7 @@ def _draw_battery_segment(p: QPainter, r: QRectF, percent: float, charging: bool
     dpr = _device_ratio(p)
     bw, bh, tw, _th, _inset = _battery_metrics(dpr)
     glyph_w = bw + tw
-    f = theme.make_font(12.0, QFont.Weight.DemiBold, tabular=True)
+    f = theme.make_font(13.0, QFont.Weight.DemiBold, tabular=True)
     fm = _get_fm(f)
     lvl = max(0.0, min(100.0, float(percent)))
     txt = f"%{int(round(lvl))}"

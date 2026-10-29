@@ -90,16 +90,16 @@ def test_two_accent_colours() -> None:
 
 
 def test_quota_rows_keep_reset_time_and_share_baseline() -> None:
-    """%100 + 'Claude' + '19 sa 27 dk' 123 px'e sığar (büyük yüzdeyle saat kaybolmasın)."""
+    """%100 + 'Claude' + '19 sa 27 dk' 204 px kartın 135 px metin alanına sığar (v24 adım 1: kart 192 -> 204)."""
     img = _canvas(200.0, 64.0)
     p = QPainter(img)
-    rect = QRectF(10.0, 14.0, 123.0, 36.0)
+    rect = QRectF(10.0, 14.0, 135.0, 36.0)
     dock_cards.draw_concentric_text_rows(
         p, rect, (100.0, dock_cards.COLOR_CLAUDE_CORAL, "Claude", "19 sa 27 dk"),
         (86.0, dock_cards.COLOR_GEMINI_BLUE, "Gemini", "21 sa 28 dk"))
     p.end()
     cols = _ink_cols(img)
-    assert cols and cols[-1] / DPR > 128.0, "sıfırlanma saati sağ kenara kadar çizilmeli"
+    assert cols and cols[-1] / DPR > 140.0, "sıfırlanma saati sağ kenara kadar çizilmeli"
 
     def ink_rows(x0: float, x1: float, y0: float, y1: float) -> tuple:
         ys = [y for y in range(int(y0 * DPR), int(y1 * DPR))
@@ -109,7 +109,7 @@ def test_quota_rows_keep_reset_time_and_share_baseline() -> None:
 
     # üst satır: yüzde rakamları ile sıfırlanma rakamları aynı taban çizgisinde (alt kenar ±1 cihaz px)
     _t1, b_pct = ink_rows(11.0, 34.0, 14.0, 32.0)
-    _t2, b_rst = ink_rows(118.0, 133.0, 14.0, 32.0)
+    _t2, b_rst = ink_rows(130.0, 145.0, 14.0, 32.0)
     assert abs(b_pct - b_rst) <= 1, (b_pct, b_rst)
     # iki satırlık blok kartın ortasında (32): üst satır büyük harf üstü .. alt satır tabanı
     top, _ = ink_rows(11.0, 34.0, 14.0, 32.0)

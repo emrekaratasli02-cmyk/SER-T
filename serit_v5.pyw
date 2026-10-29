@@ -141,10 +141,10 @@ CARD_HEIGHT: float = 52.0
 CARD_RADIUS: float = 13.0
 CARD_Y: float = 6.0
 GAP_MODULE: float = 6.0
-CLAUDE_CARD_WIDTH: float = 192.0
+CLAUDE_CARD_WIDTH: float = 204.0  # v24: %100 + Oturum + '23 sa 59 dk' sığsın (metin alanı 135)
 MEDIA_CARD_WIDTH: float = 314.0
 MEDIA_CARD_WIDTH_COMPACT: float = 240.0
-AG_CARD_WIDTH: float = 192.0
+AG_CARD_WIDTH: float = 204.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
@@ -1926,6 +1926,16 @@ class SeritDock(QWidget):
                              dock_cards.CARD_DIVIDER_H + 2.0)):
             dock_cards.draw_card_divider(p, x, cy)
 
+    def _left_open_sig(self) -> Tuple[bool, bool, bool, bool]:
+        """Sol kanat kartlarının paneli açık mı: (Claude, Mail, Antigravity, Sistem)."""
+        try:
+            return (bool(self.popover.is_open("claude")),
+                    bool(self.mail_panel is not None and self.mail_panel.is_open()),
+                    bool(self.quota_panel is not None and self.quota_panel.is_open()),
+                    bool(self.popover.is_open("sys")))
+        except Exception:
+            return (False, False, False, False)
+
     def _paint_content(self, p: QPainter, exposed_rect: Optional[Any] = None) -> None:
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.TextAntialiasing)
@@ -2072,10 +2082,28 @@ class SeritDock(QWidget):
                 max_shift = max(0.0, lw_start - 10.0)
                 center_shift = min(needed, max_shift)
 
-            final_apps_x = apps_x - center_shift
-            cur_lw_x = final_apps_x - (GAP_MODULE if (lw_w > 0 and w_apps > 0) else 0.0) - lw_w
+            # v24 A yerleşimi: bilgi kartları sola (x=14.0), uygulamalar tam ortaya (apps_x),
+            # medya kartı sağ kümenin soluna yaslanır ve sığdığı kadar genişler (maks 380 px).
+            # Sığmazsa A iptal olur ve eski (ortalanmış küme) mantığa düşer.
+            _use_A = True
+            _left_x = 14.0
+            _media_right = actions_left_x - 16.0 - ((cal_w + GAP_MODULE) if show_cal else 0.0)
+            _avail_media = _media_right - (apps_x + w_apps + 40.0)
+            if _left_x + lw_w > apps_x - 40.0 or (has_media and _avail_media < MEDIA_CARD_WIDTH_COMPACT):
+                _use_A = False
 
-            # Draw Left Wing: Claude, Mail, Antigravity
+            if _use_A:
+                final_apps_x = apps_x
+                cur_lw_x = _left_x
+                if has_media:
+                    media_w = max(MEDIA_CARD_WIDTH_COMPACT, min(380.0, _avail_media))
+            else:
+                final_apps_x = apps_x - center_shift
+                cur_lw_x = final_apps_x - (GAP_MODULE if (lw_w > 0 and w_apps > 0) else 0.0) - lw_w
+
+            # Left Wing panellerinin açık/kapalı durumu (açık kart altına zemin A)
+            open_claude, open_mail, open_ag, open_sys = self._left_open_sig()
+
             div_cy = card_y + card_h / 2.0
             prev_card: Optional[Tuple[str, QRectF]] = None
             for card_key, card_w in lw_cards:
@@ -2089,6 +2117,15 @@ class SeritDock(QWidget):
                 if intersects(r_card):
                     is_hover = (self._hover_key == card_key)
                     press_scale = self.press_tween.scale if (self._pressed_key == card_key) else 1.0
+                    card_open = (open_claude if card_key == "claude" else
+                                 (open_mail if card_key == "mail" else
+                                  (open_ag if card_key == "ag" else open_sys)))
+
+                    if card_open and not is_hover:  # açık panel kartı: kalıcı hafif zemin (A)
+                        p.save()
+                        p.setRenderHint(QPainter.Antialiasing)
+                        p.fillPath(theme.rounded_path(r_card, CARD_RADIUS), QColor(255, 255, 255, 30))
+                        p.restore()
 
                     if card_key == "claude":
                         dock_cards.draw_claude_card(p, r_card, claude_entry, hover=is_hover, press_scale=press_scale)
@@ -2114,7 +2151,7 @@ class SeritDock(QWidget):
                 cur_lw_x += card_w + GAP_MODULE
 
             r_apps = QRectF(final_apps_x, card_y, w_apps, card_h)
-            if prev_card is not None and w_apps > 0:  # sol kanat | uygulamalar
+            if prev_card is not None and w_apps > 0 and not _use_A:  # sol kanat | uygulamalar (eski düzen)
                 self._draw_divider(p, self._divider_x(prev_card[0], prev_card[1], "apps", r_apps),
                                    div_cy, intersects)
 
@@ -2135,18 +2172,18 @@ class SeritDock(QWidget):
                 if is_full:
                     self.hit_boxes.append((r_slot, app_key, t))
 
-                scale, lift_y = scales_lifts[i] if i < len(scales_lifts) else (1.0, 0.0)
-                r_draw = QRectF(r_slot.x(), r_slot.y() + lift_y, r_slot.width(), r_slot.height())
-                if intersects(r_slot) or intersects(r_draw):
-                    is_h = (hover_idx == i)
-                    hover_t = 1.0 if is_h else 0.0
+                if intersects(r_slot):
+                    scale, lift = scales_lifts[i]
+                    p_y = tile_y - lift
+                    r_draw = QRectF(tile_x, p_y, pinned.TILE_WIDTH, pinned.TILE_HEIGHT)
+                    pix = self._icon_cache.get(t.get("exe") or t.get("path") or "")
+                    hover_t = 1.0 if (self._hover_app_idx == i) else 0.0
                     press_scale = self.press_tween.scale if (self._pressed_key == app_key) else 1.0
 
-                    pix = self.get_app_icon(t.get("exe", ""))
                     pinned.draw_tile(
-                        p=p,
-                        rect=r_draw,
-                        tile=t,
+                        p,
+                        r_draw,
+                        t,
                         pixmap=pix,
                         hover_t=hover_t,
                         press_scale=press_scale * scale,
@@ -2156,6 +2193,10 @@ class SeritDock(QWidget):
 
             # Draw Right Wing: Media, Calendar
             cur_rw_x = final_apps_x + w_apps + (GAP_MODULE if (w_apps > 0) else 0.0)
+            if _use_A and has_media:
+                cur_rw_x = _media_right - media_w
+            elif _use_A and show_cal:
+                cur_rw_x = actions_left_x - 16.0 - cal_w
             if has_media:
                 r_media = QRectF(cur_rw_x, card_y, media_w, card_h)
                 self._media_rect = r_media
@@ -2185,6 +2226,12 @@ class SeritDock(QWidget):
                     cal_press = self.press_tween.scale if (self._pressed_key == "cal") else 1.0
                     dock_cards.draw_calendar_card(p, r_cal, cal_data, hover=cal_hover, press_scale=cal_press)
                 cur_rw_x += cal_w + GAP_MODULE
+
+            if _use_A and (has_media or show_cal):  # A: sağ kanat | sağ küme ayracı
+                _last_r = r_cal if show_cal else r_media
+                _inset = self._CONTENT_INSET["cal" if show_cal else "media"][1]
+                self._draw_divider(p, ((_last_r.right() - _inset) + (actions_left_x + 9.0)) / 2.0,
+                                   div_cy, intersects)
 
             # Right end: Clock V1 at the far right edge, Action buttons to its left
             # Right edge padding: 14.0px (matching action buttons padding previously and left edge balance)
@@ -2962,6 +3009,10 @@ class SeritDock(QWidget):
     # ------------------------------------------------------- tam ekranda gizlen
     def _check_fullscreen(self) -> None:
         """Öndeki pencere barın ekranını tamamen kaplıyorsa barı gizler, çıkınca geri getirir."""
+        open_sig = self._left_open_sig()  # panel kapanınca açık-kart zemini kalmasın (saniyede bir, ucuz)
+        if open_sig != getattr(self, "_last_open_sig", None):
+            self._last_open_sig = open_sig
+            self.update()
         if self.preview_mode or not bool(self.settings.get("hide_on_fullscreen", True)):
             fs = False
         else:

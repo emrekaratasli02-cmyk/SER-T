@@ -46,8 +46,8 @@ TEXT_CHIP = QColor(255, 255, 255, 166)         # .65
 TEXT_BTN = QColor(255, 255, 255, 191)          # .75
 TEXT_MUTED = QColor(255, 255, 255, 128)        # .50
 TEXT_CLOSE = QColor(255, 255, 255, 115)        # .45
-TEXT_LABEL = QColor(255, 255, 255, 107)        # .42 (BÜYÜK HARF bölüm etiketi / alt kaynak)
-TEXT_META = QColor(255, 255, 255, 102)         # .40
+TEXT_LABEL = QColor(255, 255, 255, 122)        # .48 (BÜYÜK HARF bölüm etiketi / alt kaynak)
+TEXT_META = QColor(255, 255, 255, 122)         # .48
 
 # --- Anlamlı renkler ------------------------------------------------------------------------
 # v24 (Emre: bar ile aynı iki renk): Claude turuncusu + tek mavi; turuncu/kırmızı yalnız uyarı, yeşil yalnız

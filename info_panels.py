@@ -1063,7 +1063,7 @@ class QuotaPanel(_BasePopover):
         self._rects = {}
 
         chip = "Okunamadı" if self._has_error else "Canlı kota"
-        dot = ps.DANGER if self._has_error else ps.OK
+        dot = ps.DANGER if self._has_error else None
         hdr = ps.draw_header(
             p, QRectF(ps.PAD, ps.PAD, w - 2 * ps.PAD, ps.HEADER_H),
             "Antigravity", icon=self._draw_ag_icon,
