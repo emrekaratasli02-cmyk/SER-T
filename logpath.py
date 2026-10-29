@@ -71,6 +71,18 @@ def get_claude_cache_path() -> Path:
     return DEFAULT_CACHE_DIR / "claude_cache.json"
 
 
+def get_cache_file(name: str) -> Path:
+    """Return path to a small cache file (e.g. ag_argon_cache.json) with the same test/dev redirects."""
+    env_dir = os.environ.get("SERIT_CACHE_DIR")
+    if env_dir:
+        return Path(env_dir) / name
+    if is_running_under_test():
+        return Path(tempfile.gettempdir()) / f"serit-test-{name}"
+    if not is_production_process():
+        return Path(tempfile.gettempdir()) / f"serit-dev-{name}"
+    return DEFAULT_CACHE_DIR / name
+
+
 LOG_PATH: Path = get_log_path()
 CLAUDE_CACHE: Path = get_claude_cache_path()
 CLAUDE_CACHE_PATH: Path = CLAUDE_CACHE

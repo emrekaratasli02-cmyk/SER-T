@@ -205,7 +205,7 @@ def quota_identity_color(label: Any) -> QColor:
         return ps.CLAUDE
     if "gpt" in s or "oss" in s:
         return QColor(0xD5, 0xD9, 0xE0)
-    if "gemini" in s:
+    if "gemini" in s or "argon" in s:  # v24: Argon = Gemini 4 Argon
         return ps.ACCENT
     return ps.TEXT_BODY
 

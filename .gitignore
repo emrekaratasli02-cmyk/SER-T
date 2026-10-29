@@ -4,6 +4,8 @@ __pycache__/
 *.lock
 settings.json
 claude_cache.json
+ag_argon_cache.json
+ag_argon_cache.json.tmp
 alerts_state.json
 settings.json.bak
 settings.json.tmp

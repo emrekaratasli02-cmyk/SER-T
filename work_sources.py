@@ -608,14 +608,46 @@ def fetch_tasks(
 # ---------------------------------------------------------------------------
 # 3) fetch_antigravity
 # ---------------------------------------------------------------------------
+def _argon_group() -> Optional[Dict[str, Any]]:
+    """Argon grubunu (ag_local) fetch_antigravity grup biçimine çevirir; okuma yoksa None."""
+    try:
+        import ag_local
+        g = ag_local.fetch_argon()
+    except Exception as exc:
+        _log_err("fetch_argon", exc)
+        return None
+    if not g:
+        return None
+    reset_at_iso = None
+    reset_tr_str = None
+    if g.get("reset_at"):
+        try:
+            reset_dt = dt.datetime.fromisoformat(str(g["reset_at"]).replace("Z", "+00:00"))
+            reset_at_iso = reset_dt.astimezone().isoformat()
+            reset_tr_str = tr_reset_time(reset_dt)
+        except Exception:
+            reset_at_iso = None
+    used = g.get("used")
+    return {
+        "label": str(g.get("label") or "Argon"),
+        "used": None if used is None else max(0.0, min(100.0, round(float(used), 1))),
+        "reset_at": reset_at_iso,
+        "reset_tr": reset_tr_str,
+        "stale": bool(g.get("stale")),
+    }
+
+
 def fetch_antigravity(
     hermes_py: Optional[Union[str, Path]] = None,
     tool_script: Optional[Union[str, Path]] = None,
     timeout: int = 40,
+    local_argon: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Fetch Antigravity model quotas and reset windows.
 
-    Runs tools/ag_quota.py with Hermes Python.
+    Runs tools/ag_quota.py with Hermes Python. v24: Gemini 4 Argon is not in the account model list,
+    so its quota is read from the running Antigravity app (ag_local) and appended as an "Argon" group.
+    local_argon=None -> on, except under tests (keeps fixtures deterministic).
     """
     try:
         h_py = str(hermes_py or HERMES_PYTHON)
@@ -680,6 +712,17 @@ def fetch_antigravity(
                 "reset_at": reset_at_iso,
                 "reset_tr": reset_tr_str,
             })
+
+        if local_argon is None:
+            try:
+                import logpath
+                local_argon = not logpath.is_running_under_test()
+            except Exception:
+                local_argon = False
+        if local_argon:
+            argon = _argon_group()
+            if argon:
+                groups.append(argon)
 
         now_local = dt.datetime.now().astimezone().isoformat()
         return {
