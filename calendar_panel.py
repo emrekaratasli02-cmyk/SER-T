@@ -1012,11 +1012,14 @@ class CalendarPanel(QWidget):
             self._display_row(ev, self.selected_date, sel_label) for ev in sel_events[:4]
         ]
 
-        # 3. Upcoming events (distinct days from today / selected date, max 4)
+        # 3. Upcoming events (from today / selected date, max 4). v24: the selected day is already listed in
+        # its own card above, so "Yaklaşan" skips it (it used to repeat e.g. a holiday in both cards).
         ref_start_date = min(self.today, self.selected_date)
         upcoming_items: List[Dict[str, Any]] = []
         for i in range(45):
             f_date = ref_start_date + dt.timedelta(days=i)
+            if f_date == self.selected_date:
+                continue
             matches = self._match_events_for_date(f_date, events_list, claude_markers)
             matches.sort(key=lambda ev: cat_prio.get(str(ev.get("category") or CAT_GOOGLE), 9))
             for ev in matches:
@@ -1180,7 +1183,7 @@ class CalendarPanel(QWidget):
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(10, 132, 255, 38))
+        p.setBrush(QColor(110, 168, 254, 38))
         p.drawPath(panel_style.rounded(r, panel_style.R_ICON_BOX))
         draw_calendar_icon(p, r.adjusted(2.0, 2.0, -2.0, -2.0), self.today.day)
         p.restore()
@@ -1376,7 +1379,7 @@ class CalendarPanel(QWidget):
             elif is_sel:
                 p.save()
                 p.setPen(QPen(panel_style.ACCENT, 1.2))
-                p.setBrush(QColor(10, 132, 255, 38))
+                p.setBrush(QColor(110, 168, 254, 38))
                 p.drawPath(panel_style.rounded(
                     QRectF(c_rect.left() + 2.0, c_rect.top() + 1.0,
                            c_rect.width() - 4.0, c_rect.height() - 2.0), 7.0))

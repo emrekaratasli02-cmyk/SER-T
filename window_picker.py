@@ -39,7 +39,7 @@ EMPTY_TITLE = "(adsız pencere)"
 THUMB_W = 80.0
 THUMB_H = 50.0
 LIST_GAP = 10.0          # başlık ile liste arası
-ACTIVE_BG = QColor(10, 132, 255, 34)
+ACTIVE_BG = QColor(110, 168, 254, 34)
 _SEPS = (" - ", " — ", " – ", " | ")
 
 
@@ -532,7 +532,7 @@ class WindowPicker(QWidget):
                 p.setBrush(QColor(255, 255, 255, 16) if active else (ps.BUTTON_HOVER if hovered else ps.BUTTON_BG))
                 p.drawPath(ps.rounded(bg, 10.0))
             if focused and not hovered:
-                p.setPen(QPen(QColor(10, 132, 255, 150), 1.2))
+                p.setPen(QPen(QColor(110, 168, 254, 150), 1.2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawPath(ps.rounded(bg.adjusted(0.6, 0.6, -0.6, -0.6), 9.5))
 

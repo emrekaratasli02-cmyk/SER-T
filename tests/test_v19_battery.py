@@ -73,11 +73,12 @@ def test_color_rule():
     assert c(20, False).name() == "#ff453a" and c(21, False).name() == "#ffffff"
     assert c(35, False).name() == "#ffffff" and c(36, False).name() == "#ffffff"
     assert c(None, False).name() == "#ffffff"
-    # Panel içi pil çubuğu kuralı değişmedi.
+    # v24: panel içi pil çubuğu bant ile aynı kural (prizde/şarjda yeşil, normalde beyaz, düşükte uyarı).
     assert battery_panel.level_color(15, False) == ps.DANGER
     assert battery_panel.level_color(30, False) == ps.WARN
-    assert battery_panel.level_color(30, True) == ps.ACCENT
-    assert battery_panel.level_color(80, False) == ps.OK
+    assert battery_panel.level_color(30, True) == ps.OK
+    assert battery_panel.level_color(80, False, plugged=True) == ps.OK
+    assert battery_panel.level_color(80, False) == ps.TEXT_BODY
 
 
 def test_dock_layout():

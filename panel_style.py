@@ -50,14 +50,16 @@ TEXT_LABEL = QColor(255, 255, 255, 107)        # .42 (BÜYÜK HARF bölüm etike
 TEXT_META = QColor(255, 255, 255, 102)         # .40
 
 # --- Anlamlı renkler ------------------------------------------------------------------------
+# v24 (Emre: bar ile aynı iki renk): Claude turuncusu + tek mavi; turuncu/kırmızı yalnız uyarı, yeşil yalnız
+# prizde/şarjda. Eski mor (#BF5AF2), açık mavi (#64D2FF), yeşil disk (#30D158) ve #0A84FF kalktı.
 CLAUDE = QColor("#D97757")
-CPU = QColor("#64D2FF")
-RAM = QColor("#BF5AF2")
-DISK = QColor("#30D158")
-BRIGHT = QColor("#FFB020")
+ACCENT = QColor("#6EA8FE")
+CPU = QColor(ACCENT)
+RAM = QColor(ACCENT)
+DISK = QColor(ACCENT)
+BRIGHT = QColor(255, 255, 255, 217)   # güneş simgesi: sarı yerine sakin beyaz
 BRIGHT_FILL = QColor(255, 255, 255)
-SOUND = QColor("#0A84FF")
-ACCENT = QColor("#0A84FF")
+SOUND = QColor(ACCENT)
 WARN = QColor("#FF9F0A")
 DANGER = QColor("#FF453A")
 OK = QColor("#30D158")
@@ -564,7 +566,7 @@ def draw_slider(
     muted: bool = False,
     compact: bool = False,
 ) -> dict[str, QRectF]:
-    """compact=True: uygulama satırı için 10 px iz + 14 px tutaç (yine sürüklenebilir görünür).
+    """compact=True: uygulama satırı için 6 px iz + 12 px tutaç (v24: dört dolu çubuk paneli ağırlaştırıyordu).
 
     Lumabar yatay kalın hap kaydırıcı: üstte etiket + Türkçe %, altta 18 px hap iz + 20 px beyaz tutaç.
     value None ise dolum ve tutaç çizilmez, sağda '—' yazar.
@@ -572,8 +574,8 @@ def draw_slider(
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-    track_h = min(10.0 if compact else SLIDER_TRACK_H, max(6.0, rect.height() * 0.48))
-    knob_sz = min(14.0 if compact else SLIDER_KNOB_SZ, rect.height())
+    track_h = min(6.0 if compact else SLIDER_TRACK_H, max(6.0, rect.height() * 0.48))
+    knob_sz = min(12.0 if compact else SLIDER_KNOB_SZ, rect.height())
     track_y = rect.bottom() - track_h - max(0.0, (knob_sz - track_h) / 2.0)
     track_rect = QRectF(rect.left(), track_y, rect.width(), track_h)
 
@@ -734,7 +736,7 @@ def draw_preset_pills(
     active_index: int | None = None,
     hover_index: int | None = None,
 ) -> list[QRectF]:
-    """Eşit genişlikte 28 px yüksekliğinde önayar hapları (%25, %50, %75, %100). Aktif: #0A84FF."""
+    """Eşit genişlikte 28 px yüksekliğinde önayar hapları (%25, %50, %75, %100). Aktif: ACCENT."""
     n = len(labels)
     if n == 0:
         return []
@@ -799,7 +801,7 @@ def draw_toggle_button(
     is_busy = (state == "busy")
 
     if is_on:
-        bg = QColor(10, 132, 255, 52 if hover_part == "main" else 38)  # rgba(10,132,255,.15)
+        bg = QColor(110, 168, 254, 52 if hover_part == "main" else 38)  # rgba(10,132,255,.15)
         border = ACCENT
     elif is_unavail:
         bg = QColor(255, 255, 255, 8)
@@ -827,7 +829,7 @@ def draw_toggle_button(
             p.restore()
 
         # İnce dikey ayırıcı
-        div_col = QColor(10, 132, 255, 90) if is_on else QColor(255, 255, 255, 18)
+        div_col = QColor(110, 168, 254, 90) if is_on else QColor(255, 255, 255, 18)
         p.setPen(QPen(div_col, 1.0))
         p.drawLine(
             QPointF(chev_rect.left(), rect.top() + 7.0),
@@ -904,7 +906,7 @@ def draw_toggle_button(
 _BADGE_STYLES: dict[str, tuple[QColor, QColor, QColor]] = {
     "danger": (QColor(255, 69, 58, 51), QColor(255, 69, 58, 89), DANGER),
     "ok": (QColor(48, 209, 88, 46), QColor(48, 209, 88, 77), OK),
-    "info": (QColor(10, 132, 255, 51), QColor(10, 132, 255, 89), ACCENT),
+    "info": (QColor(110, 168, 254, 51), QColor(110, 168, 254, 89), ACCENT),
     "muted": (QColor(255, 255, 255, 18), QColor(255, 255, 255, 20), TEXT_CHIP),
 }
 

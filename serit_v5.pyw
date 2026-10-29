@@ -3332,7 +3332,19 @@ class SeritDock(QWidget):
             def do_end_task():
                 self.end_app_task(extra)
 
-            actions.append({"type": "separator"})
+            # v24 (Emre): Windows görev çubuğundaki gibi yeni pencere + pencereleri kapat
+            hwnds = [int(h) for h in (extra.get("hwnds") or []) if h]
+            launch_path = str(extra.get("path") or exe)
+            if launch_path and Path(launch_path).is_file():
+                actions.insert(0, {"id": "new_window", "text": "Yeni pencere", "icon": "open",
+                                   "callback": lambda: self.app_new_window(launch_path)})
+            if hwnds:
+                close_txt = f"Tüm pencereleri kapat ({len(hwnds)})" if len(hwnds) > 1 else "Pencereyi kapat"
+                actions.append({"type": "separator"})
+                actions.append({"id": "close_all", "text": close_txt,
+                                "callback": lambda: self.app_close_windows(hwnds)})
+            else:
+                actions.append({"type": "separator"})
             actions.append({
                 "id": "end_task",
                 "text": "Görevi sonlandır",
@@ -3342,6 +3354,29 @@ class SeritDock(QWidget):
                 "callback": do_end_task,
             })
         return actions
+
+    def app_new_window(self, path: str) -> None:
+        """Uygulama döşemesi > Yeni pencere: exe'yi yeniden başlatır (Chrome vb. yeni pencere açar)."""
+        if not path or self.preview_mode:
+            return
+        try:
+            if not pinned.launch(path):
+                sources.log_err("app_new_window", RuntimeError("başlatılamadı"))
+        except Exception as exc:
+            sources.log_err("app_new_window", exc)
+        QTimer.singleShot(900, self.update_windows)
+
+    def app_close_windows(self, hwnds: List[int]) -> None:
+        """Uygulama döşemesi > Tüm pencereleri kapat: her pencereye kibar WM_CLOSE (kaydet sorusunu uygulama sorar)."""
+        if self.preview_mode:
+            return
+        for h in hwnds:
+            try:
+                winapi.close_window(int(h))
+            except Exception as exc:
+                sources.log_err("app_close_windows", exc)
+        QTimer.singleShot(700, self.update_windows)
+        QTimer.singleShot(2500, self.update_windows)
 
     def end_app_task(self, tile: dict) -> None:
         """Uygulama döşemesi > Görevi sonlandır: tepsideki ile aynı güvenli yol (korumalı işlemler atlanır)."""
@@ -3363,44 +3398,8 @@ class SeritDock(QWidget):
         QTimer.singleShot(3000, self.update_windows)
 
     def build_dock_menu_actions(self) -> List[Dict[str, Any]]:
-        cards_cfg = dict(self.settings.get("cards") or {})
-
-        def on_toggle_cal():
-            cfg = dict(self.settings.get("cards") or {})
-            cfg["cal"] = not bool(cfg.get("cal", True))
-            self.settings["cards"] = cfg
-            save_settings(self.settings)
-            self.compute_layout_and_resize()
-            self.place_dock()
-            self.update()
-
-        def on_toggle_mail():
-            cfg = dict(self.settings.get("cards") or {})
-            cfg["mail"] = not bool(cfg.get("mail", True))
-            self.settings["cards"] = cfg
-            save_settings(self.settings)
-            self.compute_layout_and_resize()
-            self.place_dock()
-            self.update()
-
-        def on_toggle_ag():
-            cfg = dict(self.settings.get("cards") or {})
-            cfg["ag"] = not bool(cfg.get("ag", True))
-            self.settings["cards"] = cfg
-            save_settings(self.settings)
-            self.compute_layout_and_resize()
-            self.place_dock()
-            self.update()
-
-        def on_toggle_sys():
-            cfg = dict(self.settings.get("cards") or {})
-            cfg["sys"] = not bool(cfg.get("sys", False))
-            self.settings["cards"] = cfg
-            save_settings(self.settings)
-            self.compute_layout_and_resize()
-            self.place_dock()
-            self.update()
-
+        # v24 (Emre): 12 seçenek -> 7. Kart aç/kapat satırları Ayarlar > Kartlar'da; "Konumu sıfırla" kalktı
+        # (tam genişlik şeritte işe yaramıyordu; action_reset_pos yöntemi duruyor).
         def on_toggle_alerts():
             checked = not bool(self.settings.get("alerts_enabled", True))
             self.settings["alerts_enabled"] = checked
@@ -3409,7 +3408,7 @@ class SeritDock(QWidget):
             save_settings(self.settings)
 
         return [
-            {"id": "settings", "text": "Ayarlar…", "callback": self.action_open_settings},
+            {"id": "settings", "text": "Ayarlar…", "icon": "settings", "callback": self.action_open_settings},
             {"id": "refresh", "text": "Yenile", "callback": self.action_refresh},
             {"type": "separator"},
             {
@@ -3428,31 +3427,6 @@ class SeritDock(QWidget):
             },
             {"type": "separator"},
             {
-                "id": "toggle_cal",
-                "text": "Takvim kartı",
-                "checked": bool(cards_cfg.get("cal", True)),
-                "callback": on_toggle_cal,
-            },
-            {
-                "id": "toggle_mail",
-                "text": "Mail kartı",
-                "checked": bool(cards_cfg.get("mail", True)),
-                "callback": on_toggle_mail,
-            },
-            {
-                "id": "toggle_ag",
-                "text": "Antigravity kartı",
-                "checked": bool(cards_cfg.get("ag", True)),
-                "callback": on_toggle_ag,
-            },
-            {
-                "id": "toggle_sys",
-                "text": "Sistem kartı",
-                "checked": bool(cards_cfg.get("sys", False)),
-                "callback": on_toggle_sys,
-            },
-            {"type": "separator"},
-            {
                 "id": "toggle_alerts",
                 "text": "Uyarılar",
                 "checked": bool(self.settings.get("alerts_enabled", True)),
@@ -3464,7 +3438,6 @@ class SeritDock(QWidget):
                 "checked": bool(self.settings.get("hide_taskbar", False)),
                 "callback": self.action_toggle_taskbar,
             },
-            {"id": "reset_pos", "text": "Konumu sıfırla", "callback": self.action_reset_pos},
             {"type": "separator"},
             {
                 "id": "quit",

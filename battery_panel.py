@@ -66,17 +66,17 @@ def _is_laptop(mon: Dict[str, Any]) -> bool:
     return str(mon.get("kind", "")) == "wmi" or "dizüstü" in name or "laptop" in name
 
 
-def level_color(percent: Optional[float], charging: bool) -> QColor:
-    """Pil renk kuralı: şarjda ACCENT, <=20 DANGER, 21-35 WARN, aksi halde beyaz/OK."""
-    if charging:
-        return ps.ACCENT
+def level_color(percent: Optional[float], charging: bool, plugged: bool = False) -> QColor:
+    """Pil renk kuralı (v24, bant ile aynı): prizde/şarjda OK yeşili, <=20 DANGER, 21-35 WARN, aksi halde beyaz."""
+    if charging or plugged:
+        return ps.OK
     if percent is None:
         return ps.TEXT_MUTED
     if percent <= LOW_PCT:
         return ps.DANGER
     if percent <= WARN_PCT:
         return ps.WARN
-    return ps.OK
+    return ps.TEXT_BODY
 
 
 def fmt_remaining(secs: Optional[float]) -> Optional[str]:
@@ -696,7 +696,8 @@ class BatteryPanel(QWidget):
         chip = chip_text(b)
         dot = None
         if chip:
-            dot = level_color(b.get("percent"), bool(b.get("charging"))) if b.get("percent") is not None else None
+            dot = level_color(b.get("percent"), bool(b.get("charging")), bool(b.get("plugged"))) \
+                if b.get("percent") is not None else None
         hd = ps.draw_header(p, QRectF(x0, y, cw, ps.HEADER_H), "Pil ve bağlantılar", self._draw_header_icon,
                             chip=chip, chip_dot=dot, close_hover=(self._hover == "close"))
         if hd.get("close") is not None:
@@ -849,7 +850,7 @@ class BatteryPanel(QWidget):
         has = bool(b.get("present")) and b.get("percent") is not None
         pct = float(b["percent"]) if has else None
         charging = bool(b.get("charging"))
-        col = level_color(pct, charging)
+        col = level_color(pct, charging, bool(b.get("plugged")))
         p.save()
         # hero satırı
         hero_rect = QRectF(r.left(), r.top(), 110.0, 40.0)

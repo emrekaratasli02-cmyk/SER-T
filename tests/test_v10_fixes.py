@@ -97,6 +97,7 @@ class TestV10Menus(unittest.TestCase):
         # 13: separator
         # 14: Kapat (danger=True, confirm=True)
 
+        # v24 (Emre): kart aç/kapat satırları Ayarlar > Kartlar'a, "Konumu sıfırla" kalktı (14 -> 8 satır)
         expected = [
             ("settings", "Ayarlar…", False, None),  # v21: Ayarlar penceresi
             ("refresh", "Yenile", False, None),
@@ -104,14 +105,8 @@ class TestV10Menus(unittest.TestCase):
             ("style_band", "Tam genişlik şerit", True, "style"),
             ("style_pill", "Ortada kapsül", False, "style"),
             ("sep", None, False, None),
-            ("toggle_cal", "Takvim kartı", True, None),
-            ("toggle_mail", "Mail kartı", True, None),
-            ("toggle_ag", "Antigravity kartı", True, None),
-            ("toggle_sys", "Sistem kartı", False, None),
-            ("sep", None, False, None),
             ("toggle_alerts", "Uyarılar", True, None),
             ("toggle_taskbar", "Windows görev çubuğunu gizle", False, None),
-            ("reset_pos", "Konumu sıfırla", False, None),
             ("sep", None, False, None),
             ("quit", "Kapat", False, None),
         ]

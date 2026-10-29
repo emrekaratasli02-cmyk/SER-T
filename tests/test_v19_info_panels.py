@@ -139,9 +139,11 @@ def test_quota_rows_and_colors():
 
     claude = rows["Claude"]
     assert claude["used"] == 100.0
-    assert claude["badge"] == "DOLU"
+    # v24 (tek uyarı): DOLU rozeti yok, çubuk model renginde, yalnız yüzde kırmızı
+    assert claude["badge"] is None
     assert claude["pct_text"] == "%100"
-    assert claude["color"].name() == ps.DANGER.name()
+    assert claude["color"].name() == ps.CLAUDE.name()
+    assert claude["pct_color"].name() == ps.DANGER.name()
 
     gemini = rows["Gemini"]
     assert gemini["used"] == 82.0

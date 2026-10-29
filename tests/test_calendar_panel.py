@@ -316,11 +316,12 @@ def test_design_contract() -> None:
     assert tax_row["amount"] == "1.234,56 TL"
 
     # Upcoming rows use the same 3 x 28 px strip colors (no round dot field).
-    assert len(panel._cached_upcoming) == 4
-    assert panel._cached_upcoming[0]["strip_color"] == panel_style.DANGER
-    assert panel._cached_upcoming[1]["strip_color"] == panel_style.WARN
-    assert panel._cached_upcoming[2]["strip_color"] == panel_style.DANGER
-    assert panel._cached_upcoming[3]["strip_color"] == panel_style.ACCENT
+    # v24: the selected day (28 Eki: arife + vergi) is not repeated in "Yaklaşan"; list starts the next day.
+    assert len(panel._cached_upcoming) == 3
+    assert all(u["target_date"] > dt.date(2026, 10, 28) for u in panel._cached_upcoming)
+    assert panel._cached_upcoming[0]["strip_color"] == panel_style.DANGER   # 29 Eki Cumhuriyet Bayramı
+    assert panel._cached_upcoming[1]["strip_color"] == panel_style.ACCENT
+    assert panel._cached_upcoming[2]["strip_color"] == panel_style.ACCENT
     assert panel._cached_footer_source == "Google Takvim · 19:58"
 
     img = panel.render_to_image(dpr=2.0)

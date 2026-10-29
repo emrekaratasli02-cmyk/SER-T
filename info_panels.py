@@ -1005,16 +1005,18 @@ class QuotaPanel(_BasePopover):
         for g in self._groups:
             used = g.get("used")
             identity = quota_identity_color(g.get("label"))
-            color = ps.DANGER if (used is not None and used >= 90.0) else identity
+            # v24 (Emre: tek uyarı): çubuk model renginde kalır, yalnız yüzde %90+ kırmızı; DOLU rozeti yok
+            # (bardaki kota kartıyla aynı dil; eskiden rozet + kırmızı yüzde + kırmızı çubuk üç kez söylüyordu).
+            warn = used is not None and used >= 90.0
             rows.append({
                 "label": g.get("label"),
                 "used": used,
                 "reset_text": self._reset_display(g),
                 "identity": identity,
-                "color": color,
+                "color": identity,
                 "pct_text": ps.pct(used),
-                "pct_color": ps.TEXT_LABEL if used is None else color,
-                "badge": "DOLU" if (used is not None and used >= 100.0) else None,
+                "pct_color": ps.TEXT_LABEL if used is None else (ps.DANGER if warn else identity),
+                "badge": None,
                 "rect": QRectF(),
                 "bar_rect": QRectF(),
             })
@@ -1040,7 +1042,7 @@ class QuotaPanel(_BasePopover):
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(10, 132, 255, 38))
+        p.setBrush(QColor(110, 168, 254, 38))
         p.drawPath(rounded_path(rect, 6.0))
         p.setBrush(Qt.BrushStyle.NoBrush)
 

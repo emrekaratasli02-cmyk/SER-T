@@ -647,7 +647,7 @@ class BrightnessPopover(QWidget):
         return PRESET_LEVELS.index(lvl) if lvl in PRESET_LEVELS else None
 
     def _paint_pills(self, p: QPainter, rect: QRectF) -> None:
-        """Önayar hapları; aktif olan BRIGHT (kehribar) tonunda (kit yalnız maviyi çiziyor)."""
+        """Önayar hapları; aktif olan v24 mavi vurgusunda (eskiden kehribar; bar iki renge indi)."""
         n = len(PRESET_LEVELS)
         gap = 8.0
         pill_w = (rect.width() - gap * (n - 1)) / n
@@ -663,9 +663,9 @@ class BrightnessPopover(QWidget):
             hov = i == self._hover_preset_idx
             path = panel_style.rounded(pr.adjusted(0.5, 0.5, -0.5, -0.5), pill_h / 2.0)
             if i == active:
-                p.setPen(QPen(panel_style.BRIGHT, 1.0))
-                p.setBrush(QColor(255, 176, 32, 46))
-                txt = panel_style.BRIGHT
+                p.setPen(QPen(panel_style.ACCENT, 1.0))
+                p.setBrush(QColor(110, 168, 254, 46))
+                txt = panel_style.ACCENT
                 p.setFont(panel_style.font(12.0, QFont.Weight.DemiBold))
             else:
                 p.setPen(QPen(panel_style.BUTTON_BORDER, 1.0))

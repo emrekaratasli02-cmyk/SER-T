@@ -79,7 +79,8 @@ def test_presets_and_active_tint():
     img = pop.render_to_image(2.0)
     r = pop._preset_buttons_cache[1]["rect"]
     c = img.pixelColor(int(r.left() * 2 + 3), int(r.center().y() * 2))
-    assert c.red() > c.blue() + 20, c.getRgb()               # kehribar zemin, mavi değil
+    # v24: aktif önayar bardaki tek mavi vurguda (eskiden kehribar); en azından mavi tonlu olmalı
+    assert c.blue() > c.red() + 10, c.getRgb()
     pop._hover_preset_idx = 2
     pop.render_to_image(2.0).save(str(OUT / "parlaklik_onayar_hover.png"))
     pop2, em2 = mk(TWO)
