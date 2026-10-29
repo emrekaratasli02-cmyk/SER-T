@@ -504,6 +504,7 @@ class AnimationDriver(QObject):
         self._timer.timeout.connect(self._on_tick)
 
         self._tweens: Set[BaseTween] = set()
+        self.last_finished: Tuple[BaseTween, ...] = ()
         self.reduce_motion: bool = get_system_reduce_motion()
         self._simulated_time_ms: Optional[float] = None
 
@@ -555,6 +556,8 @@ class AnimationDriver(QObject):
         for tw in finished:
             self._tweens.discard(tw)
             tw.finish()
+        # Bu karede biten tween'ler: dinleyici son kareyi doğru bölgeyle boyayabilsin diye.
+        self.last_finished = tuple(finished)
 
         if len(self._tweens) == 0 and self._timer.isActive():
             self._timer.stop()

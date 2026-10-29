@@ -752,23 +752,30 @@ class SeritDock(QWidget):
 
     def _on_anim_frame(self) -> None:
         tweens = getattr(self.anim_driver, "_tweens", None)
-        if tweens:
-            if all(t in (self.anim_cpu, self.anim_ram, self.anim_sys_op) for t in tweens):
-                r = self._get_card_rect("sys")
-                if r is not None:
-                    self.update(r.toRect().adjusted(-2, -2, 2, 2))
-                    return
-            if all(t in (self.anim_claude_s, self.anim_claude_w, self.anim_claude_op) for t in tweens):
-                r = self._get_card_rect("claude")
-                if r is not None:
-                    self.update(r.toRect().adjusted(-2, -2, 2, 2))
-                    return
-            if all(t in (self.anim_pill_x, self.anim_pill_opacity) for t in tweens):
-                if self._tile_rects:
-                    r_apps = self._tile_rects[0].united(self._tile_rects[-1]).adjusted(-4, -4, 4, 8)
-                    self.update(r_apps.toRect())
-                    return
-        self.update()
+        if not tweens:
+            # Son kare: biten tween'ler sürücüden düşmüş olarak gelir. Eskiden bu karede her
+            # seferinde tüm şerit çiziliyordu (sistem halkaları her 2 sn'de bir oynar). Artık
+            # biten tween'lere bakılır: hepsi tek karta aitse yalnız o kart, değilse tam çizim.
+            region = self._anim_region(getattr(self.anim_driver, "last_finished", ()))
+            self.update(region) if region is not None else self.update()
+            return
+        region = self._anim_region(tweens)
+        self.update(region) if region is not None else self.update()
+
+    def _anim_region(self, tweens) -> Optional[QRect]:
+        """Yalnız tek bir kartın tween'leri oynuyorsa o kartın dikdörtgeni, yoksa None (tam çizim)."""
+        if not tweens:
+            return None
+        if all(t in (self.anim_cpu, self.anim_ram, self.anim_sys_op) for t in tweens):
+            r = self._get_card_rect("sys")
+            return r.toRect().adjusted(-2, -2, 2, 2) if r is not None else None
+        if all(t in (self.anim_claude_s, self.anim_claude_w, self.anim_claude_op) for t in tweens):
+            r = self._get_card_rect("claude")
+            return r.toRect().adjusted(-2, -2, 2, 2) if r is not None else None
+        if all(t in (self.anim_pill_x, self.anim_pill_opacity) for t in tweens):
+            if self._tile_rects:
+                return self._tile_rects[0].united(self._tile_rects[-1]).adjusted(-4, -4, 4, 8).toRect()
+        return None
 
     def _get_card_rect(self, key: Optional[str]) -> Optional[QRectF]:
         if not key:
