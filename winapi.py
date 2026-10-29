@@ -224,6 +224,7 @@ def list_windows() -> list[dict]:
       by EnumWindows.
     """
     windows: list[dict] = []
+    seen: set[tuple[int, int]] = set()
     try:
         fg_hwnd = int(user32.GetForegroundWindow() or 0)
 
@@ -273,10 +274,8 @@ def list_windows() -> list[dict]:
 
                 exe = ""
                 if pid_val > 0:
-                    try:
-                        exe = psutil.Process(pid_val).exe()
-                    except Exception:
-                        exe = ""
+                    exe = _exe_for(pid_val, hwnd)
+                    seen.add((pid_val, hwnd))
 
                 active = (hwnd == fg_hwnd)
                 minimized = bool(user32.IsIconic(hwnd))
@@ -295,9 +294,38 @@ def list_windows() -> list[dict]:
 
         cb = WNDENUMPROC(enum_cb)
         user32.EnumWindows(cb, 0)
+        _prune_exe_cache(seen)
     except Exception as e:
         _log(f"list_windows error: {e}")
     return windows
+
+
+# (pid, hwnd) -> exe yolu. list_windows 1.5 sn'de bir arayüz iş parçacığında çalışıyor;
+# her pencere için psutil.Process(pid).exe() iki OpenProcess çağrısı demek (yetkili
+# süreçlerde üstüne AccessDenied istisnası). Pencere yaşadığı sürece exe değişmez.
+# Anahtar (pid, hwnd): PID yeniden kullanılsa bile aynı hwnd ile çakışması pratikte imkânsız.
+# Bir turda görülmeyen kayıtlar silinir, önbellek açık pencere sayısını geçmez.
+_EXE_CACHE: dict[tuple[int, int], str] = {}
+
+
+def _exe_for(pid: int, hwnd: int) -> str:
+    key = (pid, hwnd)
+    exe = _EXE_CACHE.get(key)
+    if exe is None:
+        try:
+            exe = psutil.Process(pid).exe()
+        except Exception:
+            exe = ""
+        _EXE_CACHE[key] = exe
+    return exe
+
+
+def _prune_exe_cache(seen: set[tuple[int, int]]) -> None:
+    # Başka iş parçacığı (medya yedek yolu) aynı anda yazabilir: kopya üzerinden dolaş;
+    # yanlışlıkla silinen kayıt yalnızca bir sonraki turda yeniden okunur.
+    for key in list(_EXE_CACHE):
+        if key not in seen:
+            _EXE_CACHE.pop(key, None)
 
 
 _APP_NAME_CACHE: dict[str, str] = {}
