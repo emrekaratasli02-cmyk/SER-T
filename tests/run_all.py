@@ -13,9 +13,11 @@ import tempfile
 import time
 from pathlib import Path
 
-APP_DIR = Path("D:/Apps/serit")
+APP_DIR = Path(__file__).resolve().parent.parent
 TESTS_DIR = APP_DIR / "tests"
 PYTHON_EXE = APP_DIR / ".venv" / "Scripts" / "python.exe"
+if not PYTHON_EXE.exists():
+    PYTHON_EXE = APP_DIR / ".venv" / "bin" / "python"
 if not PYTHON_EXE.exists():
     PYTHON_EXE = Path(sys.executable)
 
@@ -63,9 +65,9 @@ def main() -> int:
     sub_env = os.environ.copy()
     sub_env["SERIT_LOG"] = str(temp_log)
     sub_env["SERIT_CACHE_DIR"] = str(temp_dir)
-    extra_py_path = f"{APP_DIR / '.venv' / 'Lib' / 'site-packages'};{APP_DIR}"
+    extra_py_path = os.pathsep.join([str(APP_DIR / ".venv" / "Lib" / "site-packages"), str(APP_DIR)])
     orig_py_path = sub_env.get("PYTHONPATH", "")
-    sub_env["PYTHONPATH"] = f"{extra_py_path};{orig_py_path}" if orig_py_path else extra_py_path
+    sub_env["PYTHONPATH"] = f"{extra_py_path}{os.pathsep}{orig_py_path}" if orig_py_path else extra_py_path
 
     # 3. Discover all test files
     test_files = sorted(TESTS_DIR.glob("test_*.py"))

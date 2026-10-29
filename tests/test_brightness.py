@@ -35,7 +35,7 @@ from PySide6.QtWidgets import QApplication
 import brightness
 import brightness_popover
 
-SETTINGS_PATH = Path("D:/Apps/serit/settings.json")
+SETTINGS_PATH = Path(__file__).resolve().parent.parent / "settings.json"
 SCRATCH_DIR = Path("C:/Users/Emre Karatasli/AppData/Local/hermes/cache/scratch/serit-v6")
 SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
 

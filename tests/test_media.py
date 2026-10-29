@@ -15,7 +15,7 @@ from pathlib import Path
 import sys
 
 # Ensure Serit modules are importable
-SERIT_DIR = Path("D:/Apps/serit")
+SERIT_DIR = Path(__file__).resolve().parent.parent
 if str(SERIT_DIR) not in sys.path:
     sys.path.insert(0, str(SERIT_DIR))
 
