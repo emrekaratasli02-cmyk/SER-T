@@ -596,6 +596,27 @@ class CalendarPanel(QWidget):
         if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
             self.hide_animated()
 
+    def wheelEvent(self, event) -> None:
+        """Tekerlek: yukarı = önceki ay, aşağı = sonraki ay. Dokunmatik yüzeyde küçük adımlar
+        biriktirilir; bir çentik (120) dolunca tek ay ilerler, tek harekette en fazla 1 ay."""
+        dy = event.angleDelta().y()
+        if not dy:
+            dy = event.pixelDelta().y() * 4
+        if not dy:
+            super().wheelEvent(event)
+            return
+        acc = getattr(self, "_wheel_acc", 0) + dy
+        if (acc > 0) != (dy > 0):
+            acc = dy
+        if acc >= 120:
+            self.prev_month()
+            acc = 0
+        elif acc <= -120:
+            self.next_month()
+            acc = 0
+        self._wheel_acc = acc
+        event.accept()
+
     def keyPressEvent(self, event) -> None:
         key = event.key()
         if key == Qt.Key.Key_Escape:

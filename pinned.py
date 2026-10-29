@@ -315,6 +315,7 @@ def draw_tile(
     press_scale: float = 1.0,
     dot_count: Optional[int] = None,
     indicator_y: Optional[float] = None,
+    launch_phase: Optional[float] = None,
 ) -> None:
     """Draw a 44x46 cell application tile with crisp 32x32 icon and running dot.
 
@@ -340,6 +341,8 @@ def draw_tile(
 
     # Draw icon with lift and scale
     p.save()
+    if launch_phase is not None:  # v24: açılıyor, ikon soluk
+        p.setOpacity(0.55)
     # Smooth lift: -2px * eff_hover, scale: 1.0 + 0.10 * eff_hover
     lift_y = -2.0 * eff_hover
     scale_hover = 1.0 + 0.10 * eff_hover
@@ -394,6 +397,10 @@ def draw_tile(
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(255, 255, 255, int(255 * 0.85)))
             p.drawEllipse(QPointF(cx, ind_y), 2.0, 2.0)
+    elif launch_phase is not None:  # v24: açılıyor, nabız gibi atan nokta
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * max(0.0, min(1.0, launch_phase)))))
+        p.drawEllipse(QPointF(cx, ind_y), 2.0, 2.0)
 
     p.restore()
 

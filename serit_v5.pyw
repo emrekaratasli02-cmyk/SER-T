@@ -614,6 +614,17 @@ class SeritDock(QWidget):
         self.brightness_popover.level_requested.connect(self._on_brightness_requested)
         self._pending_brightness: Dict[str, int] = {}
         self.bubble = BubbleWidget(self)
+        # v24 adım 2: açılış geri bildirimi (nabız noktası + 'açılamadı' balonu)
+        self.fail_bubble = BubbleWidget(self)
+        self._last_fail_text: str = ""
+        self._fail_bubble_timer = QTimer(self)
+        self._fail_bubble_timer.setSingleShot(True)
+        self._fail_bubble_timer.timeout.connect(self.fail_bubble.hide)
+        self._launching: Dict[str, float] = {}
+        self._launch_static = False
+        self._launch_timer = QTimer(self)
+        self._launch_timer.setInterval(60)
+        self._launch_timer.timeout.connect(self._tick_launching)
 
         # Tray Panel contract
         self.tray_panel = None
@@ -1122,6 +1133,11 @@ class SeritDock(QWidget):
         winapi.enable_acrylic(int(self.winId()), 0x50181612)
         winapi.set_round_region(int(self.winId()), self.width(), int(DOCK_HEIGHT), int(DOCK_RADIUS), dpr)
 
+        try:
+            ctypes.windll.user32.RegisterWindowMessageW.restype = ctypes.c_uint
+            SeritDock._WM_TASKBAR_CREATED = int(ctypes.windll.user32.RegisterWindowMessageW("TaskbarCreated"))
+        except Exception as exc:
+            sources.log_err("taskbar_created", exc)
         self._register_appbar()
 
         wh = self.windowHandle()
@@ -1135,6 +1151,33 @@ class SeritDock(QWidget):
             scr.availableGeometryChanged.connect(lambda _g: (self.place_dock(), self._register_appbar()))
         for ms in (400, 1200, 3000):
             QTimer.singleShot(ms, self.place_dock)
+
+    _WM_TASKBAR_CREATED: int = 0
+
+    def nativeEvent(self, event_type, message):
+        """Explorer yeniden başlayınca Windows 'TaskbarCreated' yayınlar: alanı ve gizlemeyi yenile."""
+        try:
+            if event_type == b"windows_generic_MSG" and SeritDock._WM_TASKBAR_CREATED:
+                import ctypes.wintypes as _wt
+                msg = _wt.MSG.from_address(int(message))
+                if msg.message == SeritDock._WM_TASKBAR_CREATED:
+                    QTimer.singleShot(1500, self._on_taskbar_created)
+        except Exception as exc:
+            sources.log_err("nativeEvent", exc)
+        return super().nativeEvent(event_type, message)
+
+    def _on_taskbar_created(self) -> None:
+        """Explorer yeni görev çubuğunu kurdu: eski appbar kaydı geçersiz, yeniden kaydol."""
+        if self.preview_mode:
+            return
+        sources.log_err("explorer", RuntimeError("Explorer yeniden başladı; ayrılan alan yenileniyor"))
+        self._appbar_registered = False
+        self._appbar_hwnd = None
+        if self.settings.get("hide_taskbar", False):
+            winapi.taskbar_autohide_set(True)
+        self._register_appbar()
+        self.place_dock()
+        self.update()
 
     def _on_screen_changed(self, screen) -> None:
         dpr = screen.devicePixelRatio() if screen else 1.25
@@ -2189,6 +2232,7 @@ class SeritDock(QWidget):
                         press_scale=press_scale * scale,
                         dot_count=t.get("count"),
                         indicator_y=r_slot.bottom() - 4.0,
+                        launch_phase=self._launch_phase(t),
                     )
 
             # Draw Right Wing: Media, Calendar
@@ -2375,6 +2419,7 @@ class SeritDock(QWidget):
                         press_scale=press_scale * scale,
                         dot_count=t.get("count"),
                         indicator_y=r_slot.bottom() - 4.0,
+                        launch_phase=self._launch_phase(t),
                     )
 
             if n_tiles > 0:
@@ -2569,6 +2614,15 @@ class SeritDock(QWidget):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MiddleButton:
+            pos = event.position()
+            for r, key, extra in reversed(self.hit_boxes):
+                if r.contains(pos):
+                    if key.startswith("app_") and isinstance(extra, dict):
+                        self.handle_tile_middle_click(extra, r)
+                    break
+            event.accept()
+            return
         if event.button() == Qt.LeftButton:
             self.press_tween.release()
             self._pressed_key = None
@@ -3244,7 +3298,87 @@ class SeritDock(QWidget):
         else:
             path = tile.get("exe") or tile.get("path") or ""
             if path and not self.preview_mode:
-                pinned.launch(path)
+                self._launch_tile(tile, path, rect)
+
+    def handle_tile_middle_click(self, tile: dict, rect: Optional[QRectF] = None) -> None:
+        """Orta tık: açık uygulamada yeni pencere, kapalıysa normal tık gibi açar."""
+        self._hide_hover_preview(force=True)
+        if not tile.get("running"):
+            self.handle_tile_click(tile, rect)
+            return
+        path = str(tile.get("path") or tile.get("exe") or "")
+        if not path or self.preview_mode:
+            return
+        if not Path(path).is_file():
+            self._show_fail_bubble(rect, f"{tile.get('name') or 'Uygulama'}: yeni pencere açılamadı")
+            return
+        self.app_new_window(path)
+
+    LAUNCH_TIMEOUT_S: float = 10.0
+
+    def _launch_tile(self, tile: dict, path: str, rect: Optional[QRectF] = None) -> bool:
+        """Uygulamayı açar; açılırken ikon soluk + nabız noktası, açılamazsa ikonun üstünde 4 sn balon."""
+        name = str(tile.get("name") or Path(path).stem or "Uygulama")
+        if not Path(path).exists():
+            self._show_fail_bubble(rect, f"{name} açılamadı · dosya bulunamadı")
+            sources.log_err("launch", FileNotFoundError(Path(path).name))
+            return False
+        try:
+            ok = bool(pinned.launch(path))
+        except Exception as exc:
+            sources.log_err("launch", exc)
+            ok = False
+        if not ok:
+            self._show_fail_bubble(rect, f"{name} açılamadı")
+            sources.log_err("launch", RuntimeError(f"{Path(path).name} başlatılamadı"))
+            return False
+        key = str(tile.get("key") or pinned._norm_key(path))
+        self._launching[key] = time.monotonic()
+        try:
+            self._launch_static = bool(anim.get_system_reduce_motion())
+        except Exception:
+            self._launch_static = False
+        if not self._launch_timer.isActive():
+            self._launch_timer.start()
+        self.update()
+        QTimer.singleShot(500, self.update_windows)
+        return True
+
+    def _launch_phase(self, tile: dict) -> Optional[float]:
+        """Açılmakta olan (henüz penceresi gelmemiş) döşeme için nokta parlaklığı 0.30-0.95, yoksa None."""
+        if not self._launching or tile.get("running"):
+            return None
+        t0 = self._launching.get(str(tile.get("key") or ""))
+        if t0 is None:
+            return None
+        if self._launch_static:
+            return 0.85
+        return 0.30 + 0.65 * (0.5 + 0.5 * math.cos((time.monotonic() - t0) * 2.0 * math.pi / 1.1))
+
+    def _tick_launching(self) -> None:
+        now = time.monotonic()
+        running = {str(t.get("key")) for t in self.tiles if t.get("running")}
+        for k, t0 in list(self._launching.items()):
+            if k in running or now - t0 > self.LAUNCH_TIMEOUT_S:
+                del self._launching[k]
+        if not self._launching:
+            self._launch_timer.stop()
+        self.update()
+
+    def _show_fail_bubble(self, rect: Optional[QRectF], text: str) -> None:
+        self._last_fail_text = text
+        if self.preview_mode:
+            return
+        try:
+            if rect is not None:
+                pt = self.mapToGlobal(QPoint(int(round(rect.center().x())), int(round(rect.top()))))
+            else:
+                pt = self.mapToGlobal(QPoint(self.width() // 2, 0))
+            self.bubble.hide()
+            self.fail_bubble.show_bubble(QPointF(float(pt.x()), float(pt.y())), text)
+            self._fail_bubble_timer.start(4000)
+        except Exception as exc:
+            sources.log_err("fail_bubble", exc)
 
     def get_tooltip_text(self, key: str, extra: Any) -> str:
         now_dt = dt.datetime.now(sources.LOCAL_TZ)
@@ -3387,7 +3521,7 @@ class SeritDock(QWidget):
             hwnds = [int(h) for h in (extra.get("hwnds") or []) if h]
             launch_path = str(extra.get("path") or exe)
             if launch_path and Path(launch_path).is_file():
-                actions.insert(0, {"id": "new_window", "text": "Yeni pencere", "icon": "open",
+                actions.insert(0, {"id": "new_window", "text": "Yeni pencere", "icon": "open", "shortcut": "Orta tık",
                                    "callback": lambda: self.app_new_window(launch_path)})
             if hwnds:
                 close_txt = f"Tüm pencereleri kapat ({len(hwnds)})" if len(hwnds) > 1 else "Pencereyi kapat"

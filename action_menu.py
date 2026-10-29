@@ -279,6 +279,7 @@ class ActionMenu(QWidget):
                 danger: bool (default False)
                 enabled: bool (default True)
                 hint: str (default '')
+                shortcut: str (sağda soluk kısayol ipucu, örn. 'Orta tık')
                 confirm: bool (default False)
                 checked: bool (draws a check mark on the right, default False)
                 group: str (radio style; draw a filled dot for selected one)
@@ -313,6 +314,7 @@ class ActionMenu(QWidget):
                         "hint": str(a.get("hint") or ""),
                         "confirm": bool(a.get("confirm", False)),
                         "checked": bool(a.get("checked", False)),
+                        "shortcut": str(a.get("shortcut") or ""),
                     }
                     if "group" in a and a["group"] is not None:
                         item_dict["group"] = str(a["group"])
@@ -891,7 +893,7 @@ class ActionMenu(QWidget):
             row_text = action.get("text", "")
 
         fm = QFontMetricsF(self.f_row)
-        hint_text = action.get("hint", "") if not enabled else ""
+        hint_text = (action.get("hint", "") if not enabled else "") or str(action.get("shortcut") or "")
         # Sebep zaten başlığın alt satırında yazıyorsa tekrar etme (eylem metni kesilmesin)
         if hint_text and hint_text.strip() == str(self._subtitle or "").strip():
             hint_text = ""
