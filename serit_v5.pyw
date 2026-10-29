@@ -2,7 +2,7 @@
 
 Integrates theme.py (design tokens & primitives), anim.py (zero-idle driver & tweens),
 pinned.py (pinned apps & dark glass tiles), popover_v2.py (sectioned acrylic flyouts),
-alerts.py (proactive notification toasts), tray.py (hidden icons overflow),
+alerts.py (proactive notification toasts), trayicons.py + tray_panel.py (hidden icons overflow),
 and media.py (volume slider popover, media keys & now-playing detection).
 """
 

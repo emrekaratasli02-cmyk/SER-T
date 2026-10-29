@@ -12,3 +12,6 @@ settings.json.tmp
 serit.log.1
 .clean_exit
 .venv/
+_ref/
+.ruff_cache/
+.pytest_cache/
