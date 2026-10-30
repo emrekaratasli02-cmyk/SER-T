@@ -68,6 +68,20 @@ try:
 except ImportError:
     work_sources = None
 
+# v25: dosya rafı / pomodoro / uyku-engelleme + mikrofon-kamera göstergesi (hepsi isteğe bağlı modül)
+try:
+    import shelf
+except ImportError:
+    shelf = None
+try:
+    import pomodoro
+except ImportError:
+    pomodoro = None
+try:
+    import presence
+except ImportError:
+    presence = None
+
 
 class LRUCache(collections.OrderedDict):
     """Bounded LRU cache backed by OrderedDict."""
@@ -697,6 +711,8 @@ class SeritDock(QWidget):
             sources.log_err("cal_panel_init", exc)
             self.cal_panel = None
 
+        self._init_v25()
+
         # AppBar registered state
         self._appbar_registered: bool = False
         self._appbar_hwnd: Optional[int] = None
@@ -711,7 +727,7 @@ class SeritDock(QWidget):
                 state_path="D:/Apps/serit/alerts_state.json",
                 enabled=alerts_enabled,
             )
-            self.toast_mgr: Optional[alerts.ToastManager] = alerts.ToastManager()
+            self.toast_mgr: Optional[alerts.ToastManager] = alerts.ToastManager(on_click=self._on_toast_clicked)
         else:
             self.alert_engine = None
             self.toast_mgr = None
@@ -1224,6 +1240,12 @@ class SeritDock(QWidget):
             _logpath.write_clean_exit_marker(APP_DIR)
         except Exception:
             pass
+        if presence is not None:
+            try:
+                presence.release_all()
+            except Exception:
+                pass
+        self._flush_v25_settings()
         self._unregister_appbar()
         if self.settings.get("hide_taskbar", False):
             orig = self.settings.get("taskbar_original")
@@ -1323,6 +1345,20 @@ class SeritDock(QWidget):
         self.ag_timer.timeout.connect(lambda: self.submit_fetch("ag"))
         self.ag_timer.start()
         self.submit_fetch("ag")
+
+        # v25: indirilenler izleyici (5 sn) ve mikrofon/kamera kullanımı (3 sn); ikisi de havuzda çalışır
+        if self._dl_watcher is not None:
+            self.shelfdl_timer = QTimer(self)
+            self.shelfdl_timer.setInterval(5000)
+            self.shelfdl_timer.timeout.connect(lambda: self.submit_fetch("shelfdl"))
+            self.shelfdl_timer.start()
+            self.submit_fetch("shelfdl")
+        if presence is not None and self.settings.get("presence_enabled", True):
+            self.presence_timer = QTimer(self)
+            self.presence_timer.setInterval(3000)
+            self.presence_timer.timeout.connect(lambda: self.submit_fetch("presence"))
+            self.presence_timer.start()
+            self.submit_fetch("presence")
 
     def _sync_tray_icons(self) -> None:
         """Cache tray icon pixmaps on GUI thread without blocking."""
@@ -1564,12 +1600,20 @@ class SeritDock(QWidget):
             "battop": self._read_top_load,
             "mail": getattr(work_sources, "fetch_mail_waiting", None),
             "ag": getattr(work_sources, "fetch_antigravity", None),
+            "shelfdl": (self._dl_watcher.poll if self._dl_watcher is not None else None),
+            "presence": getattr(presence, "read_capability_usage", None),
         }
         fn = fetchers.get(key)
         if fn:
             sources.submit(key, fn, lambda k, res: self.dispatcher.data_ready.emit(k, res))
 
     def on_data_ready(self, key: str, res: Any) -> None:
+        if key == "shelfdl":
+            self._on_shelf_downloads(res)
+            return
+        if key == "presence":
+            self._on_presence_data(res)
+            return
         if isinstance(res, dict) and res.get("err"):
             sources.log_err(key, RuntimeError(str(res.get("err"))))
         old_val = self.store.get(key)
@@ -2002,6 +2046,464 @@ class SeritDock(QWidget):
                              dock_cards.CARD_DIVIDER_H + 2.0)):
             dock_cards.draw_card_divider(p, x, cy)
 
+    # ------------------------------------------------------------------ v25
+    # Dosya rafı (shelf), pomodoro, uyku engelleme + mikrofon/kamera göstergesi.
+    # Modüller yoksa / etkin değilse hiçbir şey çizilmez, yerleşim ve piksel değişmez.
+    V25_SHELF_GAP = 28.0        # raf simgesi | uygulamalar (ve pomodoro | uygulamalar)
+    V25_SHELF_POMO_GAP = 24.0   # raf simgesi | pomodoro
+    V25_MIN_CLEAR = 12.0        # sol kanat ile yeni blok arası en az boşluk
+    V25_RIGHT_GAP = 6.0
+
+    def _init_v25(self) -> None:
+        self.shelf_store = None
+        self.shelf_panel = None
+        self._dl_watcher = None
+        self.pomo_timer = None
+        self.pomo_panel = None
+        self._pomo_state: Dict[str, Any] = {}
+        self._pomo_sig: Tuple[Any, ...] = (False, 0.0)
+        self._pomo_compact: bool = False
+        self._pomo_action_menu: Optional[action_menu.ActionMenu] = None
+        self._presence_usage: Dict[str, Any] = {"mic": [], "cam": []}
+        self._shelf_drag_over: bool = False
+        self._v25_rects: Dict[str, QRectF] = {}
+        self._v25_notes: set = set()
+        self._v25_dirty: bool = False
+        self._v25_save_timer = QTimer(self)
+        self._v25_save_timer.setSingleShot(True)
+        self._v25_save_timer.setInterval(800)
+        self._v25_save_timer.timeout.connect(self._flush_v25_settings)
+        if self.preview_mode:
+            return
+        try:
+            if shelf is not None and self.settings.get("shelf_enabled", True):
+                store = shelf.ShelfStore()
+                self.attach_shelf(store, shelf.ShelfPanel(store))
+                self._dl_watcher = shelf.DownloadsWatcher()
+        except Exception as exc:
+            sources.log_err("shelf_init", exc)
+        try:
+            if pomodoro is not None:
+                cfg = self.settings.get("pomodoro") if isinstance(self.settings.get("pomodoro"), dict) else {}
+                timer = pomodoro.PomodoroTimer(
+                    focus_min=int(cfg.get("focus", 25)), short_min=int(cfg.get("short", 5)),
+                    long_min=int(cfg.get("long", 15)),
+                )
+                task = str(cfg.get("task") or "")
+                if task:
+                    timer.set_task(task)
+                self.attach_pomodoro(timer, pomodoro.PomodoroPanel(timer))
+        except Exception as exc:
+            sources.log_err("pomodoro_init", exc)
+
+    def attach_shelf(self, store: Any, panel: Any) -> None:
+        self.shelf_store = store
+        self.shelf_panel = panel
+        sig = getattr(panel, "changed", None)
+        if sig is not None:
+            sig.connect(lambda: self._v25_update_key("shelf"))
+        if not self.preview_mode:
+            self.setAcceptDrops(True)
+
+    def attach_pomodoro(self, timer: Any, panel: Any) -> None:
+        self.pomo_timer = timer
+        self.pomo_panel = panel
+        self._pomo_state = dict(timer.state())
+        timer.changed.connect(self._on_pomo_changed)
+        timer.phase_finished.connect(self._on_pomo_phase_finished)
+        if panel is not None:
+            if hasattr(panel, "task_changed"):
+                panel.task_changed.connect(self._on_pomo_task_changed)
+            if hasattr(panel, "durations_changed"):
+                panel.durations_changed.connect(self._on_pomo_durations_changed)
+
+    def _v25_note(self, msg: str) -> None:
+        if msg not in self._v25_notes:
+            self._v25_notes.add(msg)
+            sources.log_err("v25_layout", RuntimeError(msg))
+
+    def _v25_save_later(self) -> None:
+        if self.preview_mode:
+            return
+        self._v25_dirty = True
+        self._v25_save_timer.start()
+
+    def _flush_v25_settings(self) -> None:
+        self._v25_save_timer.stop()
+        if self._v25_dirty and not self.preview_mode:
+            self._v25_dirty = False
+            save_settings(self.settings)
+
+    def _v25_tooltip(self, key: str) -> str:
+        if key == "shelf":
+            n = int(self.shelf_store.count()) if self.shelf_store is not None else 0
+            if n:
+                return f"Dosya rafı · {n} dosya · tıkla: aç · dosyayı buraya sürükle"
+            return "Dosya rafı · boş · dosyayı buraya sürükle"
+        if key == "pomo":
+            s = self._pomo_state
+            ph = {"focus": "Odak", "short": "Kısa mola", "long": "Uzun mola"}.get(str(s.get("phase")), "Pomodoro")
+            rem = int(s.get("remaining_s") or 0)
+            state = "çalışıyor" if s.get("running") else "duraklatıldı"
+            return (f"Pomodoro · {ph} {rem // 60:02d}:{rem % 60:02d} ({state}) · tıkla: duraklat/devam · "
+                    "tekerlek: ±5 dk · sağ tık: menü")
+        if key == "keepawake":
+            return "Uyku engelleniyor · tıkla: kapat"
+        if key == "presence":
+            try:
+                return str(presence.presence_tooltip(self._presence_usage) or "")
+            except Exception:
+                return ""
+        return ""
+
+    def _v25_update_key(self, key: str) -> None:
+        r = self._v25_rects.get(key)
+        if r is not None:
+            self.update(r.toRect().adjusted(-2, -2, 2, 2))
+
+    # --- pomodoro
+    def _pomo_active(self) -> bool:
+        return bool(self.pomo_timer is not None and self._pomo_state.get("active"))
+
+    def _on_pomo_changed(self) -> None:
+        try:
+            self._pomo_state = dict(self.pomo_timer.state())
+        except Exception as exc:
+            sources.log_err("pomo_state", exc)
+            return
+        w = 0.0
+        if self._pomo_state.get("active") and pomodoro is not None:
+            try:
+                w = float(pomodoro.band_width(self._pomo_state))
+            except Exception:
+                w = 0.0
+        sig = (bool(self._pomo_state.get("active")), round(w, 1))
+        if sig != self._pomo_sig:  # etkin/genişlik değişti: yerleşim yeniden
+            self._pomo_sig = sig
+            self.update()
+        else:
+            self._v25_update_key("pomo")
+
+    def _on_pomo_task_changed(self, text: str) -> None:
+        cfg = dict(self.settings.get("pomodoro") or {})
+        cfg["task"] = str(text)
+        self.settings["pomodoro"] = cfg
+        self._v25_save_later()
+
+    def _on_pomo_durations_changed(self, focus: int, short: int, long_: int) -> None:
+        cfg = dict(self.settings.get("pomodoro") or {})
+        cfg.update({"focus": int(focus), "short": int(short), "long": int(long_)})
+        self.settings["pomodoro"] = cfg
+        self._v25_save_later()
+
+    def _on_pomo_phase_finished(self, finished: str, nxt: str) -> None:
+        cfg = self.settings.get("pomodoro") if isinstance(self.settings.get("pomodoro"), dict) else {}
+        if finished == "focus":
+            title = "Odak bitti"
+        else:
+            title = "Mola bitti"
+        if nxt in ("short", "long"):
+            mins = int(cfg.get("short" if nxt == "short" else "long", 5 if nxt == "short" else 15))
+            body = f"{mins} dk mola başladı"
+        else:
+            body = "Yeni odak turu için tıkla"
+        try:
+            if self.toast_mgr is not None:
+                self.toast_mgr.show(alerts.Alert(
+                    id=f"pomodoro:{finished}:{int(time.time())}", title=title, body=body,
+                    accent="#FF9F0A" if finished == "focus" else "#6EA8FE", kind="pomodoro",
+                ))
+        except Exception as exc:
+            sources.log_err("pomodoro_toast", exc)
+        try:
+            import logpath as _lp
+            if not _lp.is_running_under_test():
+                import winsound
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        except Exception as exc:
+            sources.log_err("pomodoro_beep", exc)
+
+    def _on_toast_clicked(self, alert: Any) -> None:
+        if str(getattr(alert, "kind", "") or "") == "pomodoro":
+            self._open_pomo_panel()
+
+    def _toggle_v25_panel(self, panel: Any, key: str, rect: Optional[QRectF] = None) -> None:
+        if panel is None:
+            return
+        if rect is None:
+            rect = self._v25_rects.get(key) or QRectF(self.width() / 2.0, CARD_Y, 28.0, CARD_HEIGHT)
+        if panel.is_open():
+            panel.hide_animated()
+        elif panel.recently_closed():
+            pass
+        else:
+            anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+            try:
+                panel.show_for(anchor_global)
+            except Exception as exc:
+                sources.log_err(f"{key}_panel_show", exc)
+
+    def _open_pomo_panel(self) -> None:
+        p = self.pomo_panel
+        if p is None or p.is_open():
+            return
+        rect = self._v25_rects.get("pomo") or QRectF(self.width() / 2.0 - 120.0, CARD_Y, 80.0, CARD_HEIGHT)
+        anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+        try:
+            p.show_for(anchor_global)
+        except Exception as exc:
+            sources.log_err("pomodoro_panel_show", exc)
+
+    def action_pomo_toggle(self) -> None:
+        t = self.pomo_timer
+        if t is None:
+            return
+        if self._pomo_active():
+            t.stop()
+        else:
+            t.start("focus")
+            self._open_pomo_panel()
+
+    def build_pomo_menu_actions(self) -> List[Dict[str, Any]]:
+        t = self.pomo_timer
+        running = bool(self._pomo_state.get("running"))
+        return [
+            {"id": "pomo_panel", "text": "Paneli aç", "callback": self._open_pomo_panel},
+            {"id": "pomo_pause", "text": "Duraklat" if running else "Devam et", "callback": t.toggle_pause},
+            {"id": "pomo_skip", "text": "Atla", "callback": t.skip},
+            {"id": "pomo_reset", "text": "Sıfırla", "callback": t.reset},
+            {"id": "pomo_stop", "text": "Bitir", "callback": t.stop},
+        ]
+
+    # --- shelf
+    def _shelf_visible(self) -> bool:
+        return bool(shelf is not None and self.shelf_store is not None and self.settings.get("shelf_enabled", True))
+
+    def action_show_shelf(self) -> None:
+        if self._shelf_visible():
+            self._toggle_v25_panel(self.shelf_panel, "shelf")
+
+    def _on_shelf_downloads(self, res: Any) -> None:
+        if self.shelf_store is None:
+            return
+        try:
+            changed = False
+            if isinstance(res, (list, tuple)) and res:
+                changed = bool(self.shelf_store.add_paths([str(x) for x in res], "download"))
+            if self.shelf_store.expire():
+                changed = True
+            if changed:
+                self._v25_update_key("shelf")
+                if self.shelf_panel is not None and self.shelf_panel.is_open():
+                    self.shelf_panel.refresh()
+        except Exception as exc:
+            sources.log_err("shelf_downloads", exc)
+
+    def _drop_paths(self, event: Any) -> List[str]:
+        md = event.mimeData()
+        if md is None or not md.hasUrls():
+            return []
+        out = []
+        for u in md.urls():
+            if u.isLocalFile():
+                out.append(u.toLocalFile())
+        return out
+
+    def dragEnterEvent(self, event) -> None:
+        if self.shelf_store is not None and self._drop_paths(event):
+            event.acceptProposedAction()
+            if not self._shelf_drag_over:
+                self._shelf_drag_over = True
+                self._v25_update_key("shelf")
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        if self.shelf_store is not None and self._drop_paths(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:
+        if self._shelf_drag_over:
+            self._shelf_drag_over = False
+            self._v25_update_key("shelf")
+        event.accept()
+
+    def dropEvent(self, event) -> None:
+        paths = self._drop_paths(event) if self.shelf_store is not None else []
+        self._shelf_drag_over = False
+        if paths:
+            try:
+                self.shelf_store.add_paths(paths, "drop")
+            except Exception as exc:
+                sources.log_err("shelf_drop", exc)
+            event.acceptProposedAction()
+            if self.shelf_panel is not None and self.shelf_panel.is_open():
+                self.shelf_panel.refresh()
+        else:
+            event.ignore()
+        self._v25_update_key("shelf")
+
+    # --- keep-awake + presence
+    def _keep_awake_on(self) -> bool:
+        try:
+            return bool(presence is not None and presence.keep_awake_active())
+        except Exception:
+            return False
+
+    def action_toggle_keep_awake(self) -> None:
+        if presence is None:
+            return
+        try:
+            presence.set_keep_awake(not self._keep_awake_on())
+        except Exception as exc:
+            sources.log_err("keep_awake", exc)
+        self.update()
+
+    def _presence_on(self) -> bool:
+        u = self._presence_usage
+        return bool(presence is not None and self.settings.get("presence_enabled", True)
+                    and (u.get("mic") or u.get("cam")))
+
+    def _on_presence_data(self, res: Any) -> None:
+        if not isinstance(res, dict):
+            return
+        new = {"mic": list(res.get("mic") or []), "cam": list(res.get("cam") or [])}
+        if new == self._presence_usage:
+            return
+        was_on = self._presence_on()
+        self._presence_usage = new
+        if was_on != self._presence_on():
+            self.update()  # simge belirdi/kayboldu: sağ küme genişliği değişir
+        else:
+            self._v25_update_key("presence")
+
+    def _v25_right_items(self) -> List[Tuple[str, float]]:
+        items: List[Tuple[str, float]] = []
+        if presence is None:
+            return items
+        if self._keep_awake_on():
+            items.append(("keepawake", float(getattr(presence, "KEEP_AWAKE_ICON_W", 28.0))))
+        if self._presence_on():
+            items.append(("presence", float(getattr(presence, "PRESENCE_ICON_W", 24.0))))
+        return items
+
+    def _v25_right_width(self) -> float:
+        return sum(w + self.V25_RIGHT_GAP for _, w in self._v25_right_items())
+
+    def _v25_left_layout(self, apps_x: float, lw_end: float) -> Dict[str, Optional[QRectF]]:
+        """[raf 28][24][pomodoro][28][uygulamalar]; sol kanada çarpmasın diye önce pomodoronun 2. satırı,
+        sonra raf simgesi düşer."""
+        res: Dict[str, Optional[QRectF]] = {"shelf": None, "pomo": None}
+        shelf_w = float(getattr(shelf, "SHELF_ICON_W", 28.0)) if self._shelf_visible() else 0.0
+        pw = 0.0
+        self._pomo_compact = False
+        if self._pomo_active() and pomodoro is not None:
+            try:
+                pw = float(pomodoro.band_width(self._pomo_state))
+            except Exception:
+                pw = 0.0
+        if shelf_w <= 0.0 and pw <= 0.0:
+            return res
+        limit = lw_end + self.V25_MIN_CLEAR
+        y, h = CARD_Y, CARD_HEIGHT
+        gap = self.V25_SHELF_GAP
+
+        def build(pw_: float, with_shelf: bool) -> Tuple[float, Dict[str, Optional[QRectF]]]:
+            out: Dict[str, Optional[QRectF]] = {"shelf": None, "pomo": None}
+            x = apps_x - gap
+            if pw_ > 0.0:
+                x -= pw_
+                out["pomo"] = QRectF(x, y, pw_, h)
+                if with_shelf:
+                    x -= self.V25_SHELF_POMO_GAP
+            elif with_shelf:
+                pass
+            if with_shelf:
+                x -= shelf_w
+                out["shelf"] = QRectF(x, y, shelf_w, h)
+            return x, out
+
+        x, out = build(pw, shelf_w > 0.0)
+        if x >= limit:
+            return out
+        if pw > 0.0:
+            # 1) pomodoronun görev satırı düşer (yalnız süre / "Odak · n/4"), 2) raf simgesi gizlenir
+            try:
+                cw = float(pomodoro.band_width(dict(self._pomo_state, task="")))
+            except Exception:
+                cw = pw
+            if cw < pw:
+                x, out = build(cw, shelf_w > 0.0)
+                if x >= limit:
+                    self._pomo_compact = True
+                    self._v25_note("pomodoro 2. satir dustu (yer dar)")
+                    return out
+            x, out = build(min(cw, pw), False)
+            if x >= limit:
+                self._pomo_compact = True
+                self._v25_note("raf simgesi gizlendi (yer dar)")
+                return out
+        elif shelf_w > 0.0:
+            self._v25_note("raf simgesi gizlendi (yer dar)")
+            return res
+        self._v25_note("pomodoro blogu gizlendi (yer dar)")
+        return res
+
+    def _paint_v25_left(self, p: QPainter, apps_x: float, lw_end: float, is_full: bool,
+                        intersects: Callable[[QRectF], bool]) -> None:
+        lay = self._v25_left_layout(apps_x, lw_end)
+        self._v25_rects.pop("shelf", None)
+        self._v25_rects.pop("pomo", None)
+        r_sh, r_po = lay.get("shelf"), lay.get("pomo")
+        if r_sh is not None:
+            self._v25_rects["shelf"] = r_sh
+            if is_full:
+                self.hit_boxes.append((r_sh, "shelf", None))
+            if intersects(r_sh):
+                if self._shelf_drag_over:
+                    st = "over"
+                elif self.shelf_panel is not None and self.shelf_panel.is_open():
+                    st = "open"
+                else:
+                    st = "idle"
+                try:
+                    shelf.draw_shelf_icon(p, r_sh, st, int(self.shelf_store.count()),
+                                          hover=(self._hover_key == "shelf"))
+                except Exception as exc:
+                    sources.log_err("shelf_draw", exc)
+        if r_po is not None:
+            self._v25_rects["pomo"] = r_po
+            if is_full:
+                self.hit_boxes.append((r_po, "pomo", None))
+            if intersects(r_po):
+                try:
+                    st_p = dict(self._pomo_state, task="") if self._pomo_compact else self._pomo_state
+                    pomodoro.draw_pomo_band(p, r_po, st_p, hover=(self._hover_key == "pomo"))
+                except Exception as exc:
+                    sources.log_err("pomodoro_draw", exc)
+
+    def _paint_v25_right(self, p: QPainter, actions_x: float, is_full: bool,
+                         intersects: Callable[[QRectF], bool]) -> None:
+        self._v25_rects.pop("keepawake", None)
+        self._v25_rects.pop("presence", None)
+        x = actions_x
+        for key, w in reversed(self._v25_right_items()):
+            x -= self.V25_RIGHT_GAP + w
+            r = QRectF(x, CARD_Y, w, CARD_HEIGHT)
+            self._v25_rects[key] = r
+            if is_full:
+                self.hit_boxes.append((r, key, None))
+            if intersects(r):
+                try:
+                    if key == "keepawake":
+                        presence.draw_keep_awake_icon(p, r, True, hover=(self._hover_key == key))
+                    else:
+                        presence.draw_presence_icon(p, r, self._presence_usage, hover=(self._hover_key == key))
+                except Exception as exc:
+                    sources.log_err("presence_draw", exc)
+
     def _left_open_sig(self) -> Tuple[bool, bool, bool, bool]:
         """Sol kanat kartlarının paneli açık mı: (Claude, Mail, Antigravity, Sistem)."""
         try:
@@ -2127,7 +2629,7 @@ class SeritDock(QWidget):
             cal_w = natural_cal_w
             center_shift = 0.0
 
-            actions_left_x = (sw - 14.0) - w_clock - GAP_MODULE - self._actions_width()
+            actions_left_x = (sw - 14.0) - w_clock - GAP_MODULE - self._actions_width() - self._v25_right_width()
 
             def calc_clearance(m_w: float, c_w: float, shift: float) -> float:
                 rw_items = []
@@ -2180,6 +2682,7 @@ class SeritDock(QWidget):
             # Left Wing panellerinin açık/kapalı durumu (açık kart altına zemin A)
             open_claude, open_mail, open_ag, open_sys = self._left_open_sig()
 
+            _lw_end = (cur_lw_x + lw_w) if lw_w > 0 else DESKTOP_STRIP_W
             div_cy = card_y + card_h / 2.0
             prev_card: Optional[Tuple[str, QRectF]] = None
             for card_key, card_w in lw_cards:
@@ -2267,6 +2770,8 @@ class SeritDock(QWidget):
                         indicator_y=r_slot.bottom() - 4.0,
                         launch_phase=self._launch_phase(t),
                     )
+
+            self._paint_v25_left(p, final_apps_x, _lw_end, is_full, intersects)
 
             # Draw Right Wing: Media, Calendar
             cur_rw_x = final_apps_x + w_apps + (GAP_MODULE if (w_apps > 0) else 0.0)
@@ -2359,6 +2864,7 @@ class SeritDock(QWidget):
                 self._draw_quick_pill(p, r_pill, bright_open, vol_open, register_hitboxes=is_full)
             elif is_full:
                 self._register_quick_pill_hitboxes(r_pill, bright_open, vol_open)
+            self._paint_v25_right(p, actions_x, is_full, intersects)
         else:
             # Pill Style: One centered capsule in order Claude, Mail, Antigravity, apps, media, calendar, clock, chevron/sun/speaker
             r_dock = QRectF(0.5, 0.5, self.width() - 1.0, DOCK_HEIGHT - 1.0)
@@ -2703,6 +3209,11 @@ class SeritDock(QWidget):
     def wheelEvent(self, event) -> None:
         pos = event.position()
         for r, key, _extra in reversed(self.hit_boxes):
+            if key == "pomo" and r.contains(pos):
+                if self.pomo_timer is not None:
+                    self.pomo_timer.adjust(5 if event.angleDelta().y() > 0 else -5)
+                event.accept()
+                return
             if key == "vol" and r.contains(pos):
                 diff = 2.0 if event.angleDelta().y() > 0 else -2.0
                 new_val = max(0.0, min(100.0, self._vol_level + diff))
@@ -2738,6 +3249,19 @@ class SeritDock(QWidget):
         if key == "desktop":
             if not self.preview_mode:
                 winapi.toggle_desktop()
+            return
+        if key == "shelf":
+            self._toggle_v25_panel(self.shelf_panel, "shelf", rect)
+            return
+        if key == "pomo":
+            if self.pomo_timer is not None:
+                self.pomo_timer.toggle_pause()
+            return
+        if key == "keepawake":
+            if not self.preview_mode and presence is not None:
+                self.action_toggle_keep_awake()
+            return
+        if key == "presence":
             return
         if key == "tray_icon" and extra:
             if not self.preview_mode:
@@ -3419,6 +3943,8 @@ class SeritDock(QWidget):
             return "Masaüstünü göster · tekrar tıkla: pencereler geri gelir"
         if key == "bat":
             return battery_panel.pill_tooltip(self._bat_info) or ""
+        if key in ("shelf", "pomo", "keepawake", "presence"):
+            return self._v25_tooltip(key)
         if key == "claude":
             c = self.store.get("claude") or {}
             src = c.get("source", "Anthropic · Claude Code girişi")
@@ -3625,9 +4151,27 @@ class SeritDock(QWidget):
                 self.alert_engine.enabled = checked
             save_settings(self.settings)
 
+        v25_rows: List[Dict[str, Any]] = []
+        if pomodoro is not None and self.pomo_timer is not None:
+            v25_rows.append({
+                "id": "pomo_toggle",
+                "text": "Pomodoro'yu bitir" if self._pomo_active() else "Pomodoro başlat",
+                "callback": self.action_pomo_toggle,
+            })
+        if self._shelf_visible():
+            v25_rows.append({"id": "show_shelf", "text": "Dosya rafını göster", "callback": self.action_show_shelf})
+        if presence is not None:
+            v25_rows.append({
+                "id": "keep_awake",
+                "text": "Uykuyu engelle",
+                "checked": self._keep_awake_on(),
+                "callback": self.action_toggle_keep_awake,
+            })
+
         return [
             {"id": "settings", "text": "Ayarlar…", "icon": "settings", "callback": self.action_open_settings},
             {"id": "refresh", "text": "Yenile", "callback": self.action_refresh},
+            *v25_rows,
             {"type": "separator"},
             {
                 "id": "style_band",
@@ -3671,6 +4215,12 @@ class SeritDock(QWidget):
         cpos = QPointF(event.pos())
         anchor_global = QRectF(float(event.globalPos().x()), float(event.globalPos().y()), 1.0, 1.0)
         for r, key, extra in reversed(self.hit_boxes):
+            if key == "pomo" and r.contains(cpos) and self.pomo_timer is not None:
+                if self._pomo_action_menu is None:
+                    self._pomo_action_menu = action_menu.ActionMenu()
+                self._pomo_action_menu.set_actions(self.build_pomo_menu_actions())
+                self._pomo_action_menu.show_at(anchor_global)
+                return
             if key == "tray_icon" and extra and r.contains(cpos):
                 tray_anchor = QRectF(
                     self.mapToGlobal(QPoint(int(r.x()), int(r.y()))),
