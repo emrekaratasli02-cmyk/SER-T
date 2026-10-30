@@ -15,3 +15,5 @@ serit.log.1
 _ref/
 .ruff_cache/
 .pytest_cache/
+shelf.json
+shelf.json.*.tmp
