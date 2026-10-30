@@ -50,12 +50,9 @@ SHELF_ICON_W = 28.0
 
 ROW_H = 48.0
 MAX_VISIBLE_ROWS = 6
-HDR_TOP = 13.0
-HDR_H = 32.0
-SEC_GAP = 10.0
-FTR_H = 34.0
 EMPTY_H = 84.0
-ROW_MARGIN = 8.0
+OVERLINE_H = 25.0
+BTN_SZ = 24.0
 
 _TEMP_EXTS = (".crdownload", ".part", ".partial", ".tmp", ".download")
 # kendiliğinden gelen öğeler (indirilen dosya, ekran görüntüsü) iğnelenmezse DOWNLOAD_KEEP_S sonra düşer
@@ -521,46 +518,74 @@ class ShelfPanel(QWidget):
         self.guard_log: List[str] = []
         self.refresh()
 
+    @staticmethod
+    def _draw_header_icon(p: QPainter, r: QRectF) -> None:
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        dpr = _device_dpr(p)
+        pm = _svg_pixmap("clip", QColor(255, 255, 255, 230), 16.0, dpr)
+        pw = pm.width() / dpr
+        ph = pm.height() / dpr
+        p.drawPixmap(QPointF(r.center().x() - pw / 2.0, r.center().y() - ph / 2.0), pm)
+        p.restore()
+
     # ------------------------------------------------------------ yerleşim
     def _visible_rows(self) -> int:
         return min(len(self._items), MAX_VISIBLE_ROWS)
 
     def compute_height(self) -> int:
         body = EMPTY_H if not self._items else self._visible_rows() * ROW_H
-        return int(round(HDR_TOP + HDR_H + SEC_GAP + body + SEC_GAP + FTR_H + HDR_TOP))
+        card_h = 2 * ps.CARD_PAD + OVERLINE_H + body
+        return int(round(ps.PAD + ps.HEADER_H + ps.GAP + card_h + ps.GAP + ps.FOOTER_H + ps.PAD))
 
     def _max_scroll(self) -> float:
         return max(0.0, len(self._items) * ROW_H - self._visible_rows() * ROW_H)
 
     def _layout(self) -> None:
         w = float(self.width())
+        cw = w - 2 * ps.PAD
         self._rects = {}
         self._row_rects, self._pin_rects, self._rm_rects = [], [], []
-        y = HDR_TOP
-        self._rects["hdr"] = QRectF(16.0, y, w - 32.0, HDR_H)
-        fm = QFontMetricsF(ps.font(11.5, QFont.Weight.Medium))
-        tw = fm.horizontalAdvance("Temizle") + 16.0
-        self._rects["clear"] = QRectF(w - 16.0 - tw, y + (HDR_H - 24.0) / 2.0, tw, 24.0)
-        y += HDR_H + SEC_GAP
+        y = ps.PAD
+        hdr_rect = QRectF(ps.PAD, y, cw, ps.HEADER_H)
+        self._rects["hdr"] = hdr_rect
+        close_sz = ps.CLOSE_SZ
+        self._rects["close"] = QRectF(hdr_rect.right() - close_sz, hdr_rect.center().y() - close_sz / 2.0, close_sz, close_sz)
+        y += ps.HEADER_H + ps.GAP
+
         body_h = EMPTY_H if not self._items else self._visible_rows() * ROW_H
-        self._list_rect = QRectF(0.0, y, w, body_h)
+        card_h = 2 * ps.CARD_PAD + OVERLINE_H + body_h
+        card_rect = QRectF(ps.PAD, y, cw, card_h)
+        self._rects["card"] = card_rect
+
+        inner = card_rect.adjusted(ps.CARD_PAD, ps.CARD_PAD, -ps.CARD_PAD, -ps.CARD_PAD)
+        copy_label = self._copy_note or "Hepsini kopyala ›"
+        fm_ovr = QFontMetricsF(ps.font(10.5, QFont.Weight.DemiBold))
+        copy_w = fm_ovr.horizontalAdvance(copy_label) + 12.0
+        self._rects["copy"] = QRectF(inner.right() - copy_w, inner.top(), copy_w, 18.0)
+
+        list_top = inner.top() + OVERLINE_H
+        self._list_rect = QRectF(inner.left(), list_top, inner.width(), body_h)
         self._scroll = max(0.0, min(self._max_scroll(), self._scroll))
+
+        btn_sz = BTN_SZ
         for i in range(len(self._items)):
-            r = QRectF(ROW_MARGIN, y + i * ROW_H - self._scroll, w - 2 * ROW_MARGIN, ROW_H)
+            r = QRectF(inner.left(), list_top + i * ROW_H - self._scroll, inner.width(), ROW_H)
             self._row_rects.append(r)
-            rm = QRectF(r.right() - 8.0 - 20.0, r.center().y() - 10.0, 20.0, 20.0)
-            pin = QRectF(rm.left() - 8.0 - 20.0, r.center().y() - 10.0, 20.0, 20.0)
+            rm = QRectF(r.right() - 6.0 - btn_sz, r.center().y() - btn_sz / 2.0, btn_sz, btn_sz)
+            pin = QRectF(rm.left() - 4.0 - btn_sz, r.center().y() - btn_sz / 2.0, btn_sz, btn_sz)
             self._rm_rects.append(rm)
             self._pin_rects.append(pin)
-        y += body_h + SEC_GAP
-        fr = QRectF(16.0, y, w - 32.0, FTR_H)
+
+        y += card_h + ps.GAP
+        fr = QRectF(ps.PAD, y, cw, ps.FOOTER_H)
         self._rects["footer"] = fr
-        # 'Hepsini kopyala' isabet alanı: draw_footer ile aynı ölçü (çizimden önce de tıklanabilsin)
-        cr = QRectF(fr.left(), fr.top() + 3.0, fr.width(), fr.height() - 3.0)
-        bw = min(QFontMetricsF(ps.font(11.5, QFont.Weight.Medium)).horizontalAdvance("Hepsini kopyala") + 20.0,
-                 max(28.0, cr.width() * 0.55))
-        bh = min(24.0, cr.height())
-        self._rects["copy"] = QRectF(cr.right() - bw, cr.center().y() - bh / 2.0, bw, bh)
+
+        f_btn = ps.font(11.5, QFont.Weight.Medium)
+        tw = QFontMetricsF(f_btn).horizontalAdvance("Temizle")
+        btn_w = min(tw + 20.0, max(28.0, cw * 0.55))
+        btn_h = min(24.0, ps.FOOTER_H - 3.0)
+        self._rects["clear"] = QRectF(fr.right() - btn_w, fr.top() + 3.0 + (ps.FOOTER_H - 3.0 - btn_h) / 2.0, btn_w, btn_h)
 
     def refresh(self) -> None:
         self._items = self._store.items()
@@ -682,15 +707,15 @@ class ShelfPanel(QWidget):
         return None
 
     def _hit(self, pos: QPointF) -> Optional[str]:
-        for k in ("clear", "copy"):
+        for k in ("close", "clear", "copy"):
             r = self._rects.get(k)
             if r is not None and r.contains(pos):
                 return k
         i = self._row_at(pos)
         if i is not None:
-            if self._rm_rects[i].adjusted(-2, -2, 2, 2).contains(pos):
+            if self._rm_rects[i].contains(pos):
                 return f"rm:{i}"
-            if self._pin_rects[i].adjusted(-2, -2, 2, 2).contains(pos):
+            if self._pin_rects[i].contains(pos):
                 return f"pin:{i}"
             return f"row:{i}"
         return None
@@ -724,7 +749,9 @@ class ShelfPanel(QWidget):
         pos = event.position()
         h = self._hit(pos)
         self._press_idx = None
-        if h == "clear":
+        if h == "close":
+            self.hide_animated()
+        elif h == "clear":
             self.activate_clear()
         elif h == "copy":
             self.copy_all()
@@ -859,33 +886,34 @@ class ShelfPanel(QWidget):
     def _paint(self, p: QPainter) -> None:
         w, h = float(self.width()), float(self.height())
         ps.draw_panel_shell(p, QRectF(0, 0, w, h))
-        hdr = self._rects["hdr"]
-        # başlık
-        p.save()
-        p.setFont(ps.f_label())
-        p.setPen(ps.TEXT_LABEL)
-        p.drawText(hdr, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, ps.turkish_upper("Dosya rafı"))
-        clr = self._rects["clear"]
-        can_clear = any(not it["pinned"] for it in self._items)
-        p.setFont(ps.font(11.5, QFont.Weight.Medium))
-        if self._hover == "clear" and can_clear:
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(ps.BUTTON_HOVER)
-            p.drawRoundedRect(clr, ps.R_BUTTON, ps.R_BUTTON)
-        p.setPen(ps.TEXT if (self._hover == "clear" and can_clear) else (ps.TEXT_CLOSE if can_clear else QColor(255, 255, 255, 60)))
-        p.drawText(clr, Qt.AlignmentFlag.AlignCenter, "Temizle")
-        p.restore()
 
-        # liste
+        # 1. Başlık: 'Dosya rafı' (küçük harfli başlık) + 'N dosya' rozeti + kapat ×
+        chip_txt = f"{len(self._items)} dosya"
+        hdr = ps.draw_header(
+            p, self._rects["hdr"], "Dosya rafı",
+            icon=self._draw_header_icon,
+            chip=chip_txt,
+            chip_dot=ps.ACCENT if self._items else None,
+            close_hover=(self._hover == "close"),
+        )
+        if hdr.get("close") is not None:
+            self._rects["close"] = QRectF(hdr["close"])
+
+        # 2. İç kart: 'DOSYALAR' + isteğe bağlı sağda 'Hepsini kopyala ›'
+        copy_label = self._copy_note or ("Hepsini kopyala ›" if self._items else None)
+        ps.draw_card(p, self._rects["card"], overline="Dosyalar", overline_right=copy_label)
+
+        # 3. Liste alanı
         lr = self._list_rect
         if not self._items:
             p.save()
-            box = QRectF(ROW_MARGIN + 8.0, lr.top(), w - 2 * (ROW_MARGIN + 8.0), lr.height())
+            box = lr.adjusted(4.0, 2.0, -4.0, -2.0)
             pen = QPen(QColor(255, 255, 255, 30), 1.0, Qt.PenStyle.DashLine)
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), ps.R_TILE, ps.R_TILE)
-            pm = _svg_pixmap("clip", QColor(255, 255, 255, 90), 20.0, _device_dpr(p))
+            dpr = _device_dpr(p)
+            pm = _svg_pixmap("clip", QColor(255, 255, 255, 90), 20.0, dpr)
             p.drawPixmap(QPointF(box.center().x() - 10.0, box.top() + 16.0), pm)
             p.setFont(ps.font(13.0, QFont.Weight.Medium))
             p.setPen(ps.TEXT_MUTED)
@@ -908,12 +936,12 @@ class ShelfPanel(QWidget):
                 if hov_row:
                     p.setPen(Qt.PenStyle.NoPen)
                     p.setBrush(ps.TILE_BG)
-                    p.drawRoundedRect(r, 10.0, 10.0)
+                    p.drawRoundedRect(r, 8.0, 8.0)
                 isdir = os.path.isdir(it["path"])
                 ic = type_icon(it["path"], isdir, dpr)
-                p.drawPixmap(QPointF(r.left() + 8.0, r.center().y() - 14.0), ic)
-                tx = r.left() + 8.0 + 28.0 + 10.0
-                tw = max(20.0, self._pin_rects[i].left() - 10.0 - tx)
+                p.drawPixmap(QPointF(r.left() + 6.0, r.center().y() - 14.0), ic)
+                tx = r.left() + 6.0 + 28.0 + 10.0
+                tw = max(20.0, self._pin_rects[i].left() - 8.0 - tx)
                 p.setFont(f_name)
                 p.setPen(QColor(255, 255, 255, 230))
                 p.drawText(QRectF(tx, r.center().y() - 16.0, tw, 16.0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
@@ -923,39 +951,48 @@ class ShelfPanel(QWidget):
                 meta = f"{fmt_size(it['size'], isdir)} · {fmt_age(it['added'], now)}"
                 p.drawText(QRectF(tx, r.center().y() + 1.0, tw, 15.0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                            fm_meta.elidedText(meta, Qt.TextElideMode.ElideRight, tw))
-                # iğne
+
+                # İğne butonu (>= 24x24 px)
                 pr = self._pin_rects[i]
+                hp = self._hover == f"pin:{i}"
                 if it["pinned"]:
-                    p.setPen(Qt.PenStyle.NoPen)
-                    p.setBrush(QColor(110, 168, 254, 51))          # .2
-                    p.drawRoundedRect(pr, 6.0, 6.0)
-                    p.drawPixmap(QPointF(pr.center().x() - 6.0, pr.center().y() - 6.0),
-                                 _svg_pixmap("pin", ps.ACCENT, 12.0, dpr))
+                    p.setPen(QPen(QColor(110, 168, 254, 120), 1.0))
+                    p.setBrush(QColor(110, 168, 254, 51))
+                    p.drawRoundedRect(pr.adjusted(0.5, 0.5, -0.5, -0.5), 6.0, 6.0)
+                    p.drawPixmap(QPointF(pr.center().x() - 7.0, pr.center().y() - 7.0),
+                                 _svg_pixmap("pin", ps.ACCENT, 14.0, dpr))
                 elif hov_row:
-                    hp = self._hover == f"pin:{i}"
                     if hp:
-                        p.setPen(Qt.PenStyle.NoPen)
+                        p.setPen(QPen(ps.BUTTON_BORDER, 1.0))
                         p.setBrush(ps.BUTTON_HOVER)
-                        p.drawRoundedRect(pr, 6.0, 6.0)
-                    p.drawPixmap(QPointF(pr.center().x() - 6.0, pr.center().y() - 6.0),
-                                 _svg_pixmap("pin", QColor(255, 255, 255, 200 if hp else 100), 12.0, dpr))
-                # ✕
+                        p.drawRoundedRect(pr.adjusted(0.5, 0.5, -0.5, -0.5), 6.0, 6.0)
+                    else:
+                        p.setPen(Qt.PenStyle.NoPen)
+                        p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawPixmap(QPointF(pr.center().x() - 7.0, pr.center().y() - 7.0),
+                                 _svg_pixmap("pin", QColor(255, 255, 255, 220 if hp else 110), 14.0, dpr))
+
+                # Kaldır butonu (✕, >= 24x24 px)
                 rm = self._rm_rects[i]
                 hx = self._hover == f"rm:{i}"
-                if hx:
-                    p.setPen(Qt.PenStyle.NoPen)
-                    p.setBrush(ps.BUTTON_HOVER)
-                    p.drawRoundedRect(rm, 6.0, 6.0)
-                p.setPen(QPen(ps.TEXT if hx else ps.TEXT_CLOSE, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                c = rm.center()
-                d = 3.6
-                p.drawLine(QPointF(c.x() - d, c.y() - d), QPointF(c.x() + d, c.y() + d))
-                p.drawLine(QPointF(c.x() + d, c.y() - d), QPointF(c.x() - d, c.y() + d))
+                if hov_row:
+                    if hx:
+                        p.setPen(QPen(ps.BUTTON_BORDER, 1.0))
+                        p.setBrush(ps.BUTTON_HOVER)
+                        p.drawRoundedRect(rm.adjusted(0.5, 0.5, -0.5, -0.5), 6.0, 6.0)
+                    else:
+                        p.setPen(Qt.PenStyle.NoPen)
+                        p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.setPen(QPen(ps.TEXT if hx else ps.TEXT_CLOSE, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                    c = rm.center()
+                    d = 4.0
+                    p.drawLine(QPointF(c.x() - d, c.y() - d), QPointF(c.x() + d, c.y() + d))
+                    p.drawLine(QPointF(c.x() + d, c.y() - d), QPointF(c.x() - d, c.y() + d))
             p.restore()
-            # kaydırma ipucu
+
             if self._max_scroll() > 0:
                 p.save()
-                tr = QRectF(w - 5.0, lr.top() + 2.0, 3.0, lr.height() - 4.0)
+                tr = QRectF(w - ps.PAD - 5.0, lr.top() + 2.0, 3.0, lr.height() - 4.0)
                 th = max(18.0, tr.height() * (lr.height() / (len(self._items) * ROW_H)))
                 ty = tr.top() + (tr.height() - th) * (self._scroll / self._max_scroll())
                 p.setPen(Qt.PenStyle.NoPen)
@@ -963,8 +1000,24 @@ class ShelfPanel(QWidget):
                 p.drawRoundedRect(QRectF(tr.left(), ty, tr.width(), th), 1.5, 1.5)
                 p.restore()
 
-        # alt bilgi
+        # 4. Alt bilgi: kaynak metni + sağda hayalet 'Temizle' butonu
         fr = self._rects["footer"]
-        label = self._copy_note or "Hepsini kopyala"
-        ps.draw_footer(p, fr, "Tutup maile ya da klasöre sürükle", label,
-                       button_hover=(self._hover == "copy"))
+        can_clear = any(not it["pinned"] for it in self._items)
+        if can_clear:
+            btn_rect = ps.draw_footer(p, fr, "Tutup maile ya da klasöre sürükle", "Temizle",
+                                      button_hover=(self._hover == "clear"))
+            if btn_rect is not None:
+                self._rects["clear"] = btn_rect
+        else:
+            ps.draw_footer(p, fr, "Tutup maile ya da klasöre sürükle", None)
+            btn_rect = self._rects["clear"]
+            p.save()
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setPen(QPen(QColor(255, 255, 255, 25), 1.0))
+            p.setBrush(QColor(255, 255, 255, 8))
+            p.drawPath(ps.rounded(btn_rect.adjusted(0.5, 0.5, -0.5, -0.5), ps.R_BUTTON))
+            p.setFont(ps.font(11.5, QFont.Weight.Medium))
+            # Pasif durumda kontrast >= 3:1 (QColor(255, 255, 255, 120) koyu fonda ~4.7:1 verir)
+            p.setPen(QColor(255, 255, 255, 120))
+            p.drawText(btn_rect, Qt.AlignmentFlag.AlignCenter, "Temizle")
+            p.restore()

@@ -268,6 +268,9 @@ def test_panel_clicks():
     panel.show()
     QApplication.processEvents()
     got = collect(t)
+    assert "close" in panel._rects and panel._rects["close"].width() >= 24.0
+    assert "card_timer" in panel._rects and "card_task" in panel._rects
+    assert "skip" in panel._rects and "reset" in panel._rects and "play" in panel._rects and "stop" in panel._rects
     _click(panel, "play")                       # etkin değil -> başlat
     assert t.active and t.running
     _click(panel, "play")
