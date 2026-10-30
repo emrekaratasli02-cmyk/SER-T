@@ -240,6 +240,59 @@ def log_err(source: str, exc: Exception) -> None:
         except OSError:
             pass
 
+# --- Paylaşılan HTTP istemcisi -------------------------------------------------
+# Her istekte httpx.get yeni SSL bağlamı kuruyordu (~0.7 sn CPU). Tek istemci tembel kurulur.
+_HTTP_LOCK = threading.Lock()
+_HTTP_CLIENT: Optional[httpx.Client] = None
+
+
+def _http_client() -> httpx.Client:
+    global _HTTP_CLIENT
+    with _HTTP_LOCK:
+        if _HTTP_CLIENT is None:
+            _HTTP_CLIENT = httpx.Client(timeout=15)
+        return _HTTP_CLIENT
+
+
+def _http_reset(bad: Optional[httpx.Client] = None) -> None:
+    """Bozuk istemciyi kapat; sonraki çağrı yenisini kurar."""
+    global _HTTP_CLIENT
+    with _HTTP_LOCK:
+        if bad is not None and _HTTP_CLIENT is not bad:
+            return
+        old, _HTTP_CLIENT = _HTTP_CLIENT, None
+    if old is not None:
+        try:
+            old.close()
+        except Exception:
+            pass
+
+
+def _http_get(url: str, **kw: Any) -> httpx.Response:
+    """GET; ağ (taşıma) hatasında istemciyi yenileyip bir kez daha dener. Testler bunu yamalar."""
+    kw.setdefault("timeout", 15)
+    client = _http_client()
+    try:
+        return client.get(url, **kw)
+    except httpx.TransportError:
+        _http_reset(client)
+        return _http_client().get(url, **kw)
+
+
+_FX_LOG_WINDOW_S = 3600.0
+_FX_LOG_LAST: Dict[str, float] = {}
+
+
+def _fx_log_once(kind: str, exc: Exception) -> None:
+    """Hata türü başına saatte en fazla bir satır."""
+    now = _log_now()
+    with _LOG_DEDUP_LOCK:
+        last = _FX_LOG_LAST.get(kind)
+        if last is not None and now - last < _FX_LOG_WINDOW_S:
+            return
+        _FX_LOG_LAST[kind] = now
+    log_err("fx", exc)
+
 
 def tr_num(s: Any) -> float:
     """Convert Turkish or plain formatted number string or numeric value to float.
@@ -421,7 +474,7 @@ def _fetch_claude_live() -> Dict[str, Any]:
             "Authorization": f"Bearer {token}",
             "anthropic-beta": "oauth-2025-04-20",
         }
-        resp = httpx.get(
+        resp = _http_get(
             "https://api.anthropic.com/api/oauth/usage",
             headers=headers,
             timeout=15,
@@ -503,13 +556,29 @@ def _fetch_claude_live() -> Dict[str, Any]:
         return {"err": "Bağlantı yok"}
 
 
+_FX_URL = "https://finans.truncgil.com/today.json"
+_FX_RETRY_DELAY_S = 2.0
+
+
 def fetch_fx() -> Dict[str, Any]:
     """Fetch exchange rates and gold prices from finans.truncgil.com."""
     try:
-        resp = httpx.get("https://finans.truncgil.com/today.json", timeout=15)
+        resp = _http_get(_FX_URL, timeout=15)
         if resp.status_code != 200:
             return {"err": f"Hata {resp.status_code}"}
-        j = resp.json()
+        try:
+            j = resp.json()
+        except (ValueError, UnicodeDecodeError):
+            # Sunucu bazen gövdeyi eksik gönderiyor (kesik JSON / yarım UTF-8): 2 sn sonra bir kez daha dene.
+            time.sleep(_FX_RETRY_DELAY_S)
+            try:
+                resp = _http_get(_FX_URL, timeout=15)
+                if resp.status_code != 200:
+                    return {"err": f"Hata {resp.status_code}"}
+                j = resp.json()
+            except (ValueError, UnicodeDecodeError) as second:
+                _fx_log_once(type(second).__name__, second)
+                return {"err": "Bağlantı yok"}
         if not isinstance(j, dict):
             return {"err": "Geçersiz veri"}
         usd = j.get("USD")
@@ -554,7 +623,7 @@ def fetch_weather(lat: float = 38.37, lon: float = 34.03) -> Dict[str, Any]:
             "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m"
             "&daily=temperature_2m_max,temperature_2m_min&forecast_days=1&timezone=Europe/Istanbul"
         )
-        resp = httpx.get(url, timeout=15)
+        resp = _http_get(url, timeout=15)
         if resp.status_code != 200:
             return {"err": f"Hata {resp.status_code}"}
         j = resp.json()
