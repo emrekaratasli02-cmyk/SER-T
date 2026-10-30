@@ -161,6 +161,8 @@ def make_fakes() -> dict:
     def band_width(state):
         if not state.get("active"):
             return 0.0
+        if state.get("compact"):
+            return 56.0  # gerçek pomodoro.band_width gibi: compact = yalnız süre
         return 90.0 if state.get("task") else 76.0
 
     def draw_pomo_band(p, rect, state, hover=False):

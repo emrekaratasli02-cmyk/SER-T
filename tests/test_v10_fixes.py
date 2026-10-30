@@ -10,6 +10,7 @@
 """
 
 import ctypes
+V25_MENU_IDS = {"pomo_toggle", "show_shelf", "keep_awake"}
 from ctypes import wintypes
 import importlib.util
 import json
@@ -111,6 +112,8 @@ class TestV10Menus(unittest.TestCase):
             ("quit", "Kapat", False, None),
         ]
 
+        # v25: pomodoro / dosya rafı / uyku engelleme satırları ayrı test edilir (test_v25_wiring.py)
+        acts = [a for a in acts if a.get("id") not in V25_MENU_IDS]
         self.assertEqual(len(acts), len(expected))
         for i, (exp_id, exp_text, exp_checked, exp_group) in enumerate(expected):
             act = acts[i]

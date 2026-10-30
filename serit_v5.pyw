@@ -2431,7 +2431,7 @@ class SeritDock(QWidget):
         if pw > 0.0:
             # 1) pomodoronun görev satırı düşer (yalnız süre / "Odak · n/4"), 2) raf simgesi gizlenir
             try:
-                cw = float(pomodoro.band_width(dict(self._pomo_state, task="")))
+                cw = float(pomodoro.band_width(dict(self._pomo_state, compact=True)))
             except Exception:
                 cw = pw
             if cw < pw:
@@ -2479,7 +2479,7 @@ class SeritDock(QWidget):
                 self.hit_boxes.append((r_po, "pomo", None))
             if intersects(r_po):
                 try:
-                    st_p = dict(self._pomo_state, task="") if self._pomo_compact else self._pomo_state
+                    st_p = dict(self._pomo_state, compact=True) if self._pomo_compact else self._pomo_state
                     pomodoro.draw_pomo_band(p, r_po, st_p, hover=(self._hover_key == "pomo"))
                 except Exception as exc:
                     sources.log_err("pomodoro_draw", exc)

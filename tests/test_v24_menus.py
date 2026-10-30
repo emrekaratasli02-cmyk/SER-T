@@ -60,6 +60,8 @@ def test_compact_slider_is_thin() -> None:
 def test_dock_menu_seven_rows_and_no_card_toggles() -> None:
     _m, d = _dock()
     acts = d.build_dock_menu_actions()
+    # v25 satırları (pomodoro / raf / uyku engelleme) test_v25_wiring.py'de
+    acts = [a for a in acts if a.get("id") not in {"pomo_toggle", "show_shelf", "keep_awake"}]
     rows = [a for a in acts if a.get("type") != "separator"]
     # 7 seçenek + 3 ayırıcı (eskiden 12 seçenek + 4 ayırıcı)
     assert len(rows) == 7 and len(acts) == 10, [a.get("id") for a in acts]

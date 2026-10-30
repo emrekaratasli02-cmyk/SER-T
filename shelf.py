@@ -434,6 +434,9 @@ def type_icon(path: str, is_dir: bool, dpr: float) -> QPixmap:
         icon = _ICON_PROVIDER.icon(QFileInfo(path))
         if not icon.isNull():
             pm = icon.pixmap(QSize(px, px))
+            if not pm.isNull() and (pm.width() != px or pm.height() != px):
+                # Windows kabuk simgesi istenenden büyük (256 px) dönebiliyor: satıra taşıyordu
+                pm = pm.scaled(px, px, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
     except Exception:
         pm = QPixmap()
     if pm.isNull():                                   # çevrimdışı/ekransız ortam: düz belge simgesi
@@ -935,5 +938,5 @@ class ShelfPanel(QWidget):
         # alt bilgi
         fr = self._rects["footer"]
         label = self._copy_note or "Hepsini kopyala"
-        ps.draw_footer(p, fr, "Tutup maile, klasöre ya da Teams'e sürükle", label,
+        ps.draw_footer(p, fr, "Tutup maile ya da klasöre sürükle", label,
                        button_hover=(self._hover == "copy"))
