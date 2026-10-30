@@ -451,7 +451,12 @@ def _get_loop():
         if _LOOP is not None and _LOOP_THREAD is not None and _LOOP_THREAD.is_alive():
             if _LOOP_BLOCKED_SINCE is None or now - _LOOP_BLOCKED_SINCE < _LOOP_DEAD_AFTER_S:
                 return _LOOP
-            # Uzun süredir takılı: ölü işaretle (eski iş parçacığı daemon olarak terk edilir)
+            # Uzun süredir takılı: ölü işaretle. Takılma çözülürse eski döngü kendini durdursun
+            # (yoksa run_forever ile sonsuza dek açık bir iş parçacığı birikir).
+            try:
+                _LOOP.call_soon_threadsafe(_LOOP.stop)
+            except Exception:
+                pass
             _LOOP = None
             _LOOP_THREAD = None
         if _LOOP is None:

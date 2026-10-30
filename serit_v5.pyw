@@ -1760,7 +1760,9 @@ class SeritDock(QWidget):
             if old_err == curr_err:
                 if key == "sys" and not card_changed:
                     return  # halka değerleri değişmedi (<1 puan): ekranda görünen bir şey yok
-                if not self.anim_driver.is_running():
+                # sys: küçük değişim animasyonsuz oturur (_ring_move); başka bir tween (ör. pill)
+                # oynarken onun bölgesi sys kartını kapsamaz, bu yüzden kartı her zaman yenile.
+                if key == "sys" or not self.anim_driver.is_running():
                     r = self._get_card_rect(card_to_update)
                     if r is not None:
                         self.update(r.toRect().adjusted(-2, -2, 2, 2))
