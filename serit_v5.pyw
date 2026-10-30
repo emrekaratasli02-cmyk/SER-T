@@ -750,6 +750,20 @@ class SeritDock(QWidget):
             self.anim_ram.value = ram
             self.anim_ram.target_val = ram
 
+    # Bu farktan küçük değişimlerde halka/sayı animasyonu oynatılmaz, doğrudan hedefe oturur:
+    # boşta 2 sn'de bir gelen 1-3 puanlık dalgalanma için 60 fps'lik süpürme göze görünmez
+    # ama her seferinde ~20 tam kare çizdiriyordu. Büyük değişimlerde onaylı süpürme sürer.
+    RING_SNAP_DELTA = 5.0
+
+    def _ring_move(self, tw, target: float) -> None:
+        if abs(float(target) - tw.value) >= self.RING_SNAP_DELTA:
+            tw.retarget(target)
+            return
+        tw.stop()
+        tw.value = float(target)
+        tw.start_val = float(target)
+        tw.target_val = float(target)
+
     def _on_anim_frame(self) -> None:
         tweens = getattr(self.anim_driver, "_tweens", None)
         if not tweens:
@@ -1437,6 +1451,9 @@ class SeritDock(QWidget):
     def _on_media_ring_tick(self) -> None:
         """Repaint only the media play button rect for smooth ring progression (~2 fps, near-zero CPU)."""
         if not self._now_playing_info or not self._now_playing_info.get("playing"):
+            t = getattr(self, "media_ring_timer", None)
+            if t is not None:
+                t.stop()  # çalma başlayınca medya verisi yeniden başlatır
             return
         dur = self._now_playing_info.get("duration_s")
         if dur is None or float(dur) <= 0.0:
@@ -1647,6 +1664,9 @@ class SeritDock(QWidget):
 
             track_changed = (_track_sig(np) != _track_sig(old_np))
             self._now_playing_info = np
+            t = getattr(self, "media_ring_timer", None)
+            if t is not None and isinstance(np, dict) and np.get("playing") and not t.isActive():
+                t.start()
 
             if track_changed:
                 self.compute_layout_and_resize()
@@ -1705,10 +1725,10 @@ class SeritDock(QWidget):
             has_err = ("err" in res) or (cpu is None and ram is None)
             self.anim_sys_op.retarget(0.45 if has_err else 1.0)
             if cpu is not None and abs(cpu - self.anim_cpu.target_val) >= 1.0:
-                self.anim_cpu.retarget(cpu)
+                self._ring_move(self.anim_cpu, cpu)
                 card_changed = True
             if ram is not None and abs(ram - self.anim_ram.target_val) >= 1.0:
-                self.anim_ram.retarget(ram)
+                self._ring_move(self.anim_ram, ram)
                 card_changed = True
             card_to_update = "sys"
         elif key == "wx" and isinstance(res, dict):
@@ -1736,6 +1756,8 @@ class SeritDock(QWidget):
             old_err = bool(isinstance(old_val, dict) and old_val.get("err"))
             curr_err = bool(isinstance(res, dict) and res.get("err"))
             if old_err == curr_err:
+                if key == "sys" and not card_changed:
+                    return  # halka değerleri değişmedi (<1 puan): ekranda görünen bir şey yok
                 if not self.anim_driver.is_running():
                     r = self._get_card_rect(card_to_update)
                     if r is not None:
