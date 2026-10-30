@@ -2051,6 +2051,8 @@ class SeritDock(QWidget):
     # Modüller yoksa / etkin değilse hiçbir şey çizilmez, yerleşim ve piksel değişmez.
     V25_SHELF_GAP = 28.0        # raf simgesi | uygulamalar (ve pomodoro | uygulamalar)
     V25_SHELF_POMO_GAP = 24.0   # raf simgesi | pomodoro
+    V25_TIGHT_APPS_GAP = 20.0   # yer darsa önce boşluklar daralır, görev satırı kalır (30 Eki: canlı
+    V25_TIGHT_POMO_GAP = 16.0   # barda uzun görev adı 14 px sığmıyordu; daralma 16 px kazandırır)
     V25_MIN_CLEAR = 12.0        # sol kanat ile yeni blok arası en az boşluk
     V25_RIGHT_GAP = 6.0
 
@@ -2410,14 +2412,15 @@ class SeritDock(QWidget):
         y, h = CARD_Y, CARD_HEIGHT
         gap = self.V25_SHELF_GAP
 
-        def build(pw_: float, with_shelf: bool) -> Tuple[float, Dict[str, Optional[QRectF]]]:
+        def build(pw_: float, with_shelf: bool, gap_apps: Optional[float] = None,
+                  gap_sp: Optional[float] = None) -> Tuple[float, Dict[str, Optional[QRectF]]]:
             out: Dict[str, Optional[QRectF]] = {"shelf": None, "pomo": None}
-            x = apps_x - gap
+            x = apps_x - (gap if gap_apps is None else gap_apps)
             if pw_ > 0.0:
                 x -= pw_
                 out["pomo"] = QRectF(x, y, pw_, h)
                 if with_shelf:
-                    x -= self.V25_SHELF_POMO_GAP
+                    x -= self.V25_SHELF_POMO_GAP if gap_sp is None else gap_sp
             elif with_shelf:
                 pass
             if with_shelf:
@@ -2429,6 +2432,10 @@ class SeritDock(QWidget):
         if x >= limit:
             return out
         if pw > 0.0:
+            # 0) boşluklar daralır (görev satırı kalsın)
+            x, out = build(pw, shelf_w > 0.0, self.V25_TIGHT_APPS_GAP, self.V25_TIGHT_POMO_GAP)
+            if x >= limit:
+                return out
             # 1) pomodoronun görev satırı düşer (yalnız süre / "Odak · n/4"), 2) raf simgesi gizlenir
             try:
                 cw = float(pomodoro.band_width(dict(self._pomo_state, compact=True)))

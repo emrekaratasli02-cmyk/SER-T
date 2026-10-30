@@ -543,6 +543,21 @@ def test_full_layout_no_overlap_and_on_screen() -> None:
     m.presence.release_all()
 
 
+def test_tight_gaps_keep_task_line() -> None:
+    """Yer darsa önce boşluklar daralır (20/16 px), görev satırı kalır; o da sığmazsa compact."""
+    m = load_module(True)
+    d = make_dock(m, True, pomo="long", shelf_items=1)
+    # normal: 28+90+24+28 = 170 -> x=530; dar: 20+90+16+28 = 154 -> x=546
+    lay = d._v25_left_layout(700.0, 530.0)   # sınır 542: normal sığmaz, dar sığar
+    assert not d._pomo_compact, "dar boşlukla sığmalıydı"
+    assert abs(700.0 - lay["pomo"].right() - 20.0) < 0.01, lay
+    assert abs(lay["pomo"].x() - lay["shelf"].right() - 16.0) < 0.01, lay
+    lay = d._v25_left_layout(700.0, 600.0)   # sınır 612: dar da sığmaz
+    assert d._pomo_compact or lay["pomo"] is None, lay
+    lay = d._v25_left_layout(700.0, 400.0)   # bol yer: normal boşluklar
+    assert not d._pomo_compact and abs(700.0 - lay["pomo"].right() - 28.0) < 0.01, lay
+
+
 def test_emre_layout_gaps() -> None:
     """Emre'nin barı (ag + sys açık, 1536 mantıksal): yeni blok sol kanat ile uygulamalar arasına sığar."""
     m = load_module(True)
@@ -557,7 +572,8 @@ def test_emre_layout_gaps() -> None:
     print(f"  Emre düzeni: sol kanat->raf {gap_l:.1f}px, pomodoro->uygulamalar {gap_r:.1f}px, "
           f"raf {b['shelf'].width():.0f}px, pomodoro {b['pomo'].width():.0f}px")
     print(f"  görev satırı düştü mü: {d._pomo_compact}")
-    assert gap_l >= 12.0 and abs(gap_r - 28.0) < 0.01
+    # 28 px normal; yer darsa 20 px (V25_TIGHT_APPS_GAP), görev satırı korunur
+    assert gap_l >= 12.0 and (abs(gap_r - 28.0) < 0.01 or abs(gap_r - 20.0) < 0.01), (gap_l, gap_r)
 
 
 def test_no_polling_or_drops_in_preview() -> None:
@@ -581,6 +597,7 @@ def main() -> int:
         test_tile_rects_unchanged_by_new_block,
         test_full_layout_no_overlap_and_on_screen,
         test_emre_layout_gaps,
+        test_tight_gaps_keep_task_line,
         test_no_polling_or_drops_in_preview,
     ]
     failed = 0
