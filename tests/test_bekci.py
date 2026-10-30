@@ -3,7 +3,7 @@
 Covers all required watchdog behaviors with full mocking:
 1. Crash -> restore taskbar + release AppBar + restart dock.
 2. 4th crash within 10 minutes -> no restart, taskbar visible (autohide off), watchdog stops.
-3. Exit code 0 child -> clean exit, no restart, watchdog stops.
+3. Valid .clean_exit marker -> no restart, watchdog stops (exit code alone never counts).
 4. Dikte (dikte.pyw / bekci.pyw) process with same pythonw.exe is ignored.
 5. Single-instance named mutex enforcement.
 """
@@ -141,70 +141,6 @@ class TestCleanExitDetection(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
-    def test_marker_file_clean_exit(self) -> None:
-        """Presence of .clean_exit marker file marks exit as clean and removes marker."""
-        self.marker_file.touch()
-        self.assertTrue(self.marker_file.exists())
-
-        is_clean = serit_bekci.is_clean_exit(
-            marker_path=self.marker_file,
-            is_child=False,
-            returncode=None,
-            settings_path=self.settings_file,
-        )
-        self.assertTrue(is_clean)
-        self.assertFalse(self.marker_file.exists())  # marker removed after handling
-
-    def test_child_exit_code_zero_clean(self) -> None:
-        """Test Case 3: Exit code 0 child is detected as clean exit."""
-        is_clean = serit_bekci.is_clean_exit(
-            marker_path=self.marker_file,
-            is_child=True,
-            returncode=0,
-            settings_path=self.settings_file,
-        )
-        self.assertTrue(is_clean)
-
-    def test_child_exit_code_nonzero_crash(self) -> None:
-        """Non-zero exit code for child process is detected as a crash."""
-        is_clean = serit_bekci.is_clean_exit(
-            marker_path=self.marker_file,
-            is_child=True,
-            returncode=1,
-            settings_path=self.settings_file,
-        )
-        self.assertFalse(is_clean)
-
-        is_clean_sig = serit_bekci.is_clean_exit(
-            marker_path=self.marker_file,
-            is_child=True,
-            returncode=-9,
-            settings_path=self.settings_file,
-        )
-        self.assertFalse(is_clean_sig)
-
-    def test_external_process_clean_when_hide_taskbar_false(self) -> None:
-        """For external process, disappearance is clean exit if hide_taskbar is False."""
-        self.settings_file.write_text(json.dumps({"hide_taskbar": False}), encoding="utf-8")
-        is_clean = serit_bekci.is_clean_exit(
-            marker_path=self.marker_file,
-            is_child=False,
-            returncode=None,
-            settings_path=self.settings_file,
-        )
-        self.assertTrue(is_clean)
-
-    def test_external_process_crash_when_hide_taskbar_true(self) -> None:
-        """For external process, disappearance is a crash if hide_taskbar is True."""
-        self.settings_file.write_text(json.dumps({"hide_taskbar": True}), encoding="utf-8")
-        is_clean = serit_bekci.is_clean_exit(
-            marker_path=self.marker_file,
-            is_child=False,
-            returncode=None,
-            settings_path=self.settings_file,
-        )
-        self.assertFalse(is_clean)
-
 
 class TestWatchdogCore(unittest.TestCase):
     """Core watchdog tests covering Crash 1, 2, 3, 4 and state restoration."""
@@ -230,6 +166,10 @@ class TestWatchdogCore(unittest.TestCase):
             app_dir=self.tmp_path,
         )
         self.bekci.running = True
+        # Never look at the real machine's processes (a live dock must not be "attached").
+        p = patch("serit_bekci.find_dock_process", return_value=None)
+        p.start()
+        self.addCleanup(p.stop)
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
@@ -323,10 +263,14 @@ class TestWatchdogCore(unittest.TestCase):
         mock_autohide: MagicMock,
         mock_launch: MagicMock,
     ) -> None:
-        """Test Case 3: Exit code 0 child terminates cleanly: no restart, watchdog stops."""
+        """Test Case 3: child exits after writing a valid marker: no restart, watchdog stops."""
         clean_child = MagicMock()
         clean_child.pid = 7001
         clean_child.poll.return_value = 0  # Clean normal exit
+        self.bekci.started_at = time.time() - 30
+        self.marker_file.write_text(
+            json.dumps({"pid": 7002, "ppid": 7001, "t": time.time()}), encoding="utf-8"
+        )
 
         self.bekci.child_proc = clean_child
         self.bekci.dock_hwnd = 33333
@@ -385,11 +329,7 @@ class TestWatchdogCore(unittest.TestCase):
         # Run multiple operations (restore taskbar, clean exit checks, etc.)
         with patch.object(winapi, "taskbar_autohide_set"):
             serit_bekci.restore_taskbar(settings_path=self.settings_file)
-            serit_bekci.is_clean_exit(
-                marker_path=self.marker_file,
-                is_child=False,
-                settings_path=self.settings_file,
-            )
+            serit_bekci.is_clean_exit(marker_path=self.marker_file, watched_pids=[1])
 
         new_content = self.settings_file.read_text(encoding="utf-8")
         new_mtime = self.settings_file.stat().st_mtime_ns

@@ -5,9 +5,11 @@ variables override destinations.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -81,6 +83,26 @@ def get_cache_file(name: str) -> Path:
     if not is_production_process():
         return Path(tempfile.gettempdir()) / f"serit-dev-{name}"
     return DEFAULT_CACHE_DIR / name
+
+
+def write_clean_exit_marker(app_dir: Path) -> bool:
+    """Bekçiye "isteyerek kapandım" işareti yaz (yalnız gerçek kurulu bar yazar).
+
+    Test, önizleme, worktree kopyası ve "python -c" süreçleri hiçbir şey yazmaz; böylece
+    gerçek D:/Apps/serit/.clean_exit asla yanlışlıkla oluşmaz. İçerik: pid, ppid (venv
+    başlatıcısı = bekçinin izlediği pid) ve zaman. Atomik yazılır (tmp + os.replace).
+    """
+    try:
+        if is_running_under_test() or not is_production_process():
+            return False
+        target = Path(app_dir) / ".clean_exit"
+        tmp = target.with_name(target.name + ".tmp")
+        payload = {"pid": os.getpid(), "ppid": os.getppid(), "t": time.time()}
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, target)
+        return True
+    except Exception:
+        return False
 
 
 LOG_PATH: Path = get_log_path()

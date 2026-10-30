@@ -1205,7 +1205,9 @@ class SeritDock(QWidget):
         self._cleaned_up = True
         # Bekçiye "isteyerek kapandı" işareti (serit_bekci.pyw bu dosyayı görünce barı yeniden başlatmaz)
         try:
-            (APP_DIR / ".clean_exit").touch()
+            import logpath as _logpath
+
+            _logpath.write_clean_exit_marker(APP_DIR)
         except Exception:
             pass
         self._unregister_appbar()

@@ -12,22 +12,20 @@ Dikte (D:/Apps/dikte/dikte.pyw and bekci.pyw) may also run with a pythonw.exe
 interpreter. The watchdog identifies the dock exclusively by checking command-line
 arguments ending with 'serit_v5.pyw' and never by executable path.
 
-Clean Exit Detection Limitation:
-- Child processes launched by bekci: Clean exit is detected when the child process
-  terminates with exit code 0.
-- External dock processes not launched by bekci: Without a marker file, bekci treats
-  process disappearance as a crash only if settings.json has 'hide_taskbar' set to True.
-  Limitation: If an externally started dock is closed normally ('Kapat') by the user,
-  and 'hide_taskbar' was True, bekci cannot distinguish this from a crash unless a marker
-  file exists.
-
-Clean Exit Marker Snippet for serit_v5.pyw:
-To eliminate this limitation for externally started docks, add the following 3 lines
-to DockBar.cleanup() in serit_v5.pyw:
-    try:
-        (APP_DIR / ".clean_exit").touch()
-    except Exception:
-        pass
+Clean Exit Detection (marker + pid + age):
+The real dock (only when running as D:/Apps/serit/serit_v5.pyw, never from tests, previews
+or worktree copies) writes APP_DIR/.clean_exit in DockBar.cleanup() via
+logpath.write_clean_exit_marker(): JSON {"pid", "ppid", "t"}. The watchdog accepts a marker
+ONLY if it parses, its pid or ppid is the process being watched (child_proc.pid, the external
+monitored pid, or a child process recorded while it ran: the venv pythonw is a launcher whose
+child runs the code) and its time is not older than that process' start (2 s slack).
+Anything else (empty/foreign/old marker) is stale: it is deleted, logged as
+'stale marker ignored' and the exit is treated as a crash. The exit code is irrelevant.
+No valid marker = crash -> restart (3 per 10 min budget), unless another live dock already
+exists (e.g. the single-instance lock made ours exit); then the watchdog attaches to it.
+The marker is deleted at watchdog startup and right before every dock launch.
+The old 'hide_taskbar' heuristic for external docks was dropped: a user close ('Kapat')
+always writes a matching marker, so the marker rule covers it fully.
 """
 
 from __future__ import annotations
@@ -40,7 +38,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from typing import Any, List, Optional
+from typing import Any, Iterable, List, Optional, Tuple
 
 import psutil
 
@@ -181,43 +179,89 @@ def restore_taskbar(
         return False
 
 
+def read_marker(marker_path: Path) -> Optional[dict]:
+    """Parse the marker JSON; None if missing or unparseable."""
+    try:
+        data = json.loads(marker_path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def evaluate_exit(
+    marker_path: Path = MARKER_FILE,
+    watched_pids: Optional[Iterable[int]] = None,
+    started_at: float = 0.0,
+) -> Tuple[bool, str]:
+    """Decide whether an exit was deliberate. Returns (clean, reason).
+
+    A marker counts only if its pid/ppid is in watched_pids and its time >= started_at - 2 s.
+    A marker that exists but does not qualify is deleted (stale).
+    """
+    if not marker_path.exists():
+        return False, "no marker"
+    pids = {int(p) for p in (watched_pids or []) if p}
+    data = read_marker(marker_path)
+    reason = ""
+    ok = False
+    if data is None:
+        reason = "unparseable/empty marker"
+    else:
+        try:
+            m_pid = int(data.get("pid", 0) or 0)
+            m_ppid = int(data.get("ppid", 0) or 0)
+            m_t = float(data.get("t", 0) or 0)
+        except (TypeError, ValueError):
+            m_pid = m_ppid = 0
+            m_t = 0.0
+        if not m_t:
+            try:
+                m_t = marker_path.stat().st_mtime
+            except OSError:
+                m_t = 0.0
+        hit = m_pid if m_pid in pids else (m_ppid if m_ppid in pids else 0)
+        if not hit:
+            reason = f"foreign pid (marker pid={m_pid} ppid={m_ppid}, watching {sorted(pids)})"
+        elif m_t < started_at - 2.0:
+            reason = f"older than process start (marker t={m_t:.0f} < start {started_at:.0f})"
+        else:
+            ok = True
+            reason = f"marker matched pid {hit}"
+    if not ok:
+        try:
+            marker_path.unlink()
+        except Exception:
+            pass
+        _log(f"stale marker ignored ({reason})")
+    return ok, reason
+
+
 def is_clean_exit(
     marker_path: Path = MARKER_FILE,
-    is_child: bool = False,
-    returncode: Optional[int] = None,
-    settings_path: Path = SETTINGS_FILE,
+    watched_pids: Optional[Iterable[int]] = None,
+    started_at: float = 0.0,
 ) -> bool:
-    """Determine whether the dock exited cleanly or crashed.
+    """True only if a valid marker (see evaluate_exit) proves a deliberate close.
 
-    1. If .clean_exit marker file exists -> Clean exit.
-    2. If child process started by bekci -> Clean exit if returncode == 0.
-    3. If external process -> Crash ONLY if settings.json 'hide_taskbar' is True.
+    Exit code and the hide_taskbar setting play no role: no valid marker = crash.
+    A valid marker is consumed (deleted).
     """
+    ok, _ = evaluate_exit(marker_path, watched_pids, started_at)
+    if ok:
+        try:
+            marker_path.unlink()
+        except Exception:
+            pass
+    return ok
+
+
+def clear_marker(marker_path: Path) -> None:
     try:
         if marker_path.exists():
-            try:
-                marker_path.unlink()
-            except Exception:
-                pass
-            return True
+            marker_path.unlink()
+            _log("cleared existing .clean_exit marker")
     except Exception:
         pass
-
-    if is_child:
-        return returncode == 0
-
-    try:
-        if settings_path.exists():
-            data = json.loads(settings_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                hide_taskbar = bool(data.get("hide_taskbar", False))
-                # For an external process, disappearance is treated as a crash
-                # only if hide_taskbar is True. If hide_taskbar is False, it's clean.
-                return not hide_taskbar
-    except Exception:
-        pass
-
-    return False
 
 
 def launch_dock(
@@ -325,15 +369,46 @@ class SeritBekci:
         self.monitored_pid: Optional[int] = None
         self.dock_hwnd: Optional[int] = None
         self.running: bool = False
+        self.started_at: float = 0.0
+        self.watched_pids: set = set()
+
+    def _track_children(self, pid: int) -> None:
+        """Remember the pids of the watched process and its children (launcher -> real dock)."""
+        try:
+            self.watched_pids.add(pid)
+            for ch in psutil.Process(pid).children(recursive=True):
+                self.watched_pids.add(ch.pid)
+        except Exception:
+            pass
+
+    def _attach_existing(self, reason: str) -> bool:
+        """If another live dock exists, watch it instead of launching a second one."""
+        existing = find_dock_process()
+        if existing is None:
+            return False
+        self.monitored_pid = existing.pid
+        self.watched_pids = {existing.pid}
+        try:
+            self.started_at = existing.create_time()
+        except Exception:
+            self.started_at = time.time()
+        self._track_children(existing.pid)
+        self.dock_hwnd = find_dock_hwnd(existing.pid)
+        _log(f"attached to existing dock PID {existing.pid} ({reason})")
+        return True
 
     def start_dock(self) -> None:
         """Start or restart the dock as a child process."""
+        clear_marker(self.marker_path)
+        self.started_at = time.time()
+        self.watched_pids = set()
         self.child_proc = launch_dock(
             pythonw_path=self.pythonw_path,
             dock_script=self.dock_script,
             app_dir=self.app_dir,
         )
         self.monitored_pid = self.child_proc.pid
+        self.watched_pids = {self.child_proc.pid}
         self.dock_hwnd = None
         _log(f"Dock child process started with PID {self.child_proc.pid}")
 
@@ -385,26 +460,27 @@ class SeritBekci:
             ret = self.child_proc.poll()
             if ret is None:
                 # Still running
+                self._track_children(self.child_proc.pid)
                 if not self.dock_hwnd and self.child_proc.pid:
                     self.dock_hwnd = find_dock_hwnd(self.child_proc.pid)
                 return
 
             # Child process has exited!
-            clean = is_clean_exit(
-                marker_path=self.marker_path,
-                is_child=True,
-                returncode=ret,
-                settings_path=self.settings_path,
-            )
             pid = self.child_proc.pid
+            self.watched_pids.add(pid)
+            clean, reason = evaluate_exit(self.marker_path, self.watched_pids, self.started_at)
+            if clean:
+                clear_marker(self.marker_path)
             self.child_proc = None
             self.monitored_pid = None
 
             if clean:
-                _log(f"Dock child process {pid} exited cleanly (code {ret}). Watchdog stopping.")
+                _log(f"Dock child process {pid} exited cleanly (code {ret}; {reason}). Watchdog stopping.")
                 self.running = False
             else:
-                _log(f"Dock child process {pid} terminated unexpectedly (code {ret}).")
+                _log(f"Dock child process {pid} exited without valid marker (code {ret}; {reason}): crash.")
+                if self._attach_existing("another dock is alive"):
+                    return
                 self.handle_crash()
             return
 
@@ -423,31 +499,28 @@ class SeritBekci:
                 is_alive = False
 
             if is_alive:
+                self._track_children(self.monitored_pid)
                 return
 
             # External process is no longer running!
             pid = self.monitored_pid
             self.monitored_pid = None
-            clean = is_clean_exit(
-                marker_path=self.marker_path,
-                is_child=False,
-                returncode=None,
-                settings_path=self.settings_path,
-            )
+            self.watched_pids.add(pid)
+            clean, reason = evaluate_exit(self.marker_path, self.watched_pids, self.started_at)
             if clean:
-                _log(f"External dock process {pid} exited cleanly. Watchdog stopping.")
+                clear_marker(self.marker_path)
+                _log(f"External dock process {pid} exited cleanly ({reason}). Watchdog stopping.")
                 self.running = False
             else:
-                _log(f"External dock process {pid} disappeared unexpectedly.")
+                _log(f"External dock process {pid} disappeared without valid marker ({reason}): crash.")
+                if self._attach_existing("another dock is alive"):
+                    return
                 self.handle_crash()
             return
 
         # 3. Neither child nor external process is currently tracked.
-        existing = find_dock_process()
-        if existing is not None:
-            self.monitored_pid = existing.pid
-            self.dock_hwnd = find_dock_hwnd(existing.pid)
-            _log(f"Attached to existing dock process PID {existing.pid}")
+        if self._attach_existing("startup"):
+            pass
         else:
             _log("No active dock process found. Starting dock.")
             self.start_dock()
@@ -456,6 +529,7 @@ class SeritBekci:
         """Main loop: run step() every poll_interval seconds."""
         self.running = True
         _log("Şerit bekçi watchdog started.")
+        clear_marker(self.marker_path)
         try:
             while self.running:
                 self.step()
