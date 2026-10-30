@@ -39,6 +39,9 @@ EXCLUDED_NIC_SUBSTRINGS = (
 )
 
 
+CORAL = QColor("#D97757")
+
+
 def is_virtual_or_loopback(nic_name: str) -> bool:
     """Sanal / yerel ağ arayüzlerini filtreler."""
     low = nic_name.lower()
@@ -175,7 +178,6 @@ def draw_net_band(p: QPainter, rect: QRectF, state: Optional[Dict[str, Any]], ho
     base_up = base_down + gap + cap
 
     x = rect.left()
-    col_arrow = ps.ACCENT
     col_text = ps.TEXT if hover else ps.TEXT_BODY
 
     p.setFont(f)
@@ -183,7 +185,7 @@ def draw_net_band(p: QPainter, rect: QRectF, state: Optional[Dict[str, Any]], ho
     # Üst satır: ↓
     down_rate = state.get("down")
     down_str = fmt_rate(down_rate)
-    p.setPen(col_arrow)
+    p.setPen(ps.ACCENT)
     p.drawText(QPointF(x, base_down), "↓")
     arrow_w = max(fm.horizontalAdvance("↓ "), fm.horizontalAdvance("↑ "))
     p.setPen(col_text)
@@ -192,7 +194,7 @@ def draw_net_band(p: QPainter, rect: QRectF, state: Optional[Dict[str, Any]], ho
     # Alt satır: ↑
     up_rate = state.get("up")
     up_str = fmt_rate(up_rate)
-    p.setPen(col_arrow)
+    p.setPen(CORAL)
     p.drawText(QPointF(x, base_up), "↑")
     p.setPen(col_text)
     p.drawText(QPointF(x + arrow_w, base_up), up_str)

@@ -191,12 +191,12 @@ def make_fakes() -> dict:
 
 def load_module(fakes: bool):
     """serit_v5.pyw'yi (sahte ya da yok) modüllerle yükler."""
-    names = ("shelf", "pomodoro", "presence")
+    names = ("shelf", "pomodoro", "presence", "netspeed", "updates", "appusage")
     saved = {n: sys.modules.get(n, "__missing__") for n in names}
     if fakes:
         sys.modules.update(make_fakes())
     else:
-        for n in names:
+        for n in names:  # v26 modülleri de yok: eski düzen birebir kalmalı
             sys.modules[n] = None  # import ImportError verir
     try:
         spec = importlib.util.spec_from_file_location("serit_v5_v25w", str(APP_DIR / "serit_v5.pyw"))

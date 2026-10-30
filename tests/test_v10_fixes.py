@@ -10,7 +10,7 @@
 """
 
 import ctypes
-V25_MENU_IDS = {"pomo_toggle", "show_shelf", "keep_awake"}
+V25_MENU_IDS = {"pomo_toggle", "show_shelf", "keep_awake", "toggle_net_speed", "toggle_updates"}
 from ctypes import wintypes
 import importlib.util
 import json

@@ -53,7 +53,7 @@ WINGET_ARGS = (
 
 CHECK_PERIOD_S = 24 * 3600.0  # 24 saat
 ERROR_RETRY_S = 2 * 3600.0   # 2 saat
-BAND_ICON_W = 28.0
+BAND_ICON_W = 38.0
 
 _TR_MONTHS = ["", "Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"]
 
@@ -323,11 +323,35 @@ class UpdateChecker:
 
 
 def band_width(state: Optional[Dict[str, Any]]) -> float:
-    """Güncelleme varsa 28 px genişlik, yoksa veya durum bilinmiyorsa 0 px (gizli)."""
-    count = state.get("count") if state else None
+    """Güncelleme varsa 38 px genişlik, yoksa veya durum bilinmiyorsa 0 px (gizli)."""
+    if not state or state.get("err"):
+        return 0.0
+    count = state.get("count")
     if count is not None and count >= 1:
         return BAND_ICON_W
     return 0.0
+
+
+def _draw_tray_glyph(p: QPainter, cx: float, cy: float, col: QColor) -> None:
+    pen = QPen(col, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+
+    # Tepsi
+    path = QPainterPath()
+    path.moveTo(cx - 7.0, cy + 2.0)
+    path.lineTo(cx - 7.0, cy + 6.0)
+    path.lineTo(cx + 7.0, cy + 6.0)
+    path.lineTo(cx + 7.0, cy + 2.0)
+    p.drawPath(path)
+
+    # İnen ok
+    p.drawLine(QPointF(cx, cy - 6.0), QPointF(cx, cy + 2.5))
+    path_arrow = QPainterPath()
+    path_arrow.moveTo(cx - 3.5, cy - 0.5)
+    path_arrow.lineTo(cx, cy + 3.0)
+    path_arrow.lineTo(cx + 3.5, cy - 0.5)
+    p.drawPath(path_arrow)
 
 
 def draw_updates_badge(
@@ -336,54 +360,28 @@ def draw_updates_badge(
     state: Optional[Dict[str, Any]],
     hover: bool = False,
 ) -> None:
-    """Bant rozeti: açık tepsiye inen ok + sağ üstte mavi sayaç rozeti."""
-    count = state.get("count") if state else None
+    """Bant rozeti (look B2): Tepsi glifi + sağında mavi (#6EA8FE) sayaç sayısı, çip yok."""
+    if not state or state.get("err"):
+        return
+    count = state.get("count")
     if count is None or count < 1:
         return
 
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
-    col = QColor(255, 255, 255, 255 if hover else 140)
-    pen = QPen(col, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-    p.setPen(pen)
-    p.setBrush(Qt.BrushStyle.NoBrush)
-
-    cx = rect.center().x()
     cy = rect.center().y()
+    gx = rect.left() + 9.0
+    col = ps.TEXT if hover else ps.TEXT_BODY
+    _draw_tray_glyph(p, gx, cy, col)
 
-    # Tepsi
-    path = QPainterPath()
-    tw, th = 13.0, 5.0
-    path.moveTo(cx - tw / 2.0, cy + 1.0)
-    path.lineTo(cx - tw / 2.0, cy + 1.0 + th)
-    path.lineTo(cx + tw / 2.0, cy + 1.0 + th)
-    path.lineTo(cx + tw / 2.0, cy + 1.0)
-
-    # İnen ok
-    path.moveTo(cx, cy - 7.0)
-    path.lineTo(cx, cy + 2.0)
-    path.moveTo(cx - 3.5, cy - 1.5)
-    path.lineTo(cx, cy + 2.0)
-    path.lineTo(cx + 3.5, cy - 1.5)
-    p.drawPath(path)
-
-    # Sağ üst mavi sayaç rozeti
-    count_str = str(count) if count <= 99 else "99+"
-    f = theme.make_font(9.0, QFont.Weight.Bold, tabular=True)
-    fm = QFontMetricsF(f)
-    tw_txt = fm.horizontalAdvance(count_str)
-    chip_h = 13.0
-    chip_w = max(chip_h, tw_txt + 6.0)
-    chip_rect = QRectF(rect.right() - chip_w - 1.0, rect.top() + 3.0, chip_w, chip_h)
-
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(ps.ACCENT)
-    p.drawRoundedRect(chip_rect, chip_h / 2.0, chip_h / 2.0)
-
+    tx = gx + 11.0
+    f = theme.make_font(10.0, QFont.Weight.DemiBold, tabular=True)
     p.setFont(f)
-    p.setPen(QColor(255, 255, 255))
-    p.drawText(chip_rect, Qt.AlignmentFlag.AlignCenter, count_str)
+    p.setPen(ps.ACCENT)
+    txt = str(count) if count <= 99 else "99+"
+    p.drawText(QPointF(tx, cy + 3.5), txt)
 
     p.restore()
 

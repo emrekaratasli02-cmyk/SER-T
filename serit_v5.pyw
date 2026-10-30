@@ -36,6 +36,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QColor,
+    QPen,
     QFont,
     QFontMetricsF,
     QGuiApplication,
@@ -81,6 +82,20 @@ try:
     import presence
 except ImportError:
     presence = None
+
+# v26: ağ hızı / winget güncellemeleri / kütük kaynak kullanımı (isteğe bağlı modüller)
+try:
+    import netspeed
+except Exception:
+    netspeed = None
+try:
+    import updates
+except Exception:
+    updates = None
+try:
+    import appusage
+except Exception:
+    appusage = None
 
 
 class LRUCache(collections.OrderedDict):
@@ -281,16 +296,28 @@ class BubbleWidget(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self._text: str = ""
+        self._sub_text: Optional[str] = None
 
-    def show_bubble(self, global_anchor: QPointF, text: str) -> None:
+    def show_bubble(self, global_anchor: QPointF, text: str, sub_text: Optional[str] = None) -> None:
         if not text:
             self.hide()
             return
         self._text = text
-        f = theme.make_font(pinned.BUBBLE_FONT_SIZE, QFont.Weight.Medium)
-        fm = QFontMetricsF(f)
-        bw = fm.horizontalAdvance(text) + 2.0 * pinned.BUBBLE_PAD_H
-        bh = fm.height() + 2.0 * pinned.BUBBLE_PAD_V
+        self._sub_text = sub_text
+
+        if not sub_text:
+            f = theme.make_font(pinned.BUBBLE_FONT_SIZE, QFont.Weight.Medium)
+            fm = QFontMetricsF(f)
+            bw = fm.horizontalAdvance(text) + 2.0 * pinned.BUBBLE_PAD_H
+            bh = fm.height() + 2.0 * pinned.BUBBLE_PAD_V
+        else:
+            f_title = theme.make_font(10.0, QFont.Weight.DemiBold)
+            f_sub = theme.make_font(10.0, QFont.Weight.Normal, tabular=True)
+            fmt = QFontMetricsF(f_title)
+            fms = QFontMetricsF(f_sub)
+            bw = max(fmt.horizontalAdvance(text), fms.horizontalAdvance(sub_text)) + 24.0
+            bh = 42.0
+
         self.resize(int(math.ceil(bw + 4)), int(math.ceil(bh + 4)))
         self.move(
             int(round(global_anchor.x() - bw / 2.0)),
@@ -303,12 +330,30 @@ class BubbleWidget(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.TextAntialiasing)
-        pinned.draw_label_bubble(
-            p,
-            QPointF(self.width() / 2.0, float(self.height())),
-            self._text,
-            gap=0.0,
-        )
+
+        if not self._sub_text:
+            pinned.draw_label_bubble(
+                p,
+                QPointF(self.width() / 2.0, float(self.height())),
+                self._text,
+                gap=0.0,
+            )
+        else:
+            bubble = QRectF(2.0, 2.0, float(self.width() - 4), float(self.height() - 4))
+            p.setBrush(QColor(20, 22, 28, 245))
+            p.setPen(QPen(QColor(255, 255, 255, 25), 1.0))
+            p.drawRoundedRect(bubble, 8.0, 8.0)
+
+            f_title = theme.make_font(10.0, QFont.Weight.DemiBold)
+            p.setFont(f_title)
+            p.setPen(QColor(255, 255, 255))
+            p.drawText(QPointF(bubble.left() + 12.0, bubble.top() + 16.0), self._text)
+
+            f_sub = theme.make_font(10.0, QFont.Weight.Normal, tabular=True)
+            p.setFont(f_sub)
+            p.setPen(QColor(255, 255, 255, 217))  # white 85%
+            p.drawText(QPointF(bubble.left() + 12.0, bubble.top() + 32.0), self._sub_text)
+
         p.end()
 
 
@@ -1360,6 +1405,21 @@ class SeritDock(QWidget):
             self.presence_timer.start()
             self.submit_fetch("presence")
 
+        # v26: ağ hızı (2 sn) ve winget güncellemeleri (90 sn sonra ve 30 dk bir)
+        if netspeed is not None and self.settings.get("net_speed_enabled", True):
+            self.net_timer = QTimer(self)
+            self.net_timer.setInterval(2000)
+            self.net_timer.timeout.connect(lambda: self.submit_fetch("net"))
+            self.net_timer.start()
+            self.submit_fetch("net")
+
+        if updates is not None and self.settings.get("updates_enabled", True):
+            self.updates_timer = QTimer(self)
+            self.updates_timer.setInterval(30 * 60 * 1000)  # 30 dk
+            self.updates_timer.timeout.connect(self._check_updates_if_due)
+            self.updates_timer.start()
+            QTimer.singleShot(90 * 1000, self._check_updates_if_due)
+
     def _sync_tray_icons(self) -> None:
         """Cache tray icon pixmaps on GUI thread without blocking."""
         uncached = []
@@ -1603,6 +1663,9 @@ class SeritDock(QWidget):
             "shelfdl": (self._dl_watcher.poll if self._dl_watcher is not None else None),
             "shelfshot": (self._shot_watcher.poll if self._shot_watcher is not None else None),
             "presence": getattr(presence, "read_capability_usage", None),
+            "net": (self._net_meter.sample if self._net_meter is not None else None),
+            "updates_check": (self._update_checker.check if self._update_checker is not None else None),
+            "appusage": (self._app_usage_sampler.sample if self._app_usage_sampler is not None else None),
         }
         fn = fetchers.get(key)
         if fn:
@@ -1617,6 +1680,15 @@ class SeritDock(QWidget):
             return
         if key == "presence":
             self._on_presence_data(res)
+            return
+        if key == "net":
+            self._on_net_data(res)
+            return
+        if key == "updates_check":
+            self._on_updates_data(res)
+            return
+        if key == "appusage":
+            self._on_app_usage_data(res)
             return
         if isinstance(res, dict) and res.get("err"):
             sources.log_err(key, RuntimeError(str(res.get("err"))))
@@ -2089,6 +2161,47 @@ class SeritDock(QWidget):
         self._drag_dwell_timer.setInterval(self.DRAG_DWELL_MS)
         self._drag_dwell_timer.timeout.connect(self._on_drag_dwell)
         self._dwell_activate: Callable[[int], Any] = winapi.activate_window  # testler sahtesini koyar
+
+        # v26 state
+        self._net_meter = None
+        self._net_state: Dict[str, Any] = {}
+        self._net_sig: Tuple[Any, ...] = (False, 0.0)
+        self._update_checker = None
+        self._updates_state: Dict[str, Any] = {}
+        self._updates_panel = None
+        self._updates_sig: Tuple[Any, ...] = (False, 0.0)
+        self._app_usage_sampler = None
+        self._app_usage_data: Dict[str, Any] = {}
+        self._ctrl_down_fn: Optional[Callable[[], bool]] = None
+        self._ctrl_usage_on: bool = False
+        self._ctrl_poll_timer: Optional[QTimer] = None
+        self._app_usage_timer: Optional[QTimer] = None
+
+        if netspeed is not None:
+            try:
+                self._net_meter = netspeed.NetSpeedMeter()
+            except Exception as exc:
+                sources.log_err("net_meter_init", exc)
+        if updates is not None:
+            try:
+                self._update_checker = updates.UpdateChecker()
+                self._updates_state = dict(self._update_checker.state())
+            except Exception as exc:
+                sources.log_err("updates_checker_init", exc)
+        if appusage is not None:
+            try:
+                self._app_usage_sampler = appusage.AppUsageSampler()
+            except Exception as exc:
+                sources.log_err("app_usage_sampler_init", exc)
+
+        self._ctrl_poll_timer = QTimer(self)
+        self._ctrl_poll_timer.setInterval(100)
+        self._ctrl_poll_timer.timeout.connect(self._on_ctrl_poll)
+
+        self._app_usage_timer = QTimer(self)
+        self._app_usage_timer.setInterval(1000)
+        self._app_usage_timer.timeout.connect(self._on_app_usage_tick)
+
         if self.preview_mode:
             return
         try:
@@ -2156,6 +2269,16 @@ class SeritDock(QWidget):
             save_settings(self.settings)
 
     def _v25_tooltip(self, key: str) -> str:
+        if key == "net":
+            try:
+                return str(netspeed.tooltip(self._net_state) if netspeed is not None else "")
+            except Exception:
+                return ""
+        if key == "updates":
+            try:
+                return str(updates.tooltip(self._updates_state) if updates is not None else "")
+            except Exception:
+                return ""
         if key == "shelf":
             n = int(self.shelf_store.count()) if self.shelf_store is not None else 0
             if n:
@@ -2452,6 +2575,163 @@ class SeritDock(QWidget):
         return bool(presence is not None and self.settings.get("presence_enabled", True)
                     and (u.get("mic") or u.get("cam")))
 
+    def _on_net_data(self, res: Any) -> None:
+        if not isinstance(res, dict):
+            return
+        self._net_state = res
+        vis = bool(res.get("visible"))
+        w = float(netspeed.band_width(res)) if (netspeed is not None and vis) else 0.0
+        sig = (vis, round(w, 1))
+        if sig != self._net_sig:
+            self._net_sig = sig
+            self.update()
+        elif vis:
+            self._v25_update_key("net")
+
+    def _on_updates_data(self, res: Any) -> None:
+        if not isinstance(res, dict):
+            return
+        self._updates_state = res
+        if self._updates_panel is not None and hasattr(self._updates_panel, "set_state"):
+            try:
+                self._updates_panel.set_state(res)
+            except Exception as exc:
+                sources.log_err("updates_panel_set_state", exc)
+        count = res.get("count")
+        vis = bool(count is not None and count >= 1 and not res.get("err"))
+        w = float(updates.band_width(res)) if (updates is not None and vis) else 0.0
+        sig = (vis, round(w, 1))
+        if sig != self._updates_sig:
+            self._updates_sig = sig
+            self.update()
+        elif vis:
+            self._v25_update_key("updates")
+
+    def _check_updates_if_due(self) -> None:
+        if updates is None or not self.settings.get("updates_enabled", True):
+            return
+        if self._update_checker is not None:
+            try:
+                if self._update_checker.due():
+                    self.submit_fetch("updates_check")
+            except Exception as exc:
+                sources.log_err("updates_due_check", exc)
+
+    def action_show_updates(self, rect: Optional[QRectF] = None) -> None:
+        if updates is None or not self.settings.get("updates_enabled", True):
+            return
+        if self._updates_panel is None:
+            try:
+                self._updates_panel = updates.UpdatesPanel(checker=self._update_checker)
+                self._updates_panel.check_requested.connect(lambda: self.submit_fetch("updates_check"))
+            except Exception as exc:
+                sources.log_err("updates_panel_init", exc)
+                return
+        self._toggle_v25_panel(self._updates_panel, "updates", rect)
+
+    def action_toggle_net_speed(self) -> None:
+        cur = bool(self.settings.get("net_speed_enabled", True))
+        self.settings["net_speed_enabled"] = not cur
+        self._v25_save_later()
+        if not self.settings["net_speed_enabled"]:
+            if hasattr(self, "net_timer") and self.net_timer.isActive():
+                self.net_timer.stop()
+        else:
+            if hasattr(self, "net_timer") and not self.net_timer.isActive():
+                self.net_timer.start()
+                self.submit_fetch("net")
+        self.update()
+
+    def action_toggle_updates(self) -> None:
+        cur = bool(self.settings.get("updates_enabled", True))
+        self.settings["updates_enabled"] = not cur
+        self._v25_save_later()
+        if not self.settings["updates_enabled"]:
+            if hasattr(self, "updates_timer") and self.updates_timer.isActive():
+                self.updates_timer.stop()
+        else:
+            if hasattr(self, "updates_timer") and not self.updates_timer.isActive():
+                self.updates_timer.start()
+                self._check_updates_if_due()
+        self.update()
+
+    def _is_ctrl_down(self) -> bool:
+        if self._ctrl_down_fn is not None:
+            try:
+                return bool(self._ctrl_down_fn())
+            except Exception:
+                return False
+        try:
+            user32 = ctypes.windll.user32
+            user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+            user32.GetAsyncKeyState.restype = ctypes.c_short
+            return bool(user32.GetAsyncKeyState(0x11) & 0x8000)
+        except Exception:
+            return False
+
+    def _on_ctrl_poll(self) -> None:
+        if not self.settings.get("app_usage_ctrl", True):
+            self._stop_ctrl_timers()
+            return
+        idx = self._hover_app_idx
+        if idx is None or idx >= len(self.tiles):
+            self._stop_ctrl_timers()
+            return
+        tile = self.tiles[idx]
+        if not tile.get("running"):
+            self._stop_ctrl_timers()
+            return
+
+        is_down = self._is_ctrl_down()
+        if is_down == self._ctrl_usage_on:
+            return  # yalnız Ctrl basılınca / bırakılınca iş yap
+        self._ctrl_usage_on = is_down
+        if is_down:
+            if self._app_usage_timer is not None and not self._app_usage_timer.isActive():
+                self._app_usage_timer.start()
+                self.submit_fetch("appusage")
+            self._update_tile_bubble(idx, show_usage=True)
+        else:
+            if self._app_usage_timer is not None and self._app_usage_timer.isActive():
+                self._app_usage_timer.stop()
+            self._update_tile_bubble(idx, show_usage=False)
+
+    def _on_app_usage_tick(self) -> None:
+        self.submit_fetch("appusage")
+
+    def _on_app_usage_data(self, res: Any) -> None:
+        if isinstance(res, dict):
+            self._app_usage_data = res
+            idx = self._hover_app_idx
+            if idx is not None and self._ctrl_usage_on:
+                self._update_tile_bubble(idx, show_usage=True)
+
+    def _stop_ctrl_timers(self) -> None:
+        self._ctrl_usage_on = False
+        if self._ctrl_poll_timer is not None and self._ctrl_poll_timer.isActive():
+            self._ctrl_poll_timer.stop()
+        if self._app_usage_timer is not None and self._app_usage_timer.isActive():
+            self._app_usage_timer.stop()
+
+    def _update_tile_bubble(self, idx: int, show_usage: bool = False) -> None:
+        if self.preview_mode:
+            return
+        hp_open = self.hover_preview is not None and self.hover_preview.is_open()
+        if hp_open or idx >= len(self.tiles) or idx >= len(self._tile_rects):
+            return
+        tile = self.tiles[idx]
+        r_tile = self._tile_rects[idx]
+        pt_top = self.mapToGlobal(QPoint(int(round(r_tile.center().x())), int(round(r_tile.top()))))
+        anchor = QPointF(float(pt_top.x()), float(pt_top.y()))
+        title = tile.get("name", "")
+
+        sub_text = None
+        if show_usage and appusage is not None:
+            usage_info = appusage.usage_for_tile(self._app_usage_data, tile)
+            sub_text = appusage.fmt_usage(usage_info)
+
+        self.bubble.show_bubble(anchor, title, sub_text=sub_text)
+
     def _on_presence_data(self, res: Any) -> None:
         if not isinstance(res, dict):
             return
@@ -2467,12 +2747,25 @@ class SeritDock(QWidget):
 
     def _v25_right_items(self) -> List[Tuple[str, float]]:
         items: List[Tuple[str, float]] = []
-        if presence is None:
-            return items
-        if self._keep_awake_on():
-            items.append(("keepawake", float(getattr(presence, "KEEP_AWAKE_ICON_W", 28.0))))
-        if self._presence_on():
-            items.append(("presence", float(getattr(presence, "PRESENCE_ICON_W", 24.0))))
+        if netspeed is not None and self.settings.get("net_speed_enabled", True):
+            try:
+                nw = float(netspeed.band_width(self._net_state))
+            except Exception:
+                nw = 0.0
+            if nw > 0.0:
+                items.append(("net", nw))
+        if updates is not None and self.settings.get("updates_enabled", True):
+            try:
+                uw = float(updates.band_width(self._updates_state))
+            except Exception:
+                uw = 0.0
+            if uw > 0.0:
+                items.append(("updates", uw))
+        if presence is not None:
+            if self._keep_awake_on():
+                items.append(("keepawake", float(getattr(presence, "KEEP_AWAKE_ICON_W", 28.0))))
+            if self._presence_on():
+                items.append(("presence", float(getattr(presence, "PRESENCE_ICON_W", 24.0))))
         return items
 
     def _v25_right_width(self) -> float:
@@ -2577,6 +2870,8 @@ class SeritDock(QWidget):
 
     def _paint_v25_right(self, p: QPainter, actions_x: float, is_full: bool,
                          intersects: Callable[[QRectF], bool]) -> None:
+        self._v25_rects.pop("net", None)
+        self._v25_rects.pop("updates", None)
         self._v25_rects.pop("keepawake", None)
         self._v25_rects.pop("presence", None)
         x = actions_x
@@ -2588,12 +2883,16 @@ class SeritDock(QWidget):
                 self.hit_boxes.append((r, key, None))
             if intersects(r):
                 try:
-                    if key == "keepawake":
+                    if key == "net" and netspeed is not None:
+                        netspeed.draw_net_band(p, r, self._net_state, hover=(self._hover_key == key))
+                    elif key == "updates" and updates is not None:
+                        updates.draw_updates_badge(p, r, self._updates_state, hover=(self._hover_key == key))
+                    elif key == "keepawake" and presence is not None:
                         presence.draw_keep_awake_icon(p, r, True, hover=(self._hover_key == key))
-                    else:
+                    elif key == "presence" and presence is not None:
                         presence.draw_presence_icon(p, r, self._presence_usage, hover=(self._hover_key == key))
                 except Exception as exc:
-                    sources.log_err("presence_draw", exc)
+                    sources.log_err(f"{key}_draw", exc)
 
     def _left_open_sig(self) -> Tuple[bool, bool, bool, bool]:
         """Sol kanat kartlarının paneli açık mı: (Claude, Mail, Antigravity, Sistem)."""
@@ -3228,6 +3527,7 @@ class SeritDock(QWidget):
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event: QEvent) -> None:
+        self._stop_ctrl_timers()
         if not self.preview_mode:
             self.bubble.hide()
         self._on_tile_hover(None)
@@ -3337,6 +3637,9 @@ class SeritDock(QWidget):
         super().wheelEvent(event)
 
     def handle_click(self, key: str, extra: Any, rect: QRectF, pos: Optional[QPointF] = None) -> None:
+        if key == "updates":
+            self.action_show_updates(rect)
+            return
         if key == "desktop":
             if not self.preview_mode:
                 winapi.toggle_desktop()
@@ -3793,6 +4096,14 @@ class SeritDock(QWidget):
     def _on_tile_hover(self, idx: Optional[int]) -> None:
         """Fare bir kütüğe geldi / ayrıldı. Çalışan kütükte bekleyince önizleme açılır."""
         tile = self.tiles[idx] if idx is not None and 0 <= idx < len(self.tiles) else None
+
+        # v26: Ctrl bubble yoklayıcısı (yalnız çalışan kütük üzerinde ve app_usage_ctrl açıkken)
+        if tile is not None and bool(tile.get("running")) and self.settings.get("app_usage_ctrl", True):
+            if self._ctrl_poll_timer is not None and not self._ctrl_poll_timer.isActive():
+                self._ctrl_poll_timer.start()
+        else:
+            self._stop_ctrl_timers()
+
         ok = (
             tile is not None
             and bool(tile.get("running"))
@@ -4034,7 +4345,7 @@ class SeritDock(QWidget):
             return "Masaüstünü göster · tekrar tıkla: pencereler geri gelir"
         if key == "bat":
             return battery_panel.pill_tooltip(self._bat_info) or ""
-        if key in ("shelf", "pomo", "keepawake", "presence"):
+        if key in ("net", "updates", "shelf", "pomo", "keepawake", "presence"):
             return self._v25_tooltip(key)
         if key == "claude":
             c = self.store.get("claude") or {}
@@ -4257,6 +4568,20 @@ class SeritDock(QWidget):
                 "text": "Uykuyu engelle",
                 "checked": self._keep_awake_on(),
                 "callback": self.action_toggle_keep_awake,
+            })
+        if netspeed is not None:
+            v25_rows.append({
+                "id": "toggle_net_speed",
+                "text": "Ağ hızını göster",
+                "checked": bool(self.settings.get("net_speed_enabled", True)),
+                "callback": self.action_toggle_net_speed,
+            })
+        if updates is not None:
+            v25_rows.append({
+                "id": "toggle_updates",
+                "text": "Güncellemeleri denetle",
+                "checked": bool(self.settings.get("updates_enabled", True)),
+                "callback": self.action_toggle_updates,
             })
 
         return [

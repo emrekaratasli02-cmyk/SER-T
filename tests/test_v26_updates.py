@@ -221,9 +221,10 @@ def test_checker_error_retry() -> None:
 
 def test_band_width_and_tooltip() -> None:
     """band_width ve tooltip kuralları."""
-    # Genişlik: count >= 1 -> 28.0; count == 0 veya None -> 0.0
-    assert updates.band_width({"count": 3}) == 28.0
-    assert updates.band_width({"count": 1}) == 28.0
+    # Genişlik: count >= 1 -> 38.0; count == 0 veya None veya err -> 0.0
+    assert updates.band_width({"count": 3}) == 38.0
+    assert updates.band_width({"count": 1}) == 38.0
+    assert updates.band_width({"count": 3, "err": "hata"}) == 0.0
     assert updates.band_width({"count": 0}) == 0.0
     assert updates.band_width({"count": None}) == 0.0
     assert updates.band_width(None) == 0.0
@@ -295,22 +296,22 @@ def test_render_badge_and_panel_offscreen_and_save_pngs() -> None:
     dpr = 1.25
 
     # 1. Band badge: count 3
-    img_b3 = QImage(int(round(28.0 * dpr)), int(round(30.0 * dpr)), QImage.Format.Format_ARGB32_Premultiplied)
+    img_b3 = QImage(int(round(38.0 * dpr)), int(round(30.0 * dpr)), QImage.Format.Format_ARGB32_Premultiplied)
     img_b3.setDevicePixelRatio(dpr)
     img_b3.fill(QColor(22, 24, 29))
     p = QPainter(img_b3)
-    updates.draw_updates_badge(p, QRectF(0, 0, 28.0, 30.0), {"count": 3}, hover=False)
+    updates.draw_updates_badge(p, QRectF(0, 0, 38.0, 30.0), {"count": 3}, hover=False)
     p.end()
     p_b3 = SCRATCH_UPD_DIR / "badge_3.png"
     assert img_b3.save(str(p_b3)) is True
     assert p_b3.stat().st_size > 0
 
     # 2. Band badge: count 14
-    img_b14 = QImage(int(round(28.0 * dpr)), int(round(30.0 * dpr)), QImage.Format.Format_ARGB32_Premultiplied)
+    img_b14 = QImage(int(round(38.0 * dpr)), int(round(30.0 * dpr)), QImage.Format.Format_ARGB32_Premultiplied)
     img_b14.setDevicePixelRatio(dpr)
     img_b14.fill(QColor(22, 24, 29))
     p = QPainter(img_b14)
-    updates.draw_updates_badge(p, QRectF(0, 0, 28.0, 30.0), {"count": 14}, hover=True)
+    updates.draw_updates_badge(p, QRectF(0, 0, 38.0, 30.0), {"count": 14}, hover=True)
     p.end()
     p_b14 = SCRATCH_UPD_DIR / "badge_14.png"
     assert img_b14.save(str(p_b14)) is True
