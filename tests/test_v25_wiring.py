@@ -20,7 +20,7 @@ os.environ.setdefault("SERIT_LOG", os.path.join(_TMP, "serit.log"))
 os.environ.setdefault("SERIT_CACHE_DIR", _TMP)
 
 from PySide6.QtCore import QMimeData, QObject, QPoint, QPointF, QRectF, Qt, QUrl, Signal  # noqa: E402
-from PySide6.QtGui import QColor, QDragEnterEvent, QDragLeaveEvent, QDropEvent, QImage, QWheelEvent  # noqa: E402
+from PySide6.QtGui import QColor, QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QImage, QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication.instance() or QApplication(sys.argv)
@@ -383,6 +383,83 @@ def test_drag_drop_into_shelf() -> None:
     assert not d2.acceptDrops()
 
 
+def _drag_move(d, md, pos: QPointF):
+    ev = QDragMoveEvent(pos.toPoint(), Qt.CopyAction, md, Qt.LeftButton, Qt.NoModifier)
+    d.dragMoveEvent(ev)
+    return ev
+
+
+def test_drag_dwell_brings_window_forward() -> None:
+    """Dosya sürüklenirken çalışan uygulamanın kutucuğunda ~0,5 sn durunca penceresi öne gelir."""
+    m = load_module(True)
+    d = make_dock(m, True, shelf_items=0, n_apps=3)
+    d.preview_mode = False
+    d.attach_shelf(d.shelf_store, d.shelf_panel)
+    d.tiles[0].update(running=True, hwnds=[1111, 2222])   # çalışan, 2 pencere
+    d.tiles[1].update(running=False, hwnds=[])            # yalnız iğnelenmiş
+    render(d, m)
+    b = boxes(d)
+    calls = []
+    d._dwell_activate = lambda h: calls.append(h)
+    f1 = os.path.join(_TMP, "Rapor.xlsx")
+    md, ev = _drag_enter(d, [f1], _center(b["shelf"]))
+    assert ev.isAccepted()
+    # çalışan uygulama: kabul edilmez (rafa düşmez), bekleme başlar
+    ev = _drag_move(d, md, _center(b["app_0"]))
+    assert not ev.isAccepted() and d._drag_dwell_idx == 0 and d._drag_dwell_timer.isActive()
+    assert d._hover_app_idx == 0
+    _drag_move(d, md, _center(b["app_0"]) + QPointF(2.0, 1.0))   # titreme sayacı sıfırlamaz
+    assert d._drag_dwell_timer.isActive() and d._drag_dwell_idx == 0
+    d._drag_dwell_timer.stop()
+    d._on_drag_dwell()
+    assert calls == [1111], calls                         # ilk (en son kullanılan) pencere
+    d._on_drag_dwell()
+    assert calls == [1111], "aynı kutucukta bir kez"
+    # kapalı (iğneli) uygulama: bekleme yok
+    ev = _drag_move(d, md, _center(b["app_1"]))
+    assert d._drag_dwell_idx is None and not d._drag_dwell_timer.isActive()
+    # ataç: tekrar rafa bırakılabilir
+    ev = _drag_move(d, md, _center(b["shelf"]))
+    assert ev.isAccepted() and d._drag_dwell_idx is None
+    # uygulamaya geri dön: yeni bekleme, bir kez daha öne getirir
+    _drag_move(d, md, _center(b["app_0"]))
+    d._drag_dwell_timer.stop(); d._on_drag_dwell()
+    assert calls == [1111, 1111], calls
+    # uygulama kutucuğuna bırakılan dosya rafa eklenmez
+    drop = QDropEvent(_center(b["app_0"]), Qt.CopyAction, md, Qt.LeftButton, Qt.NoModifier)
+    d.dropEvent(drop)
+    assert d.shelf_store.added == [], d.shelf_store.added
+    assert d._drag_dwell_idx is None and d._hover_app_idx is None
+    # ayar kapalıysa bekleme yok
+    d.settings["drag_activate"] = False
+    _drag_enter(d, [f1], _center(b["shelf"]))
+    _drag_move(d, md, _center(b["app_0"]))
+    assert d._drag_dwell_idx is None
+    d.settings["drag_activate"] = True
+    # dragLeave temizler
+    _drag_move(d, md, _center(b["app_0"]))
+    d.dragLeaveEvent(QDragLeaveEvent())
+    assert d._drag_dwell_idx is None and not d._drag_dwell_timer.isActive()
+
+
+def test_drag_dwell_real_activate_blocked_under_tests() -> None:
+    m = load_module(True)
+    d = make_dock(m, True, n_apps=1)
+    d.preview_mode = False
+    d.tiles[0].update(running=True, hwnds=[1111])
+    render(d, m)
+    called = []
+    orig = m.winapi.activate_window
+    m.winapi.activate_window = lambda h: called.append(h)
+    try:
+        d._dwell_activate = m.winapi.activate_window   # 'gerçek' yol: test korumasına takılmalı
+        d._drag_dwell_idx = 0
+        d._on_drag_dwell()
+    finally:
+        m.winapi.activate_window = orig
+    assert called == [], called
+
+
 def test_phase_finished_single_toast_no_beep() -> None:
     m = load_module(True)
     d = make_dock(m, True, pomo=True)
@@ -608,6 +685,8 @@ def main() -> int:
         test_tile_rects_unchanged_by_new_block,
         test_full_layout_no_overlap_and_on_screen,
         test_emre_layout_gaps,
+        test_drag_dwell_brings_window_forward,
+        test_drag_dwell_real_activate_blocked_under_tests,
         test_screenshot_results_go_to_shelf_as_screenshot,
         test_tight_gaps_keep_task_line,
         test_no_polling_or_drops_in_preview,

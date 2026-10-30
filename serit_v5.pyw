@@ -2059,6 +2059,7 @@ class SeritDock(QWidget):
     V25_TIGHT_POMO_GAP = 16.0   # barda uzun görev adı 14 px sığmıyordu; daralma 16 px kazandırır)
     V25_MIN_CLEAR = 12.0        # sol kanat ile yeni blok arası en az boşluk
     V25_RIGHT_GAP = 6.0
+    DRAG_DWELL_MS = 500         # dosya sürüklenirken uygulama kutucuğunda bu kadar bekleyince pencere öne gelir
 
     def _init_v25(self) -> None:
         self.shelf_store = None
@@ -2080,6 +2081,14 @@ class SeritDock(QWidget):
         self._v25_save_timer.setSingleShot(True)
         self._v25_save_timer.setInterval(800)
         self._v25_save_timer.timeout.connect(self._flush_v25_settings)
+        # sürükle-bekle: dosya sürüklenirken çalışan uygulamanın kutucuğunda durunca penceresi öne gelir
+        self._drag_dwell_idx: Optional[int] = None
+        self._drag_dwell_done: bool = False
+        self._drag_dwell_timer = QTimer(self)
+        self._drag_dwell_timer.setSingleShot(True)
+        self._drag_dwell_timer.setInterval(self.DRAG_DWELL_MS)
+        self._drag_dwell_timer.timeout.connect(self._on_drag_dwell)
+        self._dwell_activate: Callable[[int], Any] = winapi.activate_window  # testler sahtesini koyar
         if self.preview_mode:
             return
         try:
@@ -2326,29 +2335,89 @@ class SeritDock(QWidget):
                 out.append(u.toLocalFile())
         return out
 
+    # --- sürükle-bekle (Windows görev çubuğundaki gibi)
+    def _tile_index_at(self, pos: Optional[QPointF]) -> Optional[int]:
+        if pos is None:
+            return None
+        for i, r in enumerate(self._tile_rects):
+            if r.contains(pos):
+                return i
+        return None
+
+    def _drag_dwell_track(self, pos: Optional[QPointF]) -> Optional[int]:
+        """Sürüklenen dosya çalışan bir uygulamanın kutucuğundaysa o kutucuğun sırası (bekleme sayacı
+        yalnız kutucuk değişince yeniden başlar, titreme sıfırlamaz); değilse None."""
+        idx = self._tile_index_at(pos)
+        tile = self.tiles[idx] if idx is not None and 0 <= idx < len(self.tiles) else None
+        if (tile is None or not tile.get("running") or not tile.get("hwnds")
+                or not self.settings.get("drag_activate", True)):
+            idx = None
+        if idx != self._drag_dwell_idx:
+            self._drag_dwell_idx = idx
+            self._drag_dwell_done = False
+            self._drag_dwell_timer.stop()
+            if idx is not None:
+                self._drag_dwell_timer.start()
+            if self._hover_app_idx != idx:
+                self._hover_app_idx = idx  # kutucuk büyür: bekleme fark edilsin
+                self.update()
+        return idx
+
+    def _drag_dwell_stop(self) -> None:
+        self._drag_dwell_timer.stop()
+        self._drag_dwell_idx = None
+        self._drag_dwell_done = False
+        if self._hover_app_idx is not None:
+            self._hover_app_idx = None
+            self.update()
+
+    def _on_drag_dwell(self) -> None:
+        idx = self._drag_dwell_idx
+        if idx is None or self._drag_dwell_done or self.preview_mode or not (0 <= idx < len(self.tiles)):
+            return
+        hwnds = self.tiles[idx].get("hwnds") or []
+        if not hwnds:
+            return
+        self._drag_dwell_done = True  # aynı kutucukta bir kez
+        if self._dwell_activate is winapi.activate_window:
+            import logpath as _lp
+            if _lp.is_running_under_test():
+                return  # testler gerçek pencereyi öne getiremez
+        try:
+            self._dwell_activate(int(hwnds[0]))  # ilk pencere = en son kullanılan (EnumWindows z-sırası)
+        except Exception as exc:
+            sources.log_err("drag_dwell", exc)
+
     def dragEnterEvent(self, event) -> None:
         if self.shelf_store is not None and self._drop_paths(event):
             event.acceptProposedAction()
             if not self._shelf_drag_over:
                 self._shelf_drag_over = True
                 self._v25_update_key("shelf")
+            self._drag_dwell_track(event.position())
         else:
             event.ignore()
 
     def dragMoveEvent(self, event) -> None:
         if self.shelf_store is not None and self._drop_paths(event):
-            event.acceptProposedAction()
+            if self._drag_dwell_track(event.position()) is not None:
+                event.ignore()  # uygulama kutucuğu: bırakılan dosya rafa gitmez, pencere öne gelir
+            else:
+                event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragLeaveEvent(self, event) -> None:
+        self._drag_dwell_stop()
         if self._shelf_drag_over:
             self._shelf_drag_over = False
             self._v25_update_key("shelf")
         event.accept()
 
     def dropEvent(self, event) -> None:
-        paths = self._drop_paths(event) if self.shelf_store is not None else []
+        on_tile = self._drag_dwell_idx is not None
+        self._drag_dwell_stop()
+        paths = self._drop_paths(event) if (self.shelf_store is not None and not on_tile) else []
         self._shelf_drag_over = False
         if paths:
             try:
