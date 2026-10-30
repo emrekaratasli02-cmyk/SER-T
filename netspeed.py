@@ -171,7 +171,7 @@ def draw_net_band(p: QPainter, rect: QRectF, state: Optional[Dict[str, Any]], ho
     f = theme.make_font(10.0, QFont.Weight.Normal, tabular=True)
     fm = QFontMetricsF(f)
     cap = fm.capHeight()
-    gap = 2.0
+    gap = 5.0  # iki satır arası (2 px'te satırlar birbirine yapışıyordu)
     total_h = cap * 2.0 + gap
     top = rect.center().y() - total_h / 2.0
     base_down = top + cap
