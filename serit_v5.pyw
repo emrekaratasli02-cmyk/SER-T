@@ -1349,10 +1349,10 @@ class SeritDock(QWidget):
         # v25: indirilenler izleyici (5 sn) ve mikrofon/kamera kullanımı (3 sn); ikisi de havuzda çalışır
         if self._dl_watcher is not None:
             self.shelfdl_timer = QTimer(self)
-            self.shelfdl_timer.setInterval(5000)
-            self.shelfdl_timer.timeout.connect(lambda: self.submit_fetch("shelfdl"))
+            self.shelfdl_timer.setInterval(3000)  # ekran görüntüsü 3-6 sn içinde rafta (klasör taraması ~4 ms)
+            self.shelfdl_timer.timeout.connect(self._poll_shelf_watchers)
             self.shelfdl_timer.start()
-            self.submit_fetch("shelfdl")
+            self._poll_shelf_watchers()
         if presence is not None and self.settings.get("presence_enabled", True):
             self.presence_timer = QTimer(self)
             self.presence_timer.setInterval(3000)
@@ -1601,6 +1601,7 @@ class SeritDock(QWidget):
             "mail": getattr(work_sources, "fetch_mail_waiting", None),
             "ag": getattr(work_sources, "fetch_antigravity", None),
             "shelfdl": (self._dl_watcher.poll if self._dl_watcher is not None else None),
+            "shelfshot": (self._shot_watcher.poll if self._shot_watcher is not None else None),
             "presence": getattr(presence, "read_capability_usage", None),
         }
         fn = fetchers.get(key)
@@ -1610,6 +1611,9 @@ class SeritDock(QWidget):
     def on_data_ready(self, key: str, res: Any) -> None:
         if key == "shelfdl":
             self._on_shelf_downloads(res)
+            return
+        if key == "shelfshot":
+            self._on_shelf_downloads(res, "screenshot")
             return
         if key == "presence":
             self._on_presence_data(res)
@@ -2060,6 +2064,7 @@ class SeritDock(QWidget):
         self.shelf_store = None
         self.shelf_panel = None
         self._dl_watcher = None
+        self._shot_watcher = None
         self.pomo_timer = None
         self.pomo_panel = None
         self._pomo_state: Dict[str, Any] = {}
@@ -2082,6 +2087,11 @@ class SeritDock(QWidget):
                 store = shelf.ShelfStore()
                 self.attach_shelf(store, shelf.ShelfPanel(store))
                 self._dl_watcher = shelf.DownloadsWatcher()
+                sf = getattr(shelf, "screenshots_folder", None)
+                if sf is not None and self.settings.get("shelf_screenshots", True):
+                    folder = sf()
+                    if folder and os.path.isdir(folder):
+                        self._shot_watcher = shelf.DownloadsWatcher(folder, exts=getattr(shelf, "IMAGE_EXTS", None))
         except Exception as exc:
             sources.log_err("shelf_init", exc)
         try:
@@ -2285,13 +2295,18 @@ class SeritDock(QWidget):
         if self._shelf_visible():
             self._toggle_v25_panel(self.shelf_panel, "shelf")
 
-    def _on_shelf_downloads(self, res: Any) -> None:
+    def _poll_shelf_watchers(self) -> None:
+        self.submit_fetch("shelfdl")
+        if self._shot_watcher is not None:
+            self.submit_fetch("shelfshot")
+
+    def _on_shelf_downloads(self, res: Any, source: str = "download") -> None:
         if self.shelf_store is None:
             return
         try:
             changed = False
             if isinstance(res, (list, tuple)) and res:
-                changed = bool(self.shelf_store.add_paths([str(x) for x in res], "download"))
+                changed = bool(self.shelf_store.add_paths([str(x) for x in res], source))
             if self.shelf_store.expire():
                 changed = True
             if changed:

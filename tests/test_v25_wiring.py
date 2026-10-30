@@ -85,8 +85,8 @@ def make_fakes() -> dict:
         p.fillRect(rect, QColor(200, 60, 60))
 
     class DownloadsWatcher:
-        def __init__(self, folder=None):
-            pass
+        def __init__(self, folder=None, exts=None):
+            self.folder, self.exts = folder, exts
 
         def poll(self):
             return []
@@ -558,6 +558,17 @@ def test_tight_gaps_keep_task_line() -> None:
     assert not d._pomo_compact and abs(700.0 - lay["pomo"].right() - 28.0) < 0.01, lay
 
 
+def test_screenshot_results_go_to_shelf_as_screenshot() -> None:
+    m = load_module(True)
+    d = make_dock(m, True, shelf_items=0)
+    tmp = Path(_TMP) / "shot.png"
+    tmp.write_bytes(b"x")
+    d.on_data_ready("shelfshot", [str(tmp)])
+    assert d.shelf_store.added[-1] == ([str(tmp)], "screenshot"), d.shelf_store.added
+    d.on_data_ready("shelfdl", [str(tmp)])
+    assert d.shelf_store.added[-1] == ([str(tmp)], "download"), d.shelf_store.added
+
+
 def test_emre_layout_gaps() -> None:
     """Emre'nin barı (ag + sys açık, 1536 mantıksal): yeni blok sol kanat ile uygulamalar arasına sığar."""
     m = load_module(True)
@@ -597,6 +608,7 @@ def main() -> int:
         test_tile_rects_unchanged_by_new_block,
         test_full_layout_no_overlap_and_on_screen,
         test_emre_layout_gaps,
+        test_screenshot_results_go_to_shelf_as_screenshot,
         test_tight_gaps_keep_task_line,
         test_no_polling_or_drops_in_preview,
     ]

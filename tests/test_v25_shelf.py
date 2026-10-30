@@ -294,8 +294,44 @@ def test_draw_shelf_icon_states() -> None:
     assert render(0) != render(3)
 
 
+def test_screenshot_items_expire_like_downloads() -> None:
+    with tempfile.TemporaryDirectory() as t:
+        d = Path(t)
+        a, b, c = _mk(d, "Ekran_1.png"), _mk(d, "Ekran_2.png"), _mk(d, "elle.png")
+        s = _store(d)
+        s.add_paths([a], source="screenshot")
+        s.add_paths([b], source="screenshot")
+        s.add_paths([c], source="drop")
+        s.toggle_pin(b)
+        now = time.time()
+        assert s.expire(now + 10) is False
+        assert s.expire(now + shelf.DOWNLOAD_KEEP_S + 60) is True
+        assert {i["name"] for i in s.items()} == {"Ekran_2.png", "elle.png"}
+
+
+def test_watcher_image_filter_for_screenshots() -> None:
+    with tempfile.TemporaryDirectory() as t:
+        d = Path(t)
+        w = shelf.DownloadsWatcher(str(d), exts=shelf.IMAGE_EXTS)
+        assert w.poll() == []
+        png = _mk(d, "Ekran goruntusu 1.png", 50)
+        _mk(d, "notlar.txt", 50)
+        _mk(d, "kayit.mp4", 50)
+        assert w.poll() == []
+        assert w.poll() == [png]
+        assert w.poll() == []
+
+
+def test_screenshots_folder_is_a_path() -> None:
+    p = shelf.screenshots_folder()
+    assert isinstance(p, str) and p
+
+
 def main() -> int:
     tests = [
+        test_screenshot_items_expire_like_downloads,
+        test_watcher_image_filter_for_screenshots,
+        test_screenshots_folder_is_a_path,
         test_store_add_and_dedupe_case_insensitive,
         test_store_move_to_top,
         test_store_max_items_evicts_oldest_keeps_pinned,

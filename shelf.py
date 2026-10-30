@@ -58,6 +58,9 @@ EMPTY_H = 84.0
 ROW_MARGIN = 8.0
 
 _TEMP_EXTS = (".crdownload", ".part", ".partial", ".tmp", ".download")
+# kendiliğinden gelen öğeler (indirilen dosya, ekran görüntüsü) iğnelenmezse DOWNLOAD_KEEP_S sonra düşer
+AUTO_SOURCES = ("download", "screenshot")
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")
 
 
 # ============================================================================ yardımcılar
@@ -231,7 +234,7 @@ class ShelfStore:
         now = time.time() if now is None else now
         with self._lock:
             keep = [it for it in self._items
-                    if it["pinned"] or it["source"] != "download" or now - it["added"] <= DOWNLOAD_KEEP_S]
+                    if it["pinned"] or it["source"] not in AUTO_SOURCES or now - it["added"] <= DOWNLOAD_KEEP_S]
             changed = len(keep) != len(self._items)
             if changed:
                 self._items = keep
@@ -270,11 +273,34 @@ def _downloads_folder() -> str:
     return str(Path.home() / "Downloads")
 
 
+def screenshots_folder() -> str:
+    """Windows Ekran görüntüleri klasörü (FOLDERID_Screenshots; Win+PrtSc ve Ekran Alıntısı Aracı buraya kaydeder)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD), ("c", wintypes.WORD), ("d", ctypes.c_ubyte * 8)]
+
+        g = GUID(0xB7BEDE81, 0xDF94, 0x4682, (ctypes.c_ubyte * 8)(0xA7, 0xD8, 0x57, 0xA5, 0x26, 0x20, 0xB8, 0x6F))
+        out = ctypes.c_wchar_p()
+        fn = ctypes.windll.shell32.SHGetKnownFolderPath
+        fn.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE, ctypes.POINTER(ctypes.c_wchar_p)]
+        if fn(ctypes.byref(g), 0, None, ctypes.byref(out)) == 0 and out.value:
+            val = out.value
+            ctypes.windll.ole32.CoTaskMemFree(out)
+            return val
+    except Exception:
+        pass
+    return str(Path.home() / "Pictures" / "Screenshots")
+
+
 class DownloadsWatcher:
     """İndirilenler klasöründe YENİ ve TAMAMLANMIŞ dosyaları bulur. Qt yok; havuz iş parçacığından çağrılır."""
 
-    def __init__(self, folder: Optional[str] = None) -> None:
+    def __init__(self, folder: Optional[str] = None, exts: Optional[tuple] = None) -> None:
         self._folder = folder or _downloads_folder()
+        self._exts = tuple(e.lower() for e in exts) if exts else None   # ör. yalnız resimler
         self._lock = threading.Lock()
         self._baselined = False
         self._known: Dict[str, tuple] = {}
@@ -293,6 +319,8 @@ class DownloadsWatcher:
                         if e.is_dir(follow_symlinks=False):
                             continue
                         if e.name.lower().endswith(_TEMP_EXTS):
+                            continue
+                        if self._exts is not None and not e.name.lower().endswith(self._exts):
                             continue
                         st = e.stat()
                         if getattr(st, "st_file_attributes", 0) & 0x6:   # hidden | system
