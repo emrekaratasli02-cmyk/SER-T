@@ -512,9 +512,7 @@ class PomodoroPanel(QWidget):
         r["card_task"] = QRectF(x0, g["card_task"], cw, (g["footer"] - ps.GAP) - g["card_task"])
         field = QRectF(x0 + ps.CARD_PAD, g["field"], cw - 2 * ps.CARD_PAD, FIELD_H)
         r["field"] = field
-        f_lbl = ps.font(11.0)
-        lbl_w = QFontMetricsF(f_lbl).horizontalAdvance("Görev")
-        edit_left = field.left() + 10.0 + lbl_w + 8.0
+        edit_left = field.left() + 10.0  # "Görev" artık kartın üst başlığında; alanın içinde etiket yok
         er = QRectF(edit_left, field.top() + 1.0, field.right() - 8.0 - edit_left, field.height() - 2.0)
         r["edit"] = er
         self._edit.setGeometry(int(er.left()), int(er.top()), int(er.width()), int(er.height()))
