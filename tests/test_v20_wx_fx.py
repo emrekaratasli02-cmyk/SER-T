@@ -247,7 +247,7 @@ def render_evidence():
 
 def test_fetch_weather_missing_fields_stay_none():
     """open-meteo rüzgâr / günlük min-max vermezse None kalmalı (0 km/sa veya anlık sıcaklık uydurulmaz).
-    Ağa çıkılmaz: httpx.get sahte cevapla değiştirilir."""
+    Ağa çıkılmaz: sources._http_get sahte cevapla değiştirilir."""
     import sources
 
     class _Resp:
@@ -266,20 +266,20 @@ def test_fetch_weather_missing_fields_stay_none():
                             "wind_speed_10m": 12.5},
                 "daily": {"temperature_2m_max": [15.5], "temperature_2m_min": [7.0]}},
     }
-    orig = sources.httpx.get
+    orig = sources._http_get
     try:
-        sources.httpx.get = lambda url, timeout=15: _Resp(payloads["eksik"])
+        sources._http_get = lambda url, timeout=15, **kw: _Resp(payloads["eksik"])
         wx = sources.fetch_weather()
         assert wx["temp"] == 9.4 and wx["feel"] == 7.0
         assert wx["wind"] is None and wx["min"] is None and wx["max"] is None, wx
         rows = {r["label"]: r["val"] for r in build_wx_content(wx)["sections"][0]["rows"]}
         assert rows["Rüzgâr"] == "—" and rows["En düşük / En yüksek"] == "—", rows
 
-        sources.httpx.get = lambda url, timeout=15: _Resp(payloads["tam"])
+        sources._http_get = lambda url, timeout=15, **kw: _Resp(payloads["tam"])
         wx = sources.fetch_weather()
         assert (wx["wind"], wx["min"], wx["max"]) == (12.5, 7.0, 15.5), wx
     finally:
-        sources.httpx.get = orig
+        sources._http_get = orig
     print("✓ fetch_weather eksik alan testi geçti.")
 
 

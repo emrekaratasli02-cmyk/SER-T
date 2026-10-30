@@ -415,12 +415,79 @@ except ImportError:
     _WinrtMediaManager = None
     _HAS_WINRT = False
 
-_WINRT_STUCK = None  # takılı kalan son WinRT iş parçacığı (birikmeyi önlemek için)
 _cached_winrt_mgr = None
 # 26 Eki 2026: sorgu artık sources.fetch_media ile arka plan havuzunda çalışıyor (UI beklemiyor);
 # önbellekli yöneticiyle 15 denemede 2-65 ms, zaman aşımı yok. Bu yüzden yeniden açıldı.
 _WINRT_NOW_PLAYING_ENABLED = True
 
+
+# --- Tek uzun ömürlü olay döngüsü ----------------------------------------------
+# Önceden her 3 sn'lik okuma asyncio.run + yeni iş parçacığı açıyordu (~3000 iş parçacığı / 2 sa).
+_LOOP_LOCK = threading.Lock()
+_LOOP = None            # asyncio.AbstractEventLoop | None
+_LOOP_THREAD = None     # threading.Thread | None
+_LOOP_BLOCKED_SINCE = None  # zaman aşımı başladığı an (monotonic)
+_LOOP_DEAD_AFTER_S = 4.0    # döngü bu kadar takılı kalırsa ölü say
+_LOOP_RESTART_GAP_S = 30.0  # iki yeniden başlatma arası en az
+_LOOP_LAST_START = -1e9
+_LOOP_STARTS = 0
+
+
+def _loop_main(loop) -> None:
+    import asyncio
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_forever()
+    except Exception as exc:
+        _log(f"media loop: {type(exc).__name__}: {exc}")
+
+
+def _get_loop():
+    """Döngüyü tembel başlat. Takılıysa (ölü) en fazla ~30 sn'de bir yenisini kur; yoksa None."""
+    global _LOOP, _LOOP_THREAD, _LOOP_BLOCKED_SINCE, _LOOP_LAST_START, _LOOP_STARTS
+    import asyncio
+    now = time.monotonic()
+    with _LOOP_LOCK:
+        if _LOOP is not None and _LOOP_THREAD is not None and _LOOP_THREAD.is_alive():
+            if _LOOP_BLOCKED_SINCE is None or now - _LOOP_BLOCKED_SINCE < _LOOP_DEAD_AFTER_S:
+                return _LOOP
+            # Uzun süredir takılı: ölü işaretle (eski iş parçacığı daemon olarak terk edilir)
+            _LOOP = None
+            _LOOP_THREAD = None
+        if _LOOP is None:
+            if now - _LOOP_LAST_START < _LOOP_RESTART_GAP_S:
+                return None
+            _LOOP_LAST_START = now
+            _LOOP_BLOCKED_SINCE = None
+            loop = asyncio.new_event_loop()
+            t = threading.Thread(target=_loop_main, args=(loop,), name="serit-media-loop", daemon=True)
+            t.start()
+            _LOOP, _LOOP_THREAD = loop, t
+            _LOOP_STARTS += 1
+        return _LOOP
+
+
+def _run_on_loop(coro_fn, timeout: float = 1.5):
+    """coro_fn() korutinini ortak döngüde çalıştır. (ok, değer|istisna) döner; ok=False -> zaman aşımı/hata."""
+    global _LOOP_BLOCKED_SINCE
+    import asyncio
+    import concurrent.futures
+    loop = _get_loop()
+    if loop is None:
+        return False, TimeoutError("medya döngüsü takılı")
+    fut = asyncio.run_coroutine_threadsafe(coro_fn(), loop)
+    try:
+        r = fut.result(timeout=timeout)
+        _LOOP_BLOCKED_SINCE = None
+        return True, r
+    except concurrent.futures.TimeoutError:
+        fut.cancel()
+        if _LOOP_BLOCKED_SINCE is None:
+            _LOOP_BLOCKED_SINCE = time.monotonic()
+        return False, TimeoutError("zaman aşımı")
+    except Exception as exc:  # WinRT/COM hatası
+        _LOOP_BLOCKED_SINCE = None
+        return False, exc
 
 
 def timeline_now(position, start_time, end_time, last_updated, playing: bool,
@@ -472,8 +539,6 @@ def _now_playing_winrt() -> Optional[Dict[str, object]]:
     Döner: dict | None (oturum yok) | {'_fail': True} (WinRT hatası -> başlık yöntemine düş)."""
     if not _HAS_WINRT or not _WINRT_NOW_PLAYING_ENABLED:
         return {"_fail": True}
-    import asyncio
-
     async def _read():
         global _cached_winrt_mgr
         if _WinrtMediaManager is None:
@@ -534,39 +599,27 @@ def _now_playing_winrt() -> Optional[Dict[str, object]]:
             "updated_at": time.monotonic(),
         }
 
-    # WinRT bazen hiç dönmüyor (açılışta bar'ı kilitliyordu): ayrı iş parçacığında, 1.5 sn sınırla çalıştır.
-    import threading
-    global _WINRT_STUCK
-    if _WINRT_STUCK is not None and _WINRT_STUCK.is_alive():
-        return {"_fail": True}  # önceki çağrı hâlâ takılı: yeni iş parçacığı açma, başlık yöntemine düş
-    box: Dict[str, object] = {}
-
-    def _worker() -> None:
-        try:
-            box["r"] = asyncio.run(_read())
-        except Exception as exc:  # WinRT/COM hatası: çökme yok, yedek yönteme düş
-            box["e"] = exc
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    t.join(1.5)
-    if t.is_alive():
-        _WINRT_STUCK = t
-        _log("now_playing winrt: zaman aşımı (1.5 sn)")
+    # WinRT bazen hiç dönmüyor: ortak döngüde, 1.5 sn sınırla çalıştır.
+    ok, val = _run_on_loop(_read, 1.5)
+    if not ok:
+        if isinstance(val, TimeoutError):
+            _log("now_playing winrt: zaman aşımı (1.5 sn)")
+        else:
+            _log(f"now_playing winrt: {type(val).__name__}: {val}")
         return {"_fail": True}
-    if "e" in box:
-        exc = box["e"]
-        _log(f"now_playing winrt: {type(exc).__name__}: {exc}")
-        return {"_fail": True}
-    return box.get("r")  # type: ignore[return-value]
+    return val  # type: ignore[return-value]
 
 
 def media_control(action: str) -> bool:
     """Oynat/duraklat/ileri/geri: önce Windows medya oturumuna doğrudan komut, olmazsa medya tuşu."""
+    try:
+        from logpath import is_running_under_test
+        if is_running_under_test() and os.environ.get("SERIT_ALLOW_REAL_AUDIO") != "1":
+            return False  # testler gerçek medya komutu/tuşu GÖNDEREMEZ
+    except Exception:
+        pass
     _ensure_com_initialized()
     if _HAS_WINRT and _WinrtMediaManager is not None:
-        import asyncio
-
         async def _do():
             global _cached_winrt_mgr
             mgr = _cached_winrt_mgr
@@ -581,24 +634,13 @@ def media_control(action: str) -> bool:
                   "prev": s.try_skip_previous_async}.get(action)
             return bool(await fn()) if fn else False
 
-        import threading
-        box: Dict[str, object] = {}
-
-        def _worker() -> None:
-            try:
-                box["r"] = asyncio.run(_do())
-            except Exception as exc:
-                box["e"] = exc
-
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
-        t.join(1.5)
-        if t.is_alive():
-            _log("media_control winrt: zaman aşımı (1.5 sn)")
-        elif "e" in box:
-            exc = box["e"]
-            _log(f"media_control winrt: {type(exc).__name__}: {exc}")
-        elif box.get("r"):
+        ok, val = _run_on_loop(_do, 1.5)
+        if not ok:
+            if isinstance(val, TimeoutError):
+                _log("media_control winrt: zaman aşımı (1.5 sn)")
+            else:
+                _log(f"media_control winrt: {type(val).__name__}: {val}")
+        elif val:
             return True
     return send_media_key(action)
 
