@@ -193,14 +193,26 @@ def clean_sender_name(kimden: Any) -> str:
 def shorten_ag_label(raw_label: Any) -> str:
     """Shorten Antigravity model family labels for dock display."""
     s = str(raw_label or "").strip()
+    prefix = ""
+    if " · " in s:
+        parts = s.split(" · ", 1)
+        prefix = parts[0] + " · "
+        s = parts[1]
+
+    short = s
     if s == "Claude (Opus/Sonnet)" or s.startswith("Claude ("):
-        return "Claude"
-    if s in ("Gemini …", "Gemini ...") or s.startswith("Gemini (") or s.startswith("Gemini …") or s.startswith("Gemini ..."):
-        return "Gemini"
-    # Keep others short (max 24 chars)
-    if len(s) > 24:
-        return s[:23] + "…"
-    return s
+        short = "Claude"
+    elif s in ("Gemini …", "Gemini ...") or s.startswith("Gemini (") or s.startswith("Gemini …") or s.startswith("Gemini ..."):
+        short = "Gemini"
+    elif s == "Gemini Pro":
+        short = "Gemini Pro"
+    elif s == "GPT-OSS":
+        short = "GPT-OSS"
+
+    res = prefix + short
+    if len(res) > 24:
+        return res[:23] + "…"
+    return res
 
 
 # ---------------------------------------------------------------------------

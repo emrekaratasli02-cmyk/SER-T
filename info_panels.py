@@ -955,6 +955,7 @@ class QuotaPanel(_BasePopover):
         self._data: Dict[str, Any] = {}
         self._groups: List[Dict[str, Any]] = []
         self._rows: List[Dict[str, Any]] = []
+        self._sections: List[Dict[str, Any]] = []
         self._fetched_at_str: str = ""
         self._has_error: bool = False
         self._error_text: str = ""
@@ -985,6 +986,7 @@ class QuotaPanel(_BasePopover):
             self._has_error = bool(d.get("err")) or not groups
             self._error_text = self.ERROR_TEXT if self._has_error else ""
             self._rows = self._build_rows()
+            self._sections = self._build_sections()
 
             self._scroll_y = 0.0
             self.resize(self.WIDTH, self.compute_height())
@@ -1004,12 +1006,26 @@ class QuotaPanel(_BasePopover):
         rows: List[Dict[str, Any]] = []
         for g in self._groups:
             used = g.get("used")
-            identity = quota_identity_color(g.get("label"))
+            raw_label = str(g.get("label") or "—")
+            identity = quota_identity_color(raw_label)
             # v24 (Emre: tek uyarı): çubuk model renginde kalır, yalnız yüzde %90+ kırmızı; DOLU rozeti yok
             # (bardaki kota kartıyla aynı dil; eskiden rozet + kırmızı yüzde + kırmızı çubuk üç kez söylüyordu).
             warn = used is not None and used >= 90.0
+
+            display_label = raw_label
+            account = None
+            if "argon" in raw_label.lower():
+                account = None
+                display_label = "Argon"
+            elif " · " in raw_label:
+                parts = raw_label.split(" · ", 1)
+                account = parts[0].strip()
+                display_label = parts[1].strip()
+
             rows.append({
-                "label": g.get("label"),
+                "label": raw_label,
+                "display_label": display_label,
+                "account": account,
                 "used": used,
                 "reset_text": self._reset_display(g),
                 "identity": identity,
@@ -1022,8 +1038,63 @@ class QuotaPanel(_BasePopover):
             })
         return rows
 
+    def _build_sections(self) -> List[Dict[str, Any]]:
+        if self._has_error or not self._rows:
+            return [{"overline": "Model kotaları", "rows": []}]
+
+        account_rows: Dict[str, List[Dict[str, Any]]] = {}
+        standalone_argon: Optional[Dict[str, Any]] = None
+        for r in self._rows:
+            acc = r.get("account")
+            if acc:
+                account_rows.setdefault(acc, []).append(r)
+            elif "argon" in str(r.get("label", "")).lower():
+                standalone_argon = r
+
+        if not account_rows:
+            return [{"overline": "Model kotaları", "rows": self._rows}]
+
+        # Emre ve Büşra kartları: her iki karta da Argon ekle
+        for acc, r_list in account_rows.items():
+            has_argon = any("argon" in str(x.get("display_label", "")).lower() for x in r_list)
+            if not has_argon:
+                if "emre" in acc.lower() and standalone_argon:
+                    emre_argon = dict(standalone_argon)
+                    emre_argon["display_label"] = "Argon"
+                    emre_argon["account"] = acc
+                    r_list.append(emre_argon)
+                else:
+                    busra_argon = {
+                        "label": f"{acc} · Argon",
+                        "display_label": "Argon",
+                        "account": acc,
+                        "used": 0.0,
+                        "reset_text": "—",
+                        "identity": ps.ACCENT,
+                        "color": ps.ACCENT,
+                        "pct_text": "%0",
+                        "pct_color": ps.ACCENT,
+                        "badge": None,
+                        "rect": QRectF(),
+                        "bar_rect": QRectF(),
+                    }
+                    r_list.append(busra_argon)
+
+        sections = []
+        for acc, r_list in account_rows.items():
+            sections.append({"overline": acc, "rows": r_list})
+        return sections
+
     def _row_step(self) -> float:
         return self.LINE_H + self.BAR_GAP + self.BAR_H + self.ROW_GAP
+
+    def _section_card_height(self, sec: Dict[str, Any]) -> float:
+        rows = sec.get("rows") or []
+        n = len(rows)
+        if n == 0:
+            return 2 * ps.CARD_PAD + 15.0 + ps.CARD_GAP + 26.0
+        content_h = n * (self.LINE_H + self.BAR_GAP + self.BAR_H) + max(0, n - 1) * self.ROW_GAP
+        return 2 * ps.CARD_PAD + 15.0 + ps.CARD_GAP + content_h
 
     def _content_height(self) -> float:
         if self._has_error or not self._rows:
@@ -1032,10 +1103,15 @@ class QuotaPanel(_BasePopover):
         return n * (self.LINE_H + self.BAR_GAP + self.BAR_H) + max(0, n - 1) * self.ROW_GAP
 
     def _card_height(self) -> float:
-        return 2 * ps.CARD_PAD + 15.0 + ps.CARD_GAP + self._content_height()
+        return self._body_total_height()
 
     def _body_total_height(self) -> float:
-        return self._card_height()
+        if self._has_error or not self._rows:
+            return 2 * ps.CARD_PAD + 15.0 + ps.CARD_GAP + 26.0
+        secs = getattr(self, "_sections", []) or [{"overline": "Model kotaları", "rows": self._rows}]
+        total_h = sum(self._section_card_height(s) for s in secs)
+        total_h += max(0, len(secs) - 1) * ps.CARD_GAP
+        return total_h
 
     # ---------------------------------------------------------------- icons
     def _draw_ag_icon(self, p: QPainter, rect: QRectF) -> None:
@@ -1078,19 +1154,25 @@ class QuotaPanel(_BasePopover):
         p.setClipRect(body_rect)
 
         y = body_top - self._scroll_y
-        inner = ps.draw_card(p, QRectF(ps.PAD, y, w - 2 * ps.PAD, self._card_height()),
-                             "Model kotaları")
-
         if self._has_error or not self._rows:
+            card_h = 2 * ps.CARD_PAD + 15.0 + ps.CARD_GAP + 26.0
+            inner = ps.draw_card(p, QRectF(ps.PAD, y, w - 2 * ps.PAD, card_h),
+                                 "Model kotaları")
             p.setFont(make_font(12.0, QFont.Weight.Normal, italic=True))
             p.setPen(ps.TEXT_MUTED)
             p.drawText(QRectF(inner.left(), inner.top(), inner.width(), 26.0),
                        Qt.AlignmentFlag.AlignCenter, self.ERROR_TEXT)
         else:
-            ry = inner.top()
-            for row in self._rows:
-                self._paint_row(p, row, QRectF(inner.left(), ry, inner.width(), self.LINE_H))
-                ry += self._row_step()
+            secs = getattr(self, "_sections", []) or [{"overline": "Model kotaları", "rows": self._rows}]
+            for sec in secs:
+                card_h = self._section_card_height(sec)
+                inner = ps.draw_card(p, QRectF(ps.PAD, y, w - 2 * ps.PAD, card_h),
+                                     overline=sec.get("overline"))
+                ry = inner.top()
+                for row in sec.get("rows") or []:
+                    self._paint_row(p, row, QRectF(inner.left(), ry, inner.width(), self.LINE_H))
+                    ry += self._row_step()
+                y += card_h + ps.CARD_GAP
 
         p.restore()
         self._paint_scroll_indicator(p, body_top, body_h)
@@ -1124,7 +1206,8 @@ class QuotaPanel(_BasePopover):
         p.setFont(ps.font(13.0, QFont.Weight.DemiBold))
         p.setPen(identity)
         fm_name = QFontMetricsF(p.font())
-        name_disp = fm_name.elidedText(str(row.get("label") or "—"), Qt.TextElideMode.ElideRight, name_max)
+        lbl_to_draw = str(row.get("display_label") or row.get("label") or "—")
+        name_disp = fm_name.elidedText(lbl_to_draw, Qt.TextElideMode.ElideRight, name_max)
         p.drawText(QRectF(name_left, line_rect.top(), name_max, line_rect.height()),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, name_disp)
 

@@ -950,13 +950,16 @@ def draw_ag_card(
     has_err = bool(ag_data.get("err")) or not ag_data.get("groups")
 
     groups = ag_data.get("groups") or []
-    # Claude = group labelled 'Claude'
-    claude_grp = next((g for g in groups if str(g.get("label", "")).lower() == "claude"), None)
+    # Claude: prefer Emre's group if present, otherwise any group with 'claude'
+    claude_grp = next((g for g in groups if "emre" in str(g.get("label", "")).lower() and "claude" in str(g.get("label", "")).lower()), None)
+    if not claude_grp:
+        claude_grp = next((g for g in groups if "claude" in str(g.get("label", "")).lower()), None)
     used_claude: Optional[float] = float(claude_grp["used"]) if (claude_grp and "used" in claude_grp) else None
     claude_reset_raw = (claude_grp.get("reset_at") or claude_grp.get("reset_tr")) if claude_grp else ""
 
-    # Gemini = max 'used' among groups whose label starts with 'Gemini'
-    gemini_grps = [g for g in groups if str(g.get("label", "")).startswith("Gemini")]
+    # Gemini: prefer Emre's group if present, otherwise max among groups with 'gemini'
+    emre_gemini_grps = [g for g in groups if "emre" in str(g.get("label", "")).lower() and "gemini" in str(g.get("label", "")).lower()]
+    gemini_grps = emre_gemini_grps if emre_gemini_grps else [g for g in groups if "gemini" in str(g.get("label", "")).lower()]
     used_gemini: Optional[float] = None
     gemini_reset_raw = ""
     if gemini_grps:
