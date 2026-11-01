@@ -17,3 +17,5 @@ _ref/
 .pytest_cache/
 shelf.json
 shelf.json.*.tmp
+updates_cache.json
+updates_cache.json.*
