@@ -19,3 +19,5 @@ shelf.json
 shelf.json.*.tmp
 updates_cache.json
 updates_cache.json.*
+clipboard.json
+clipboard.json.*

@@ -2150,6 +2150,10 @@ class SeritDock(QWidget):
         self._pomo_action_menu: Optional[action_menu.ActionMenu] = None
         self._presence_usage: Dict[str, Any] = {"mic": [], "cam": []}
         self._shelf_drag_over: bool = False
+        self._shelf_pulse: float = 0.0
+        self._shelf_pulse_timer = QTimer(self)
+        self._shelf_pulse_timer.setInterval(40)
+        self._shelf_pulse_timer.timeout.connect(self._on_shelf_pulse_tick)
         self._v25_rects: Dict[str, QRectF] = {}
         self._v25_notes: set = set()
         self._v25_dirty: bool = False
@@ -2382,8 +2386,40 @@ class SeritDock(QWidget):
             sources.log_err("pomodoro_beep", exc)
 
     def _on_toast_clicked(self, alert: Any) -> None:
-        if str(getattr(alert, "kind", "") or "") == "pomodoro":
+        k = str(getattr(alert, "kind", "") or "")
+        if k == "pomodoro":
             self._open_pomo_panel()
+        elif k in ("shelf", "download"):
+            self._open_shelf_panel()
+
+    def _open_shelf_panel(self) -> None:
+        p = self.shelf_panel
+        if p is None:
+            return
+        if hasattr(p, "switch_tab"):
+            p.switch_tab("files")
+        if p.is_open():
+            return
+        rect = self._v25_rects.get("shelf") or QRectF(self.width() / 2.0, CARD_Y, 28.0, CARD_HEIGHT)
+        anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+        try:
+            p.show_for(anchor_global)
+        except Exception as exc:
+            sources.log_err("shelf_panel_show", exc)
+
+    def _trigger_shelf_pulse(self) -> None:
+        self._shelf_pulse = 1.0
+        self._v25_update_key("shelf")
+        if hasattr(self, "_shelf_pulse_timer") and not self._shelf_pulse_timer.isActive():
+            self._shelf_pulse_timer.start()
+
+    def _on_shelf_pulse_tick(self) -> None:
+        self._shelf_pulse = max(0.0, self._shelf_pulse - 0.03)
+        self._v25_update_key("shelf")
+        if self._shelf_pulse <= 0.0:
+            self._shelf_pulse = 0.0
+            if hasattr(self, "_shelf_pulse_timer"):
+                self._shelf_pulse_timer.stop()
 
     def _toggle_v25_panel(self, panel: Any, key: str, rect: Optional[QRectF] = None) -> None:
         if panel is None:
@@ -2446,19 +2482,51 @@ class SeritDock(QWidget):
         if self._shot_watcher is not None:
             self.submit_fetch("shelfshot")
 
+    def _notify_shelf_downloads(self, paths: List[str], source: str = "download") -> None:
+        if not paths or self.preview_mode or getattr(self, "toast_mgr", None) is None:
+            return
+        try:
+            import alerts
+            first_path = paths[0]
+            first_name = os.path.basename(first_path) or first_path
+            count = len(paths)
+            if source == "screenshot":
+                title = "Ekran alıntısı rafta"
+                body = f"{first_name} yakalandı · sürüklemeye hazır" if count == 1 else f"{count} yeni ekran alıntısı rafta"
+            else:
+                title = "İndirilen dosya rafta"
+                body = f"{first_name} indi · sürüklemeye hazır" if count == 1 else f"{count} yeni dosya indi"
+            alert = alerts.Alert(
+                id=f"shelf:{int(time.time())}:{first_name}",
+                title=title,
+                body=body,
+                accent="#6EA8FE",
+                kind="shelf",
+            )
+            self.toast_mgr.show(alert)
+        except Exception as exc:
+            sources.log_err("shelf_toast", exc)
+
     def _on_shelf_downloads(self, res: Any, source: str = "download") -> None:
         if self.shelf_store is None:
             return
         try:
             changed = False
+            added_paths: List[str] = []
             if isinstance(res, (list, tuple)) and res:
-                changed = bool(self.shelf_store.add_paths([str(x) for x in res], source))
+                added_paths = [str(x) for x in res if x]
+                if added_paths:
+                    changed = bool(self.shelf_store.add_paths(added_paths, source))
             if self.shelf_store.expire():
                 changed = True
             if changed:
                 self._v25_update_key("shelf")
                 if self.shelf_panel is not None and self.shelf_panel.is_open():
                     self.shelf_panel.refresh()
+                if added_paths:
+                    self._trigger_shelf_pulse()
+                    if self.settings.get("shelf_notify", True):
+                        self._notify_shelf_downloads(added_paths, source)
         except Exception as exc:
             sources.log_err("shelf_downloads", exc)
 
@@ -2868,7 +2936,14 @@ class SeritDock(QWidget):
                     st = "idle"
                 try:
                     shelf.draw_shelf_icon(p, r_sh, st, int(self.shelf_store.count()),
-                                          hover=(self._hover_key == "shelf"))
+                                          hover=(self._hover_key == "shelf"),
+                                          pulse=getattr(self, "_shelf_pulse", 0.0))
+                except TypeError:
+                    try:
+                        shelf.draw_shelf_icon(p, r_sh, st, int(self.shelf_store.count()),
+                                              hover=(self._hover_key == "shelf"))
+                    except Exception as exc:
+                        sources.log_err("shelf_draw", exc)
                 except Exception as exc:
                     sources.log_err("shelf_draw", exc)
         if r_po is not None:

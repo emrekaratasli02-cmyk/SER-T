@@ -671,6 +671,10 @@ class Toast(QWidget):
             return "$"
         if "sys" in k or "ram" in k:
             return "⚡"
+        if "shelf" in k or "download" in k:
+            return "↓"
+        if "pomodoro" in k:
+            return "⏱"
         return "!"
 
     def show_toast(self, x: int, y: int) -> None:

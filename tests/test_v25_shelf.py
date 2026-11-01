@@ -330,6 +330,29 @@ def test_screenshots_folder_is_a_path() -> None:
     assert isinstance(p, str) and p
 
 
+def test_panel_download_badges() -> None:
+    now = 1000.0
+    # 1. format_badge_text kuralları
+    assert shelf.format_badge_text({"pinned": True, "source": "download", "added": now - 100}, now=now) is None
+    assert shelf.format_badge_text({"pinned": False, "source": "drop", "added": now - 100}, now=now) is None
+    assert shelf.format_badge_text({"pinned": False, "source": "download", "added": now - 120}, now=now) == "8 dk kaldı"
+    assert shelf.format_badge_text({"pinned": False, "source": "screenshot", "added": now - 570}, now=now) == "<1 dk kaldı"
+
+    # 2. Panel çizim kontrolü
+    with tempfile.TemporaryDirectory() as t:
+        d = Path(t)
+        f1 = _mk(d, "ias_rapor.xlsx")
+        f2 = _mk(d, "ekran.png")
+        s = _store(d)
+        s.add_paths([f1], source="download")
+        s.add_paths([f2], source="screenshot")
+        s.toggle_pin(f2)
+        panel = shelf.ShelfPanel(s)
+        panel.refresh()
+        img = panel.render_to_image(1.25)
+        assert not img.isNull()
+
+
 def main() -> int:
     tests = [
         test_screenshot_items_expire_like_downloads,
@@ -352,6 +375,7 @@ def main() -> int:
         test_panel_pin_remove_clicks_change_store_and_emit,
         test_panel_copy_all_and_drag_guarded,
         test_draw_shelf_icon_states,
+        test_panel_download_badges,
     ]
     failed = 0
     for fn in tests:

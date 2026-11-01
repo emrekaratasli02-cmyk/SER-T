@@ -111,6 +111,18 @@ def fmt_age(added: float, now: Optional[float] = None) -> str:
     return f"{int(d // 86400)} gün önce"
 
 
+def format_badge_text(it: Dict[str, Any], now: Optional[float] = None) -> Optional[str]:
+    """İndirilen ve ekran görüntüsü öğeleri için kalan süre rozeti metni."""
+    if it.get("pinned", False) or it.get("source") not in AUTO_SOURCES:
+        return None
+    now = time.time() if now is None else now
+    rem_s = max(0.0, DOWNLOAD_KEEP_S - (now - float(it.get("added", now))))
+    if rem_s < 60:
+        return "<1 dk kaldı"
+    rem_m = int(round(rem_s / 60.0))
+    return f"{rem_m} dk kaldı"
+
+
 # ============================================================================ ShelfStore
 class ShelfStore:
     """Raf içeriği. Saf Python, iş parçacığı güvenli, atomik kayıt (tmp + os.replace)."""
@@ -401,14 +413,23 @@ def _device_dpr(p: QPainter) -> float:
         return 1.0
 
 
-def draw_shelf_icon(p: QPainter, rect: QRectF, state: str, count: int, hover: bool = False) -> None:
-    """28x28 yuvarlak kutu (rect içinde ortalı) + ataç; sayı > 0 ise sağ üstte mavi rozet."""
+def draw_shelf_icon(p: QPainter, rect: QRectF, state: str, count: int, hover: bool = False, pulse: float = 0.0) -> None:
+    """28x28 yuvarlak kutu (rect içinde ortalı) + ataç; sayı > 0 ise sağ üstte mavi rozet; pulse > 0 ise ışıma halkası."""
     if state not in ("idle", "over", "open"):
         state = "idle"
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     box = QRectF(rect.center().x() - SHELF_ICON_W / 2.0, rect.center().y() - SHELF_ICON_W / 2.0,
                  SHELF_ICON_W, SHELF_ICON_W)
+
+    if pulse > 0.0:
+        clamped_pulse = max(0.0, min(1.0, float(pulse)))
+        spread = 2.0 + 3.0 * clamped_pulse
+        glow_box = box.adjusted(-spread, -spread, spread, spread)
+        p.setPen(QPen(QColor(110, 168, 254, int(150 * clamped_pulse)), 1.2))
+        p.setBrush(QColor(110, 168, 254, int(40 * clamped_pulse)))
+        p.drawRoundedRect(glow_box, 9.0, 9.0)
+
     if state == "over":
         p.setBrush(QColor(110, 168, 254, 46))                     # rgba(110,168,254,.18)
         p.setPen(QPen(ps.ACCENT, 1.5))
@@ -424,7 +445,11 @@ def draw_shelf_icon(p: QPainter, rect: QRectF, state: str, count: int, hover: bo
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(255, 255, 255, 13))
             p.drawRoundedRect(box, 8.0, 8.0)
-        glyph = QColor(255, 255, 255, 217 if hover else 140)      # .55 (hover .85)
+        elif pulse > 0.0:
+            p.setPen(QPen(QColor(110, 168, 254, int(130 * pulse)), 1.0))
+            p.setBrush(QColor(110, 168, 254, int(25 * pulse)))
+            p.drawRoundedRect(box, 8.0, 8.0)
+        glyph = QColor(255, 255, 255, 217 if (hover or pulse > 0.0) else 140)      # .55 (hover .85)
     pm = _svg_pixmap("clip", glyph, 18.0, _device_dpr(p))
     p.drawPixmap(QPointF(box.center().x() - 9.0, box.center().y() - 9.0), pm)
 
@@ -1238,6 +1263,21 @@ class ShelfPanel(QWidget):
                     p.drawRoundedRect(pr.adjusted(0.5, 0.5, -0.5, -0.5), 6.0, 6.0)
                     p.drawPixmap(QPointF(pr.center().x() - 7.0, pr.center().y() - 7.0),
                                  _svg_pixmap("pin", ps.ACCENT, 14.0, dpr))
+                elif not hov_row:
+                    badge_txt = format_badge_text(it, now)
+                    if badge_txt:
+                        f_badge = ps.font(9.0, QFont.Weight.Medium, tabular=True)
+                        fm_badge = QFontMetricsF(f_badge)
+                        bw = fm_badge.horizontalAdvance(badge_txt) + 12.0
+                        br = QRectF(r.right() - 8.0 - bw, r.center().y() - 9.0, bw, 18.0)
+                        p.save()
+                        p.setPen(QPen(QColor(255, 255, 255, 18), 1.0))
+                        p.setBrush(QColor(255, 255, 255, 10))
+                        p.drawRoundedRect(br.adjusted(0.5, 0.5, -0.5, -0.5), 9.0, 9.0)
+                        p.setFont(f_badge)
+                        p.setPen(ps.TEXT_META)
+                        p.drawText(br, Qt.AlignmentFlag.AlignCenter, badge_txt)
+                        p.restore()
                 elif hov_row:
                     if hp:
                         p.setPen(QPen(ps.BUTTON_BORDER, 1.0))

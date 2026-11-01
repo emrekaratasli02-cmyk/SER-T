@@ -672,6 +672,36 @@ def test_no_polling_or_drops_in_preview() -> None:
     assert d._dl_watcher is None
 
 
+def test_shelf_downloads_trigger_pulse_and_toast() -> None:
+    m = load_module(True)
+    d = make_dock(m, True, shelf_items=1)
+    d.preview_mode = False
+    toasts = []
+
+    class FakeMgr:
+        def show(self, alert):
+            toasts.append(alert)
+
+    d.toast_mgr = FakeMgr()
+    d._shelf_pulse = 0.0
+
+    # 1. İndirme geldiğinde pulse ve bildirim tetiklenmeli
+    d._on_shelf_downloads(["/downloads/ias_report.xlsx"], source="download")
+    assert d._shelf_pulse == 1.0
+    assert len(toasts) == 1
+    assert toasts[0].title == "İndirilen dosya rafta"
+    assert "ias_report.xlsx" in toasts[0].body
+    assert toasts[0].kind == "shelf"
+
+    # 2. Bildirime tıklandığında raf açılmalı
+    d._on_toast_clicked(toasts[0])
+    assert d.shelf_panel.calls and "show" in d.shelf_panel.calls
+
+    # 3. Darbe zamanlayıcısı sönmeli
+    d._on_shelf_pulse_tick()
+    assert d._shelf_pulse < 1.0
+
+
 def main() -> int:
     tests = [
         test_menu_rows_and_checked_state,
@@ -690,6 +720,7 @@ def main() -> int:
         test_screenshot_results_go_to_shelf_as_screenshot,
         test_tight_gaps_keep_task_line,
         test_no_polling_or_drops_in_preview,
+        test_shelf_downloads_trigger_pulse_and_toast,
     ]
     failed = 0
     for fn in tests:
