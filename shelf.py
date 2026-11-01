@@ -34,6 +34,11 @@ import logpath  # noqa: E402
 import panel_style as ps  # noqa: E402
 
 try:
+    import clipboard  # noqa: E402
+except ImportError:
+    clipboard = None
+
+try:
     import winapi  # noqa: E402
 except Exception:  # pragma: no cover
     winapi = None
@@ -485,7 +490,7 @@ class ShelfPanel(QWidget):
     WIDTH = int(ps.PANEL_W)
     changed = Signal()
 
-    def __init__(self, store: ShelfStore, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, store: ShelfStore, parent: Optional[QWidget] = None, clip_store: Optional[Any] = None) -> None:
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.NoDropShadowWindowHint | Qt.WindowType.WindowStaysOnTopHint)
@@ -493,6 +498,13 @@ class ShelfPanel(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self._store = store
+        self._clip_store = clip_store or (clipboard.ClipboardStore() if clipboard is not None else None)
+        self._clip_monitor: Optional[Any] = None
+        self._tab: str = "files"  # "files" veya "clips"
+        self._clip_items: List[Dict[str, Any]] = []
+        self._clip_row_rects: List[QRectF] = []
+        self._clip_rm_rects: List[QRectF] = []
+        self._sel_idx: int = 0
         self._items: List[Dict[str, Any]] = []
         self._rects: Dict[str, QRectF] = {}
         self._row_rects: List[QRectF] = []
@@ -534,11 +546,17 @@ class ShelfPanel(QWidget):
         return min(len(self._items), MAX_VISIBLE_ROWS)
 
     def compute_height(self) -> int:
-        body = EMPTY_H if not self._items else self._visible_rows() * ROW_H
+        if self._tab == "clips":
+            rows = min(len(self._clip_items), 5)
+            body = EMPTY_H if not self._clip_items else max(1, rows) * 52.0
+        else:
+            body = EMPTY_H if not self._items else self._visible_rows() * ROW_H
         card_h = 2 * ps.CARD_PAD + OVERLINE_H + body
         return int(round(ps.PAD + ps.HEADER_H + ps.GAP + card_h + ps.GAP + ps.FOOTER_H + ps.PAD))
 
     def _max_scroll(self) -> float:
+        if self._tab == "clips":
+            return max(0.0, len(self._clip_items) * 52.0 - min(len(self._clip_items), 5) * 52.0)
         return max(0.0, len(self._items) * ROW_H - self._visible_rows() * ROW_H)
 
     def _layout(self) -> None:
@@ -546,36 +564,69 @@ class ShelfPanel(QWidget):
         cw = w - 2 * ps.PAD
         self._rects = {}
         self._row_rects, self._pin_rects, self._rm_rects = [], [], []
+        self._clip_row_rects, self._clip_rm_rects = [], []
         y = ps.PAD
         hdr_rect = QRectF(ps.PAD, y, cw, ps.HEADER_H)
         self._rects["hdr"] = hdr_rect
         close_sz = ps.CLOSE_SZ
         self._rects["close"] = QRectF(hdr_rect.right() - close_sz, hdr_rect.center().y() - close_sz / 2.0, close_sz, close_sz)
+
+        if self._clip_store is not None:
+            tab_bar_w = 190.0
+            tab_bar_h = 26.0
+            tab_bar_r = QRectF(hdr_rect.left(), hdr_rect.center().y() - tab_bar_h / 2.0, tab_bar_w, tab_bar_h)
+            tab_w = tab_bar_w / 2.0
+            self._rects["tab_files"] = QRectF(tab_bar_r.left(), tab_bar_r.top(), tab_w, tab_bar_h)
+            self._rects["tab_clips"] = QRectF(tab_bar_r.left() + tab_w, tab_bar_r.top(), tab_w, tab_bar_h)
+
         y += ps.HEADER_H + ps.GAP
 
-        body_h = EMPTY_H if not self._items else self._visible_rows() * ROW_H
-        card_h = 2 * ps.CARD_PAD + OVERLINE_H + body_h
-        card_rect = QRectF(ps.PAD, y, cw, card_h)
-        self._rects["card"] = card_rect
+        if self._tab == "clips":
+            rows = min(len(self._clip_items), 5)
+            body_h = EMPTY_H if not self._clip_items else max(1, rows) * 52.0
+            card_h = 2 * ps.CARD_PAD + OVERLINE_H + body_h
+            card_rect = QRectF(ps.PAD, y, cw, card_h)
+            self._rects["card"] = card_rect
+            inner = card_rect.adjusted(ps.CARD_PAD, ps.CARD_PAD, -ps.CARD_PAD, -ps.CARD_PAD)
 
-        inner = card_rect.adjusted(ps.CARD_PAD, ps.CARD_PAD, -ps.CARD_PAD, -ps.CARD_PAD)
-        copy_label = self._copy_note or "Hepsini kopyala ›"
-        fm_ovr = QFontMetricsF(ps.font(10.5, QFont.Weight.DemiBold))
-        copy_w = fm_ovr.horizontalAdvance(copy_label) + 12.0
-        self._rects["copy"] = QRectF(inner.right() - copy_w, inner.top(), copy_w, 18.0)
+            clear_label = self._copy_note or "Temizle"
+            fm_ovr = QFontMetricsF(ps.font(10.5, QFont.Weight.DemiBold))
+            clear_w = fm_ovr.horizontalAdvance(clear_label) + 12.0
+            self._rects["copy"] = QRectF(inner.right() - clear_w, inner.top(), clear_w, 18.0)
 
-        list_top = inner.top() + OVERLINE_H
-        self._list_rect = QRectF(inner.left(), list_top, inner.width(), body_h)
-        self._scroll = max(0.0, min(self._max_scroll(), self._scroll))
+            list_top = inner.top() + OVERLINE_H
+            self._list_rect = QRectF(inner.left(), list_top, inner.width(), body_h)
+            self._scroll = max(0.0, min(self._max_scroll(), self._scroll))
 
-        btn_sz = BTN_SZ
-        for i in range(len(self._items)):
-            r = QRectF(inner.left(), list_top + i * ROW_H - self._scroll, inner.width(), ROW_H)
-            self._row_rects.append(r)
-            rm = QRectF(r.right() - 6.0 - btn_sz, r.center().y() - btn_sz / 2.0, btn_sz, btn_sz)
-            pin = QRectF(rm.left() - 4.0 - btn_sz, r.center().y() - btn_sz / 2.0, btn_sz, btn_sz)
-            self._rm_rects.append(rm)
-            self._pin_rects.append(pin)
+            for i in range(len(self._clip_items)):
+                r = QRectF(inner.left(), list_top + i * 52.0 - self._scroll, inner.width(), 48.0)
+                self._clip_row_rects.append(r)
+                rm = QRectF(r.right() - 24.0, r.center().y() - 10.0, 20.0, 20.0)
+                self._clip_rm_rects.append(rm)
+        else:
+            body_h = EMPTY_H if not self._items else self._visible_rows() * ROW_H
+            card_h = 2 * ps.CARD_PAD + OVERLINE_H + body_h
+            card_rect = QRectF(ps.PAD, y, cw, card_h)
+            self._rects["card"] = card_rect
+
+            inner = card_rect.adjusted(ps.CARD_PAD, ps.CARD_PAD, -ps.CARD_PAD, -ps.CARD_PAD)
+            copy_label = self._copy_note or "Hepsini kopyala ›"
+            fm_ovr = QFontMetricsF(ps.font(10.5, QFont.Weight.DemiBold))
+            copy_w = fm_ovr.horizontalAdvance(copy_label) + 12.0
+            self._rects["copy"] = QRectF(inner.right() - copy_w, inner.top(), copy_w, 18.0)
+
+            list_top = inner.top() + OVERLINE_H
+            self._list_rect = QRectF(inner.left(), list_top, inner.width(), body_h)
+            self._scroll = max(0.0, min(self._max_scroll(), self._scroll))
+
+            btn_sz = BTN_SZ
+            for i in range(len(self._items)):
+                r = QRectF(inner.left(), list_top + i * ROW_H - self._scroll, inner.width(), ROW_H)
+                self._row_rects.append(r)
+                rm = QRectF(r.right() - 6.0 - btn_sz, r.center().y() - btn_sz / 2.0, btn_sz, btn_sz)
+                pin = QRectF(rm.left() - 4.0 - btn_sz, r.center().y() - btn_sz / 2.0, btn_sz, btn_sz)
+                self._rm_rects.append(rm)
+                self._pin_rects.append(pin)
 
         y += card_h + ps.GAP
         fr = QRectF(ps.PAD, y, cw, ps.FOOTER_H)
@@ -589,6 +640,8 @@ class ShelfPanel(QWidget):
 
     def refresh(self) -> None:
         self._items = self._store.items()
+        if self._clip_store is not None:
+            self._clip_items = self._clip_store.items()
         h = self.compute_height()
         if h != self.height() or self.width() != self.WIDTH:
             old_h = self.height()
@@ -666,12 +719,57 @@ class ShelfPanel(QWidget):
     def panel_x(self) -> int:
         return int(self.x())
 
+    def switch_tab(self, tab: str) -> None:
+        if tab not in ("files", "clips") or tab == self._tab:
+            return
+        self._tab = tab
+        self._scroll = 0.0
+        self._sel_idx = 0
+        h = self.compute_height()
+        if h != self.height() or self.width() != self.WIDTH:
+            old_h = self.height()
+            self.resize(self.WIDTH, h)
+            if self.isVisible() and old_h > 0:
+                self.move(self.x(), self.y() - (h - old_h))
+                self._apply_round()
+        self._layout()
+        self.update()
+
     # ------------------------------------------------------------ olaylar
     def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key.Key_Escape:
+        key = event.key()
+        if key == Qt.Key.Key_Escape:
             self.hide_animated()
             event.accept()
             return
+        if key in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+            if self._clip_store is not None:
+                self.switch_tab("clips" if self._tab == "files" else "files")
+                event.accept()
+                return
+        if self._tab == "clips":
+            if key == Qt.Key.Key_Up:
+                if self._clip_items:
+                    self._sel_idx = max(0, self._sel_idx - 1)
+                    self.update()
+                event.accept()
+                return
+            if key == Qt.Key.Key_Down:
+                if self._clip_items:
+                    self._sel_idx = min(len(self._clip_items) - 1, self._sel_idx + 1)
+                    self.update()
+                event.accept()
+                return
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if self._clip_items and 0 <= self._sel_idx < len(self._clip_items):
+                    self.copy_clip_at(self._sel_idx)
+                event.accept()
+                return
+            if key == Qt.Key.Key_Delete:
+                if self._clip_items and 0 <= self._sel_idx < len(self._clip_items):
+                    self.remove_clip_at(self._sel_idx)
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     def changeEvent(self, event: QEvent) -> None:
@@ -707,10 +805,19 @@ class ShelfPanel(QWidget):
         return None
 
     def _hit(self, pos: QPointF) -> Optional[str]:
-        for k in ("close", "clear", "copy"):
+        for k in ("close", "clear", "copy", "tab_files", "tab_clips"):
             r = self._rects.get(k)
             if r is not None and r.contains(pos):
                 return k
+        if self._tab == "clips":
+            if self._list_rect.contains(pos):
+                for i, rm in enumerate(self._clip_rm_rects):
+                    if rm.contains(pos):
+                        return f"clip_rm:{i}"
+                for i, r in enumerate(self._clip_row_rects):
+                    if r.contains(pos):
+                        return f"clip:{i}"
+            return None
         i = self._row_at(pos)
         if i is not None:
             if self._rm_rects[i].contains(pos):
@@ -733,6 +840,11 @@ class ShelfPanel(QWidget):
         h = self._hit(pos)
         if h != self._hover:
             self._hover = h
+            if h and h.startswith("clip:"):
+                try:
+                    self._sel_idx = int(h[5:])
+                except Exception:
+                    pass
             self.update()
         super().mouseMoveEvent(event)
 
@@ -751,10 +863,21 @@ class ShelfPanel(QWidget):
         self._press_idx = None
         if h == "close":
             self.hide_animated()
+        elif h == "tab_files":
+            self.switch_tab("files")
+        elif h == "tab_clips":
+            self.switch_tab("clips")
         elif h == "clear":
             self.activate_clear()
         elif h == "copy":
-            self.copy_all()
+            if self._tab == "clips":
+                self.activate_clear()
+            else:
+                self.copy_all()
+        elif h and h.startswith("clip:"):
+            self.copy_clip_at(int(h[5:]))
+        elif h and h.startswith("clip_rm:"):
+            self.remove_clip_at(int(h[8:]))
         elif h and h.startswith("pin:"):
             self.toggle_pin_at(int(h[4:]))
         elif h and h.startswith("rm:"):
@@ -795,8 +918,34 @@ class ShelfPanel(QWidget):
         self.changed.emit()
 
     def activate_clear(self) -> None:
-        self._store.clear(keep_pinned=True)
-        self._after_change()
+        if self._tab == "clips":
+            if self._clip_store is not None:
+                self._clip_store.clear()
+                self._after_change()
+        else:
+            self._store.clear(keep_pinned=True)
+            self._after_change()
+
+    def copy_clip_at(self, i: int) -> None:
+        if self._clip_store is None or not (0 <= i < len(self._clip_items)):
+            return
+        text = self._clip_store.get_text(i)
+        if not text:
+            return
+        if hasattr(self, "_clip_monitor") and self._clip_monitor is not None:
+            self._clip_monitor.copy_to_system(text)
+        elif _real_ui_allowed():
+            QGuiApplication.clipboard().setText(text)
+        self.guard_log.append("copy_clip")
+        self._copy_note = "Kopyalandı ✓"
+        self._note_timer.start(1200)
+        self._layout()
+        self.update()
+
+    def remove_clip_at(self, i: int) -> None:
+        if self._clip_store is not None and 0 <= i < len(self._clip_items):
+            self._clip_store.remove_at(i)
+            self._after_change()
 
     def toggle_pin_at(self, i: int) -> None:
         if 0 <= i < len(self._items):
@@ -887,19 +1036,147 @@ class ShelfPanel(QWidget):
         w, h = float(self.width()), float(self.height())
         ps.draw_panel_shell(p, QRectF(0, 0, w, h))
 
-        # 1. Başlık: 'Dosya rafı' (küçük harfli başlık) + 'N dosya' rozeti + kapat ×
-        chip_txt = f"{len(self._items)} dosya"
-        hdr = ps.draw_header(
-            p, self._rects["hdr"], "Dosya rafı",
-            icon=self._draw_header_icon,
-            chip=chip_txt,
-            chip_dot=ps.ACCENT if self._items else None,
-            close_hover=(self._hover == "close"),
-        )
-        if hdr.get("close") is not None:
-            self._rects["close"] = QRectF(hdr["close"])
+        # 1. Başlık: Segmentli sekme [Dosyalar (N)] [Pano (M)] veya klasik 'Dosya rafı'
+        if self._clip_store is not None and "tab_files" in self._rects:
+            tf = self._rects["tab_files"]
+            tc = self._rects["tab_clips"]
+            t_bar = QRectF(tf.left(), tf.top(), tf.width() + tc.width(), tf.height())
 
-        # 2. İç kart: 'DOSYALAR' + isteğe bağlı sağda 'Hepsini kopyala ›'
+            p.save()
+            p.setPen(QPen(QColor(255, 255, 255, 15), 1.0))
+            p.setBrush(QColor(0x1D, 0x1F, 0x24))
+            p.drawRoundedRect(t_bar, 6.0, 6.0)
+
+            f_tab = ps.font(10.5, QFont.Weight.Medium)
+            p.setFont(f_tab)
+
+            # Aktif sekme arka planı
+            act_r = tf if self._tab == "files" else tc
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 22))
+            p.drawRoundedRect(act_r.adjusted(1.5, 1.5, -1.5, -1.5), 5.0, 5.0)
+
+            # Sekme metinleri
+            p.setPen(ps.TEXT if self._tab == "files" else ps.TEXT_MUTED)
+            p.drawText(tf, Qt.AlignmentFlag.AlignCenter, f"Dosyalar ({len(self._items)})")
+
+            p.setPen(ps.TEXT if self._tab == "clips" else ps.TEXT_MUTED)
+            p.drawText(tc, Qt.AlignmentFlag.AlignCenter, f"Pano ({len(self._clip_items)})")
+
+            # Kapat (✕)
+            cr = self._rects["close"]
+            hx = (self._hover == "close")
+            p.setPen(QPen(ps.TEXT if hx else ps.TEXT_CLOSE, 1.3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            cx, cy = cr.center().x(), cr.center().y()
+            p.drawLine(QPointF(cx - 3.5, cy - 3.5), QPointF(cx + 3.5, cy + 3.5))
+            p.drawLine(QPointF(cx + 3.5, cy - 3.5), QPointF(cx - 3.5, cy + 3.5))
+            p.restore()
+        else:
+            chip_txt = f"{len(self._items)} dosya"
+            hdr = ps.draw_header(
+                p, self._rects["hdr"], "Dosya rafı",
+                icon=self._draw_header_icon,
+                chip=chip_txt,
+                chip_dot=ps.ACCENT if self._items else None,
+                close_hover=(self._hover == "close"),
+            )
+            if hdr.get("close") is not None:
+                self._rects["close"] = QRectF(hdr["close"])
+
+        # 2. PANO SEKME ÇİZİMİ
+        if self._tab == "clips":
+            clear_label = self._copy_note or "Temizle"
+            ps.draw_card(p, self._rects["card"], overline="Son kopyalananlar", overline_right=clear_label)
+
+            lr = self._list_rect
+            if not self._clip_items:
+                p.save()
+                p.setFont(ps.font(11.5, QFont.Weight.Normal))
+                p.setPen(ps.TEXT_MUTED)
+                p.drawText(lr, Qt.AlignmentFlag.AlignCenter, "Pano geçmişi boş\n(Ctrl+C ile kopyalananlar burada listelenir)")
+                p.restore()
+            else:
+                p.save()
+                p.setClipRect(lr)
+                f_text = ps.font(11.5, QFont.Weight.Medium)
+                f_meta = ps.font(9.5, QFont.Weight.Normal)
+                f_tag = ps.font(8.5, QFont.Weight.DemiBold)
+
+                for i, it in enumerate(self._clip_items):
+                    if i >= len(self._clip_row_rects):
+                        break
+                    r = self._clip_row_rects[i]
+                    hov = (self._hover == f"clip:{i}" or self._sel_idx == i)
+
+                    if hov:
+                        p.setPen(QPen(QColor(255, 255, 255, 20), 1.0))
+                        p.setBrush(QColor(255, 255, 255, 12))
+                        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 6.0, 6.0)
+                    else:
+                        p.setPen(Qt.PenStyle.NoPen)
+                        p.setBrush(QColor(255, 255, 255, 4))
+                        p.drawRoundedRect(r, 6.0, 6.0)
+
+                    # Tür etiketi
+                    kind = it.get("kind", "text").upper()
+                    if kind == "URL":
+                        kind_lbl = "LİNK"
+                    elif kind == "CODE":
+                        kind_lbl = "KOD"
+                    elif kind == "HEX":
+                        kind_lbl = "RENK"
+                    else:
+                        kind_lbl = "METİN"
+
+                    tag_r = QRectF(r.left() + 8.0, r.top() + 7.0, 38.0, 15.0)
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QColor(255, 255, 255, 14))
+                    p.drawRoundedRect(tag_r, 3.0, 3.0)
+                    p.setFont(f_tag)
+                    p.setPen(ps.TEXT_MUTED)
+                    p.drawText(tag_r, Qt.AlignmentFlag.AlignCenter, kind_lbl)
+
+                    # Zaman
+                    age_str = clipboard.fmt_clip_age(it.get("added", 0)) if clipboard else ""
+                    p.setFont(f_meta)
+                    p.setPen(ps.TEXT_META)
+                    p.drawText(QRectF(tag_r.right() + 6.0, r.top() + 6.0, 120.0, 16.0),
+                               Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, age_str)
+
+                    # Metin önizlemesi
+                    p.setFont(f_text)
+                    p.setPen(ps.TEXT if hov else ps.TEXT_BODY)
+                    prev = it.get("preview", "")
+                    fm = QFontMetricsF(f_text)
+                    elided = fm.elidedText(prev, Qt.TextElideMode.ElideRight, r.width() - 55.0)
+                    p.drawText(QRectF(r.left() + 8.0, r.top() + 24.0, r.width() - 55.0, 18.0),
+                               Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
+
+                    # Sağ işlem: hover/seçiliyse '↵' kopyala veya '✕' sil
+                    rm_r = self._clip_rm_rects[i]
+                    if self._hover == f"clip_rm:{i}":
+                        p.setPen(QPen(QColor(255, 255, 255, 180), 1.2))
+                        cx, cy = rm_r.center().x(), rm_r.center().y()
+                        p.drawLine(QPointF(cx - 3.0, cy - 3.0), QPointF(cx + 3.0, cy + 3.0))
+                        p.drawLine(QPointF(cx + 3.0, cy - 3.0), QPointF(cx - 3.0, cy + 3.0))
+                    elif hov:
+                        p.setFont(ps.font(11.0, QFont.Weight.Medium))
+                        p.setPen(ps.ACCENT)
+                        p.drawText(rm_r, Qt.AlignmentFlag.AlignCenter, "↵")
+
+                p.restore()
+
+            # Pano Alt Bilgisi
+            fr = self._rects["footer"]
+            btn_rect = ps.draw_footer(
+                p, fr, "Enter veya tıkla kopyala", "Temizle",
+                button_hover=(self._hover == "clear")
+            )
+            if btn_rect is not None:
+                self._rects["clear"] = btn_rect
+            return
+
+        # 3. DOSYALAR SEKME ÇİZİMİ (Klasik Raf)
         copy_label = self._copy_note or ("Hepsini kopyala ›" if self._items else None)
         ps.draw_card(p, self._rects["card"], overline="Dosyalar", overline_right=copy_label)
 

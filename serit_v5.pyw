@@ -75,6 +75,10 @@ try:
 except ImportError:
     shelf = None
 try:
+    import clipboard
+except ImportError:
+    clipboard = None
+try:
     import pomodoro
 except ImportError:
     pomodoro = None
@@ -2207,7 +2211,14 @@ class SeritDock(QWidget):
         try:
             if shelf is not None and self.settings.get("shelf_enabled", True):
                 store = shelf.ShelfStore()
-                self.attach_shelf(store, shelf.ShelfPanel(store))
+                clip_store = clipboard.ClipboardStore() if clipboard is not None else None
+                self.clip_store = clip_store
+                if clipboard is not None and clip_store is not None and not self.preview_mode:
+                    self.clip_monitor = clipboard.ClipboardMonitor(clip_store, self)
+                    self.clip_monitor.start()
+                else:
+                    self.clip_monitor = None
+                self.attach_shelf(store, shelf.ShelfPanel(store, clip_store=clip_store))
                 self._dl_watcher = shelf.DownloadsWatcher()
                 sf = getattr(shelf, "screenshots_folder", None)
                 if sf is not None and self.settings.get("shelf_screenshots", True):
@@ -2233,6 +2244,9 @@ class SeritDock(QWidget):
     def attach_shelf(self, store: Any, panel: Any) -> None:
         self.shelf_store = store
         self.shelf_panel = panel
+        if getattr(self, "clip_monitor", None) is not None:
+            panel._clip_monitor = self.clip_monitor
+            self.clip_monitor.changed.connect(lambda: panel.refresh())
         sig = getattr(panel, "changed", None)
         if sig is not None:
             sig.connect(lambda: self._v25_update_key("shelf"))
