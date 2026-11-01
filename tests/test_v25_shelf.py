@@ -239,6 +239,9 @@ def test_panel_pin_remove_clicks_change_store_and_emit() -> None:
         s, p = _panel(Path(t), 3)
         hits = []
         p.changed.connect(lambda: hits.append(1))
+        assert p._pin_rects[0].width() >= 24.0 and p._pin_rects[0].height() >= 24.0
+        assert p._rm_rects[0].width() >= 24.0 and p._rm_rects[0].height() >= 24.0
+        assert "close" in p._rects and p._rects["close"].width() >= 24.0
         path0 = p._items[0]["path"]
         _press(p, p._pin_rects[0])
         assert hits == [1]

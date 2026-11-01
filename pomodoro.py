@@ -335,7 +335,7 @@ def draw_pomo_band(p: QPainter, rect: QRectF, state: Dict[str, Any], hover: bool
     p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
     running = bool(state.get("running"))
     phase = state.get("phase", "focus")
-    col = QColor(ps.WARN) if phase == "focus" else QColor(ps.ACCENT)
+    col = QColor(COLOR_FOCUS) if phase == "focus" else QColor(COLOR_BREAK)
     if hover:
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 18))
@@ -377,6 +377,9 @@ def draw_pomo_band(p: QPainter, rect: QRectF, state: Dict[str, Any], hover: bool
 # =============================================================================================
 # 3. PANEL
 # =============================================================================================
+
+COLOR_FOCUS = QColor(0xD9, 0x77, 0x57)   # Claude coral #D97757
+COLOR_BREAK = ps.ACCENT                  # #6EA8FE
 
 CHIP_H = 24.0
 BTN_H = 26.0
@@ -442,6 +445,21 @@ class PomodoroPanel(QWidget):
         self._layout()
         timer.changed.connect(self._on_timer_changed)
 
+    @staticmethod
+    def _draw_header_icon(p: QPainter, r: QRectF) -> None:
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        cx, cy = r.center().x(), r.center().y() + 1.0
+        pen = QPen(QColor(255, 255, 255, 230), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        rad = 6.2
+        p.drawEllipse(QPointF(cx, cy), rad, rad)
+        p.drawLine(QPointF(cx, cy - rad), QPointF(cx, cy - rad - 2.5))
+        p.drawLine(QPointF(cx - 2.2, cy - rad - 2.5), QPointF(cx + 2.2, cy - rad - 2.5))
+        p.drawLine(QPointF(cx, cy), QPointF(cx + 2.8, cy - 2.4))
+        p.restore()
+
     # -------------------------------------------------------------- yerleşim
     def compute_height(self) -> int:
         return int(round(self._geom()["height"]))
@@ -451,19 +469,20 @@ class PomodoroPanel(QWidget):
         g: Dict[str, float] = {}
         y = ps.PAD
         g["header"] = y
-        y += ps.HEADER_H + 4.0
-        g["big"] = y
-        y += 54.0 + 2.0
-        g["dots"] = y + 4.0
-        y += 4.0 + DOT_D + 14.0
-        g["chips"] = y
-        y += CHIP_H + 14.0
-        g["field"] = y
-        y += FIELD_H + 14.0
-        g["btns"] = y
-        y += ROUND_D + 12.0
+        y += ps.HEADER_H + ps.GAP
+        g["card_timer"] = y
+        g["big"] = y + ps.CARD_PAD + 25.0
+        g["dots"] = g["big"] + 40.0 + 6.0
+        g["chips"] = g["dots"] + DOT_D + 12.0
+        g["btns"] = g["chips"] + CHIP_H + 14.0
+        card1_h = ps.CARD_PAD + 25.0 + 40.0 + 6.0 + DOT_D + 12.0 + CHIP_H + 14.0 + ROUND_D + ps.CARD_PAD
+        y += card1_h + ps.GAP
+        g["card_task"] = y
+        g["field"] = y + ps.CARD_PAD + 23.0
+        card2_h = ps.CARD_PAD + 23.0 + FIELD_H + ps.CARD_PAD
+        y += card2_h + ps.GAP
         g["footer"] = y
-        y += ps.FOOTER_H + 8.0
+        y += ps.FOOTER_H + ps.PAD
         g["height"] = y
         return g
 
@@ -475,7 +494,8 @@ class PomodoroPanel(QWidget):
         r: Dict[str, QRectF] = {}
         hdr = QRectF(x0, g["header"], cw, ps.HEADER_H)
         r["close"] = QRectF(hdr.right() - ps.CLOSE_SZ, hdr.center().y() - ps.CLOSE_SZ / 2.0, ps.CLOSE_SZ, ps.CLOSE_SZ)
-        r["big"] = QRectF(x0, g["big"], cw, 54.0)
+        r["card_timer"] = QRectF(x0, g["card_timer"], cw, (g["card_task"] - ps.GAP) - g["card_timer"])
+        r["big"] = QRectF(x0 + ps.CARD_PAD, g["big"], cw - 2 * ps.CARD_PAD, 40.0)
         # çipler
         f_chip = ps.font(11.5, QFont.Weight.Medium)
         fm = QFontMetricsF(f_chip)
@@ -489,11 +509,10 @@ class PomodoroPanel(QWidget):
             cx += w + 8.0
         self._chip_labels = labels
         # görev alanı
-        field = QRectF(x0, g["field"], cw, FIELD_H)
+        r["card_task"] = QRectF(x0, g["card_task"], cw, (g["footer"] - ps.GAP) - g["card_task"])
+        field = QRectF(x0 + ps.CARD_PAD, g["field"], cw - 2 * ps.CARD_PAD, FIELD_H)
         r["field"] = field
-        f_lbl = ps.font(11.0)
-        lbl_w = QFontMetricsF(f_lbl).horizontalAdvance("Görev")
-        edit_left = field.left() + 10.0 + lbl_w + 8.0
+        edit_left = field.left() + 10.0  # "Görev" artık kartın üst başlığında; alanın içinde etiket yok
         er = QRectF(edit_left, field.top() + 1.0, field.right() - 8.0 - edit_left, field.height() - 2.0)
         r["edit"] = er
         self._edit.setGeometry(int(er.left()), int(er.top()), int(er.width()), int(er.height()))
@@ -716,12 +735,35 @@ class PomodoroPanel(QWidget):
         r = self._rects
         ps.draw_panel_shell(p, QRectF(0, 0, self.width(), self.height()))
         g = self._geom()
-        ps.draw_header(p, QRectF(ps.PAD, g["header"], self.WIDTH - 2 * ps.PAD, ps.HEADER_H), "POMODORO",
-                       close_hover=(self._hover == "close"))
 
-        # büyük süre (44 px, tabular); duraklatılmış %55
+        # 1. Başlık: 'Pomodoro' + durum rozeti + kapat ×
+        if not st["active"]:
+            chip_str = "Hazır"
+            chip_dot = None
+        elif st["phase"] == "focus":
+            chip_str = f"Odak · {st['round']}/{st['rounds']}"
+            chip_dot = COLOR_FOCUS
+        else:
+            chip_str = f"Mola · {st['round']}/{st['rounds']}"
+            chip_dot = COLOR_BREAK
+
+        hdr = ps.draw_header(
+            p, QRectF(ps.PAD, g["header"], self.WIDTH - 2 * ps.PAD, ps.HEADER_H),
+            "Pomodoro",
+            icon=self._draw_header_icon,
+            chip=chip_str,
+            chip_dot=chip_dot,
+            close_hover=(self._hover == "close"),
+        )
+        if hdr.get("close") is not None:
+            r["close"] = QRectF(hdr["close"])
+
+        # 2. Zamanlayıcı kartı
+        ps.draw_card(p, r["card_timer"], overline="Zamanlayıcı")
+
+        # büyük süre (40 px, tabular); duraklatılmış %55
         p.save()
-        p.setFont(ps.font(44.0, QFont.Weight.DemiBold, tabular=True))
+        p.setFont(ps.f_hero(40.0))
         f = p.font()
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -0.5)
         p.setFont(f)
@@ -741,9 +783,11 @@ class PomodoroPanel(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(n):
             if i < done:
-                p.setBrush(ps.WARN)
+                p.setBrush(COLOR_FOCUS)
             elif i == cur:
-                p.setBrush(QColor(255, 159, 10, 128))
+                col = QColor(COLOR_FOCUS)
+                col.setAlpha(128)
+                p.setBrush(col)
             else:
                 p.setBrush(QColor(255, 255, 255, 46))
             p.drawEllipse(QRectF(dx + i * (DOT_D + DOT_GAP), g["dots"], DOT_D, DOT_D))
@@ -757,9 +801,14 @@ class PomodoroPanel(QWidget):
             hov = self._hover == f"chip_{i}"
             p.save()
             if on:
-                p.setPen(QPen(QColor(255, 159, 10, 128), 1.0))
-                p.setBrush(QColor(255, 159, 10, 41))
-                tc = ps.WARN
+                accent_c = COLOR_FOCUS if key == "focus" else COLOR_BREAK
+                border_c = QColor(accent_c)
+                border_c.setAlpha(140)
+                fill_c = QColor(accent_c)
+                fill_c.setAlpha(45)
+                p.setPen(QPen(border_c, 1.0))
+                p.setBrush(fill_c)
+                tc = accent_c
             else:
                 p.setPen(QPen(ps.CHIP_BORDER, 1.0))
                 p.setBrush(ps.BUTTON_HOVER if hov else ps.CHIP_BG)
@@ -769,19 +818,6 @@ class PomodoroPanel(QWidget):
             p.setPen(tc)
             p.drawText(cr, Qt.AlignmentFlag.AlignCenter, self._chip_labels[i])
             p.restore()
-
-        # görev alanı
-        fr = r["field"]
-        p.save()
-        focused = self._edit.hasFocus()
-        p.setPen(QPen(QColor(110, 168, 254, 140) if focused else ps.BUTTON_BORDER, 1.0))
-        p.setBrush(QColor(255, 255, 255, 13))
-        p.drawPath(ps.rounded(fr.adjusted(0.5, 0.5, -0.5, -0.5), 9.0))
-        p.setFont(ps.font(11.0))
-        p.setPen(ps.TEXT_CLOSE)
-        p.drawText(QRectF(fr.left() + 10.0, fr.top(), 60.0, fr.height()),
-                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "Görev")
-        p.restore()
 
         # Atla | oynat/duraklat | Sıfırla
         for key, text in (("skip", "Atla"), ("reset", "Sıfırla")):
@@ -798,9 +834,20 @@ class PomodoroPanel(QWidget):
             p.setPen(ps.TEXT if hov else ps.TEXT_BTN)
             p.drawText(br, Qt.AlignmentFlag.AlignCenter, text)
             p.restore()
-        self._paint_play(p, r["play"], st["running"], self._hover == "play")
+        phase_color = COLOR_BREAK if st.get("phase") in ("short", "long") else COLOR_FOCUS
+        self._paint_play(p, r["play"], st["running"], self._hover == "play", phase_color)
 
-        # alt bilgi
+        # 3. Görev kartı
+        ps.draw_card(p, r["card_task"], overline="Görev")
+        fr = r["field"]
+        p.save()
+        focused = self._edit.hasFocus()
+        p.setPen(QPen(QColor(110, 168, 254, 140) if focused else ps.BUTTON_BORDER, 1.0))
+        p.setBrush(QColor(255, 255, 255, 13))
+        p.drawPath(ps.rounded(fr.adjusted(0.5, 0.5, -0.5, -0.5), 8.0))
+        p.restore()
+
+        # 4. Alt bilgi
         if not st["active"]:
             src = "Hazır"
         elif st["phase"] == "focus":
@@ -810,11 +857,12 @@ class PomodoroPanel(QWidget):
         ps.draw_footer(p, r["footer"], src, "Bitir" if st["active"] else None, button_hover=(self._hover == "stop"))
 
     @staticmethod
-    def _paint_play(p: QPainter, rect: QRectF, running: bool, hover: bool) -> None:
+    def _paint_play(p: QPainter, rect: QRectF, running: bool, hover: bool, color: QColor = COLOR_FOCUS) -> None:
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 176, 46) if hover else ps.WARN)
+        hov_col = color.lighter(115)
+        p.setBrush(hov_col if hover else color)
         p.drawEllipse(rect)
         p.setBrush(ps.PANEL_BG)
         c = rect.center()
