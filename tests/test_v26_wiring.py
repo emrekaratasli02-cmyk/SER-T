@@ -234,6 +234,21 @@ def test_bubble_one_line_unchanged() -> None:
     assert one[2] is None and two[1] > one[1], (one, two)
 
 
+def test_shelf_stays_visible_when_right_items_and_media_active() -> None:
+    # v26.1: 4 uygulama, medya, ağ hızı ve winget rozeti aynı anda açıkken
+    # medya kartı 190 px'e kadar esner, raf simgesi gizlenmez.
+    m, d = _dock(cards={"cal": False, "mail": False, "ag": True, "sys": True}, n_apps=4)
+    d._now_playing_info = {"title": "Örnek Başlık", "artist": "Sanatçı", "app": "Chrome", "playing": True}
+    d._on_net_data(_net(120_000.0, 45_000.0, visible=True))
+    d._on_updates_data(_upd(26))
+    if m.shelf is not None and getattr(d, "shelf_store", None) is None:
+        d.shelf_store = m.shelf.ShelfStore()
+    d.compute_layout_and_resize()
+    tw.render(d, m)
+    assert "raf simgesi gizlendi (yer dar)" not in getattr(d, "_v25_notes", set()), d._v25_notes
+    assert d._v25_rects.get("shelf") is not None, "Ataş (shelf) simgesi dar alanda gizlenmemeli"
+
+
 def main() -> int:
     tests = [
         test_net_item_appears_only_when_visible,
@@ -244,6 +259,7 @@ def main() -> int:
         test_menu_rows_toggle_settings,
         test_all_right_items_fit_with_all_cards,
         test_bubble_one_line_unchanged,
+        test_shelf_stays_visible_when_right_items_and_media_active,
     ]
     failed = 0
     for fn in tests:

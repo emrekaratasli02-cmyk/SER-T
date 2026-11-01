@@ -3057,14 +3057,17 @@ class SeritDock(QWidget):
             _left_x = 14.0
             _media_right = actions_left_x - 16.0 - ((cal_w + GAP_MODULE) if show_cal else 0.0)
             _avail_media = _media_right - (apps_x + w_apps + 40.0)
-            if _left_x + lw_w > apps_x - 40.0 or (has_media and _avail_media < MEDIA_CARD_WIDTH_COMPACT):
+            # v26.1: Sağ küme genişlediğinde (ağ hızı + güncellemeler) medya kartı 190 px'e
+            # kadar esneyebilir; böylece A yerleşimi bozulmaz, Ataş (raf) simgesi kaybolmaz.
+            _min_media_a = 190.0
+            if _left_x + lw_w > apps_x - 40.0 or (has_media and _avail_media < _min_media_a):
                 _use_A = False
 
             if _use_A:
                 final_apps_x = apps_x
                 cur_lw_x = _left_x
                 if has_media:
-                    media_w = max(MEDIA_CARD_WIDTH_COMPACT, min(380.0, _avail_media))
+                    media_w = max(_min_media_a, min(380.0, _avail_media))
             else:
                 final_apps_x = apps_x - center_shift
                 cur_lw_x = final_apps_x - (GAP_MODULE if (lw_w > 0 and w_apps > 0) else 0.0) - lw_w
