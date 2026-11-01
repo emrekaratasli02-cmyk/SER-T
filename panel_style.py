@@ -23,20 +23,20 @@ from PySide6.QtGui import (
 )
 
 # --- Yüzeyler -------------------------------------------------------------------------------
-PANEL_BG = QColor(0x14, 0x15, 0x18)            # #141518 opak, alfa yok
-PANEL_BORDER = QColor(255, 255, 255, 23)       # rgba(255,255,255,.09)
-TILE_BG = QColor(0x1D, 0x1F, 0x24)             # #1D1F24
+PANEL_BG = QColor(0x13, 0x14, 0x17)            # #131417 derin, net opak
+PANEL_BORDER = QColor(255, 255, 255, 20)       # rgba(255,255,255,.08) zarif saç teli
+TILE_BG = QColor(0x1A, 0x1C, 0x21)             # #1A1C21 zengin, derin iç kart
 CARD_BG = TILE_BG
-TILE_BORDER = QColor(255, 255, 255, 15)        # rgba(255,255,255,.06)
+TILE_BORDER = QColor(255, 255, 255, 14)        # rgba(255,255,255,.055)
 CARD_BORDER = TILE_BORDER
-TILE_HOVER = QColor(0x23, 0x26, 0x2C)
+TILE_HOVER = QColor(0x20, 0x23, 0x29)
 CARD_HOVER = TILE_HOVER
-BUTTON_BG = QColor(255, 255, 255, 18)          # rgba(255,255,255,.07)
+BUTTON_BG = QColor(255, 255, 255, 14)          # rgba(255,255,255,.055)
 BUTTON_BORDER = QColor(255, 255, 255, 20)      # rgba(255,255,255,.08)
-BUTTON_HOVER = QColor(255, 255, 255, 32)       # rgba(255,255,255,.125)
-CHIP_BG = QColor(255, 255, 255, 18)            # rgba(255,255,255,.07)
-CHIP_BORDER = QColor(255, 255, 255, 20)        # rgba(255,255,255,.08)
-FOOTER_LINE = QColor(255, 255, 255, 13)        # rgba(255,255,255,.05)
+BUTTON_HOVER = QColor(255, 255, 255, 28)       # rgba(255,255,255,.11)
+CHIP_BG = QColor(255, 255, 255, 14)            # rgba(255,255,255,.055)
+CHIP_BORDER = QColor(255, 255, 255, 18)        # rgba(255,255,255,.07)
+FOOTER_LINE = QColor(255, 255, 255, 12)        # rgba(255,255,255,.045)
 
 # --- Metin ----------------------------------------------------------------------------------
 TEXT = QColor(255, 255, 255)
@@ -260,8 +260,8 @@ def f_title() -> QFont:
 
 
 def f_label() -> QFont:
-    f = font(10.5, QFont.Weight.DemiBold)
-    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.84)
+    f = font(10.0, QFont.Weight.DemiBold)
+    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.1)
     return f
 
 
@@ -280,31 +280,35 @@ def rounded(r: QRectF, radius: float) -> QPainterPath:
 
 
 def draw_panel_shell(p: QPainter, r: QRectF) -> None:
-    """Opak panel gövdesi + saç teli kenar. Gölgeyi pencere (DWM) verir; burada çizilmez."""
+    """Opak panel gövdesi + saç teli kenar + Raycast/macOS 1px üst ışık yansıması."""
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    # Ana gövde
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(PANEL_BG)
     p.drawPath(rounded(r, R_PANEL))
+    # Saç teli dış çerçeve
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.setPen(QPen(PANEL_BORDER, 1.0))
     p.drawPath(rounded(r.adjusted(0.5, 0.5, -0.5, -0.5), R_PANEL - 0.5))
-    # Üst kenarda ince ışık çizgisi (derinlik; köşe yarıçapı kadar içeriden)
-    p.setPen(QPen(QColor(255, 255, 255, 38), 1.0))
+    # Üst kenarda 1px zarif ışık çizgisi (Raycast donanım derinliği)
+    p.setPen(QPen(QColor(255, 255, 255, 30), 1.0))
     p.drawLine(QPointF(r.left() + R_PANEL, r.top() + 1.0), QPointF(r.right() - R_PANEL, r.top() + 1.0))
     p.restore()
 
 
 def draw_tile(p: QPainter, r: QRectF, hover: bool = False) -> None:
-    """Yükseltilmiş iç kart."""
+    """Yükseltilmiş iç kart (#1A1C21) + 1px üst ışık çizgisi."""
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    # Kart çerçevesi ve arka planı
     p.setPen(QPen(TILE_BORDER, 1.0))
     p.setBrush(TILE_HOVER if hover else TILE_BG)
     p.drawPath(rounded(r.adjusted(0.5, 0.5, -0.5, -0.5), R_TILE))
-    p.setBrush(Qt.BrushStyle.NoBrush)  # fırça sızıntısını önle
-    p.setPen(QPen(QColor(255, 255, 255, 23), 1.0))  # üst kenar biraz daha parlak
-    p.drawLine(QPointF(r.left() + R_TILE, r.top() + 0.5), QPointF(r.right() - R_TILE, r.top() + 0.5))
+    # Üst kenar mikro ışık çizgisi (kartı gömülü değil havada hissettirir)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.setPen(QPen(QColor(255, 255, 255, 18), 1.0))
+    p.drawLine(QPointF(r.left() + R_TILE, r.top() + 1.0), QPointF(r.right() - R_TILE, r.top() + 1.0))
     p.restore()
 
 
@@ -374,21 +378,19 @@ def draw_header(
         _paint_icon(p, icon_box, icon)
         cur_x = icon_box.right() + 10.0
 
-    # Kapat düğmesi (sağda 24x24, radius 6)
+    # Kapat '✕' çizimi (hover kutulu)
     close_sz = min(CLOSE_SZ, rect.height())
     close_rect = QRectF(rect.right() - close_sz, cy - close_sz / 2.0, close_sz, close_sz)
-    if close_hover:
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(BUTTON_HOVER)
-        p.drawPath(rounded(close_rect, R_CLOSE))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(BUTTON_HOVER if close_hover else QColor(255, 255, 255, 10))
+    p.drawPath(rounded(close_rect, R_CLOSE))
 
-    # Kapat '✕' çizimi
     cross_col = TEXT if close_hover else TEXT_CLOSE
-    pen_x = QPen(cross_col, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+    pen_x = QPen(cross_col, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
     p.setPen(pen_x)
     p.setBrush(Qt.BrushStyle.NoBrush)
     cx_close, cy_close = close_rect.center().x(), close_rect.center().y()
-    d = 4.2
+    d = 3.8
     p.drawLine(QPointF(cx_close - d, cy_close - d), QPointF(cx_close + d, cy_close + d))
     p.drawLine(QPointF(cx_close + d, cy_close - d), QPointF(cx_close - d, cy_close + d))
 
@@ -498,8 +500,10 @@ def draw_footer(
     source_text: str,
     button_text: str | None = None,
     button_hover: bool = False,
+    button_spinning: bool = False,
+    spin_angle: float = 0.0,
 ) -> QRectF | None:
-    """Standart 32 px alt bilgi: üstte 1 px çizgi, solda kaynak metni, sağda hayalet eylem düğmesi."""
+    """Standart 32 px alt bilgi: üstte 1 px çizgi, solda kaynak metni, sağda yenileme/eylem düğmesi."""
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
@@ -515,24 +519,50 @@ def draw_footer(
     btn_rect: QRectF | None = None
 
     if button_text:
-        f_btn = font(11.5, QFont.Weight.Medium)
+        f_btn = font(11.0, QFont.Weight.Medium)
         fm_btn = QFontMetricsF(f_btn)
         tw = fm_btn.horizontalAdvance(button_text)
-        btn_w = min(tw + 20.0, max(28.0, content_rect.width() * 0.55))
-        btn_h = min(24.0, content_rect.height())
+        has_spin_glyph = ("Yenile" in button_text or "refresh" in button_text.lower())
+        extra_w = 26.0 if has_spin_glyph else 16.0
+        btn_w = min(tw + extra_w, max(32.0, content_rect.width() * 0.55))
+        btn_h = min(22.0, content_rect.height())
         btn_rect = QRectF(content_rect.right() - btn_w, cy - btn_h / 2.0, btn_w, btn_h)
 
-        p.setPen(QPen(BUTTON_BORDER, 1.0))
+        p.setPen(QPen(QColor(255, 255, 255, 26) if button_hover else BUTTON_BORDER, 1.0))
         p.setBrush(BUTTON_HOVER if button_hover else BUTTON_BG)
         p.drawPath(rounded(btn_rect.adjusted(0.5, 0.5, -0.5, -0.5), R_BUTTON))
 
-        p.setFont(f_btn)
-        p.setPen(TEXT if button_hover else TEXT_BTN)
-        p.drawText(btn_rect, Qt.AlignmentFlag.AlignCenter, button_text)
+        if has_spin_glyph and btn_rect is not None:
+            # Minik ↻ simgesi
+            p.save()
+            icon_cx = btn_rect.left() + 10.0
+            icon_cy = btn_rect.center().y()
+            p.translate(icon_cx, icon_cy)
+            if button_spinning:
+                p.rotate(spin_angle)
+            pen_spin = QPen(TEXT if button_hover else TEXT_BTN, 1.3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            p.setPen(pen_spin)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            arc_r = 3.6
+            p.drawArc(QRectF(-arc_r, -arc_r, arc_r * 2.0, arc_r * 2.0), 45 * 16, 270 * 16)
+            # Ok ucu
+            p.drawLine(QPointF(arc_r - 0.5, -1.0), QPointF(arc_r + 1.5, 1.0))
+            p.drawLine(QPointF(arc_r + 1.5, 1.0), QPointF(arc_r + 3.5, -1.0))
+            p.restore()
+
+            text_rect = QRectF(btn_rect.left() + 18.0, btn_rect.top(), btn_rect.width() - 20.0, btn_rect.height())
+            p.setFont(f_btn)
+            p.setPen(TEXT if button_hover else TEXT_BTN)
+            p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, button_text)
+        elif btn_rect is not None:
+            p.setFont(f_btn)
+            p.setPen(TEXT if button_hover else TEXT_BTN)
+            p.drawText(btn_rect, Qt.AlignmentFlag.AlignCenter, button_text)
+
         right_limit = btn_rect.left() - 8.0
 
-    # Sol kaynak metni (11.5 px, rgba .42)
-    f_src = font(11.5, QFont.Weight.Normal)
+    # Sol kaynak metni (11.0 px, hafif daha belirgin ve net)
+    f_src = font(10.5, QFont.Weight.Normal)
     p.setFont(f_src)
     p.setPen(TEXT_LABEL)
     src_w = max(0.0, right_limit - content_rect.left())
@@ -672,34 +702,35 @@ def draw_ring_with_text(
     sub: str | None = None,
     meta: str | None = None,
 ) -> None:
-    """64 px halka sayaç + merkezde 13.5 px tabular yüzde + altta sub ve meta etiketleri."""
+    """64 px halka sayaç + merkezde 14 px zarif yüzde + altta sub ve meta etiketleri."""
     draw_ring(p, cx, cy, size, stroke, value, color)
 
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
     center_str = text if text is not None else pct(value)
-    f_center = font(13.5, QFont.Weight.Bold, tabular=True)
+    # Rakam ve yüzde işareti dengesi
+    f_center = font(14.0, QFont.Weight.Bold, tabular=True)
     p.setFont(f_center)
     p.setPen(TEXT if value is not None else TEXT_LABEL)
     ring_box = QRectF(cx - size / 2.0, cy - size / 2.0, size, size)
     p.drawText(ring_box, Qt.AlignmentFlag.AlignCenter, center_str)
 
-    cur_y = cy + size / 2.0 + 5.0
+    cur_y = cy + size / 2.0 + 8.0
     col_w = max(size + 36.0, 96.0)
 
     if sub:
-        f_sub = font(11.0, QFont.Weight.Medium)
+        f_sub = font(11.5, QFont.Weight.DemiBold)
         p.setFont(f_sub)
-        p.setPen(TEXT_CHIP)
-        sub_rect = QRectF(cx - col_w / 2.0, cur_y, col_w, 15.0)
+        p.setPen(TEXT_BODY)
+        sub_rect = QRectF(cx - col_w / 2.0, cur_y, col_w, 16.0)
         p.drawText(sub_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, sub)
-        cur_y += 15.0
+        cur_y += 16.0
 
     if meta:
         f_meta = font(10.0, QFont.Weight.Normal)
         p.setFont(f_meta)
-        p.setPen(TEXT_META)
+        p.setPen(TEXT_LABEL)
         meta_rect = QRectF(cx - col_w / 2.0, cur_y, col_w, 14.0)
         p.drawText(meta_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, meta)
 

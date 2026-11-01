@@ -1698,59 +1698,72 @@ class PopoverV2(QWidget):
         # ABONELİK kartı
         c2h = self._subscription_card_height()
         inner = ps.draw_card(p, QRectF(x0, y, cw, c2h), "Abonelik")
-        rows = list(content.get("sub_rows") or [])
-        if len(rows) < self.SUB_ROW_COUNT:
-            rows = [
-                {"label": "Başlangıç", "val": "—"},
-                {"label": "Son ödeme", "val": "—"},
-                {"label": "Sonraki ödeme", "val": "—"},
-                {"label": "Ek kullanım",
-                 "val": "—" if content.get("extra_usage") is None
-                 else ("Açık" if content.get("extra_usage") else "Kapalı")},
-            ]
-        ry = inner.top()
-        for i, row in enumerate(rows[:self.SUB_ROW_COUNT]):
-            row_rect = QRectF(inner.left(), ry, inner.width(), self.SUB_ROW_H)
-            if i == self.SUB_ROW_COUNT - 1:
-                p.setPen(QPen(QColor(255, 255, 255, 12), 1.0))
-                p.drawLine(QPointF(row_rect.left(), ry - 2.0), QPointF(row_rect.right(), ry - 2.0))
+        raw_rows = list(content.get("sub_rows") or [])
+        all_empty = (not raw_rows or all(str(r.get("val") or "—") in ("—", "") for r in raw_rows))
+        if all_empty:
+            # "—" mezarlığı yerine tek, temiz durum kartı
+            p.save()
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            status_box = QRectF(inner.left(), inner.top(), inner.width(), inner.height())
+            p.setFont(ps.font(11.5, QFont.Weight.Medium))
+            p.setPen(ps.TEXT_MUTED)
+            status_msg = "Claude oturum açma bilgisi bekleniyor" if not content.get("error") else "Giriş bilgisi alınamadı"
+            p.drawText(status_box, Qt.AlignmentFlag.AlignCenter, status_msg)
+            p.restore()
+        else:
+            rows = raw_rows
+            if len(rows) < self.SUB_ROW_COUNT:
+                rows = [
+                    {"label": "Başlangıç", "val": "—"},
+                    {"label": "Son ödeme", "val": "—"},
+                    {"label": "Sonraki ödeme", "val": "—"},
+                    {"label": "Ek kullanım",
+                     "val": "—" if content.get("extra_usage") is None
+                     else ("Açık" if content.get("extra_usage") else "Kapalı")},
+                ]
+            ry = inner.top()
+            for i, row in enumerate(rows[:self.SUB_ROW_COUNT]):
+                row_rect = QRectF(inner.left(), ry, inner.width(), self.SUB_ROW_H)
+                if i == self.SUB_ROW_COUNT - 1:
+                    p.setPen(QPen(QColor(255, 255, 255, 12), 1.0))
+                    p.drawLine(QPointF(row_rect.left(), ry - 2.0), QPointF(row_rect.right(), ry - 2.0))
 
-            p.setFont(ps.font(12.0, QFont.Weight.Medium))
-            p.setPen(ps.TEXT_BODY)
-            p.drawText(row_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                       str(row.get("label") or "—"))
-
-            val = str(row.get("val") or "—")
-            if i == self.SUB_ROW_COUNT - 1 and val in ("Açık", "Kapalı"):
-                is_on = (val == "Açık")
-                f_b = ps.font(10.0, QFont.Weight.Bold)
-                tw = QFontMetricsF(f_b).horizontalAdvance(val)
-                ps.draw_badge(
-                    p, (row_rect.right() - tw - 12.0, row_rect.top() + 3.0),
-                    val, "ok" if is_on else "muted",
-                )
-            elif " · " in val:
-                main_part, sub_part = val.split(" · ", 1)
-                f_main = ps.font(12.0, QFont.Weight.Medium)
-                f_sub = ps.font(11.0, QFont.Weight.Normal)
-                fm_main = QFontMetricsF(f_main)
-                fm_sub = QFontMetricsF(f_sub)
-                sub_txt = " · " + sub_part
-                sw = fm_sub.horizontalAdvance(sub_txt)
-                mw = fm_main.horizontalAdvance(main_part)
-                p.setFont(f_sub)
-                p.setPen(ps.TEXT_LABEL)
-                p.drawText(QRectF(row_rect.right() - sw, row_rect.top(), sw, row_rect.height()),
-                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, sub_txt)
-                p.setFont(f_main)
-                p.setPen(ps.TEXT)
-                p.drawText(QRectF(row_rect.right() - sw - mw, row_rect.top(), mw, row_rect.height()),
-                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, main_part)
-            else:
                 p.setFont(ps.font(12.0, QFont.Weight.Medium))
-                p.setPen(ps.TEXT)
-                p.drawText(row_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, val)
-            ry += self.SUB_ROW_H
+                p.setPen(ps.TEXT_BODY)
+                p.drawText(row_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                           str(row.get("label") or "—"))
+
+                val = str(row.get("val") or "—")
+                if i == self.SUB_ROW_COUNT - 1 and val in ("Açık", "Kapalı"):
+                    is_on = (val == "Açık")
+                    f_b = ps.font(10.0, QFont.Weight.Bold)
+                    tw = QFontMetricsF(f_b).horizontalAdvance(val)
+                    ps.draw_badge(
+                        p, (row_rect.right() - tw - 12.0, row_rect.top() + 3.0),
+                        val, "ok" if is_on else "muted",
+                    )
+                elif " · " in val:
+                    main_part, sub_part = val.split(" · ", 1)
+                    f_main = ps.font(12.0, QFont.Weight.Medium)
+                    f_sub = ps.font(11.0, QFont.Weight.Normal)
+                    fm_main = QFontMetricsF(f_main)
+                    fm_sub = QFontMetricsF(f_sub)
+                    sub_txt = " · " + sub_part
+                    sw = fm_sub.horizontalAdvance(sub_txt)
+                    mw = fm_main.horizontalAdvance(main_part)
+                    p.setFont(f_sub)
+                    p.setPen(ps.TEXT_LABEL)
+                    p.drawText(QRectF(row_rect.right() - sw, row_rect.top(), sw, row_rect.height()),
+                               Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, sub_txt)
+                    p.setFont(f_main)
+                    p.setPen(ps.TEXT)
+                    p.drawText(QRectF(row_rect.right() - sw - mw, row_rect.top(), mw, row_rect.height()),
+                               Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, main_part)
+                else:
+                    p.setFont(ps.font(12.0, QFont.Weight.Medium))
+                    p.setPen(ps.TEXT)
+                    p.drawText(row_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, val)
+                ry += self.SUB_ROW_H
         y += c2h + ps.GAP
 
         fy = h - ps.PAD - ps.FOOTER_H
@@ -1758,6 +1771,8 @@ class PopoverV2(QWidget):
             p, QRectF(x0, fy, cw, ps.FOOTER_H),
             str(content.get("footer_note") or "Claude Code · —"), "Yenile",
             button_hover=self._refresh_hovered,
+            button_spinning=self._refresh_spinning,
+            spin_angle=self._spin_angle,
         )
         if btn is not None:
             self._refresh_rect = QRectF(btn)
@@ -1845,6 +1860,8 @@ class PopoverV2(QWidget):
             p, QRectF(x0, fy, cw, ps.FOOTER_H),
             str(content.get("footer_note") or "Bu bilgisayar · —"), "Yenile",
             button_hover=self._refresh_hovered,
+            button_spinning=self._refresh_spinning,
+            spin_angle=self._spin_angle,
         )
         if btn is not None:
             self._refresh_rect = QRectF(btn)
