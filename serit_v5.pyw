@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import psutil
 from PySide6.QtCore import (
     QEvent,
+    QFileSystemWatcher,
     QLockFile,
     QObject,
     QPoint,
@@ -1395,13 +1396,27 @@ class SeritDock(QWidget):
         self.ag_timer.start()
         self.submit_fetch("ag")
 
-        # v25: indirilenler izleyici (5 sn) ve mikrofon/kamera kullanımı (3 sn); ikisi de havuzda çalışır
+        # v25: indirilenler izleyici (1 sn + dosya sistemi anlık bildirim) ve mikrofon/kamera kullanımı (3 sn)
         if self._dl_watcher is not None:
             self.shelfdl_timer = QTimer(self)
-            self.shelfdl_timer.setInterval(3000)  # ekran görüntüsü 3-6 sn içinde rafta (klasör taraması ~4 ms)
+            self.shelfdl_timer.setInterval(1000)  # hızlı döngü (1 sn)
             self.shelfdl_timer.timeout.connect(self._poll_shelf_watchers)
             self.shelfdl_timer.start()
             self._poll_shelf_watchers()
+            try:
+                self._shelf_fs_watcher = QFileSystemWatcher(self)
+                watch_paths = []
+                f_dl = getattr(self._dl_watcher, "folder", None)
+                if f_dl and os.path.isdir(f_dl):
+                    watch_paths.append(f_dl)
+                f_sh = getattr(self._shot_watcher, "folder", None) if self._shot_watcher else None
+                if f_sh and os.path.isdir(f_sh) and f_sh not in watch_paths:
+                    watch_paths.append(f_sh)
+                if watch_paths:
+                    self._shelf_fs_watcher.addPaths(watch_paths)
+                    self._shelf_fs_watcher.directoryChanged.connect(self._on_shelf_dir_changed)
+            except Exception as exc:
+                sources.log_err("shelf_fs_watcher_init", exc)
         if presence is not None and self.settings.get("presence_enabled", True):
             self.presence_timer = QTimer(self)
             self.presence_timer.setInterval(3000)
@@ -2150,6 +2165,7 @@ class SeritDock(QWidget):
         self._pomo_action_menu: Optional[action_menu.ActionMenu] = None
         self._presence_usage: Dict[str, Any] = {"mic": [], "cam": []}
         self._shelf_drag_over: bool = False
+        self._shelf_fs_watcher: Optional[QFileSystemWatcher] = None
         self._shelf_pulse: float = 0.0
         self._shelf_pulse_timer = QTimer(self)
         self._shelf_pulse_timer.setInterval(40)
@@ -2481,6 +2497,10 @@ class SeritDock(QWidget):
         self.submit_fetch("shelfdl")
         if self._shot_watcher is not None:
             self.submit_fetch("shelfshot")
+
+    def _on_shelf_dir_changed(self, path: str = "") -> None:
+        self._poll_shelf_watchers()
+        QTimer.singleShot(500, self._poll_shelf_watchers)
 
     def _notify_shelf_downloads(self, paths: List[str], source: str = "download") -> None:
         if not paths or self.preview_mode or getattr(self, "toast_mgr", None) is None:
