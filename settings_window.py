@@ -59,6 +59,29 @@ CARD_DEFS: List[Tuple[str, str, str]] = [
     ("media", "Müzik", "Şu an çalan medya ve kontroller"),
 ]
 
+TOOL_DEFS: List[Tuple[str, str, str]] = [
+    ("shelf_enabled", "Dosya rafı ve Pano", "İndirilenler, ekran görüntüleri ve kopyalananlar"),
+    ("net_speed_enabled", "Canlı ağ hızı", "50 KB/sn üstü trafikte ↓/↑ hız göstergesi"),
+    ("updates_enabled", "Güncelleme rozeti", "Winget güncellemelerini sağ kümede bildir"),
+    ("drag_activate", "Sürükle-öne-getir", "Dosya sürüklerken uygulama penceresini aç"),
+    ("app_usage_ctrl", "Ctrl ile kullanım süresi", "İkon üzerinde Ctrl basılıyken süreyi göster"),
+]
+
+SETTING_DEFAULTS: Dict[str, bool] = {
+    "hide_taskbar": False,
+    "reserve_space": True,
+    "alerts_enabled": True,
+    "shelf_enabled": True,
+    "shelf_screenshots": True,
+    "drag_activate": True,
+    "net_speed_enabled": True,
+    "updates_enabled": True,
+    "app_usage_ctrl": True,
+    "presence_enabled": True,
+    "hide_on_fullscreen": True,
+    "hover_preview": True,
+}
+
 STALL_NOTE = "300 ms ve üstü takılmalar sayılır · uyku süresi sayılmaz"
 STALL_UNAVAILABLE = "Donma ölçer çalışmıyor"
 STALL_NONE = "Bu oturumda donma yok"
@@ -311,6 +334,8 @@ class SettingsWindow(QWidget):
         self._scroll_offset_y: float = 0.0
         self._pinned_inner_h: float = 0.0
         self._pinned_content_h: float = 0.0
+        self._cards_view_h: float = 0.0
+        self._cards_total_h: float = 0.0
 
         self._git_ver = _get_git_version()
 
@@ -528,7 +553,8 @@ class SettingsWindow(QWidget):
                 self.update()
                 return
             if kind == "toggle_setting":
-                cur_val = bool(self.working_settings.get(extra, False))
+                default_val = SETTING_DEFAULTS.get(str(extra), False)
+                cur_val = bool(self.working_settings.get(extra, default_val))
                 self.working_settings[extra] = not cur_val
                 self.update()
                 return
@@ -600,6 +626,14 @@ class SettingsWindow(QWidget):
             delta = event.angleDelta().y()
             self._scroll_offset_y = min(0.0, self._scroll_offset_y + delta * 0.4)
             min_offset = min(0.0, self._pinned_inner_h - self._pinned_content_h)
+            self._scroll_offset_y = max(min_offset, self._scroll_offset_y)
+            self.update()
+            event.accept()
+            return
+        if self.current_section == "cards":
+            delta = event.angleDelta().y()
+            self._scroll_offset_y = min(0.0, self._scroll_offset_y + delta * 0.4)
+            min_offset = min(0.0, self._cards_view_h - self._cards_total_h)
             self._scroll_offset_y = max(min_offset, self._scroll_offset_y)
             self.update()
             event.accept()
@@ -784,7 +818,7 @@ class SettingsWindow(QWidget):
         if self.current_section == "appearance":
             self._paint_appearance(p, x, y, w)
         elif self.current_section == "cards":
-            self._paint_cards(p, x, y, w)
+            self._paint_cards(p, x, y, w, max(0.0, bottom - y))
         elif self.current_section == "pinned":
             self._paint_pinned(p, x, y, w, max(0.0, bottom - y))
         elif self.current_section == "alerts":
@@ -920,12 +954,24 @@ class SettingsWindow(QWidget):
         )
 
     # -------------------------------------------------------------- Kartlar
-    def _paint_cards(self, p: QPainter, x: float, y: float, w: float) -> None:
-        row_h = 52.0
-        rows = [row_h] * len(CARD_DEFS)
-        card_h = self._card_height(rows)
-        inner = ps.draw_card(p, QRectF(x, y, w, card_h), "Gösterilecek kartlar")
+    def _paint_cards(self, p: QPainter, x: float, y: float, w: float, max_h: float = 360.0) -> None:
+        row_h = 44.0
+        rows1 = [row_h] * len(CARD_DEFS)
+        card1_h = self._card_height(rows1)
+        rows2 = [row_h] * len(TOOL_DEFS)
+        card2_h = self._card_height(rows2)
+        total_h = card1_h + ps.GAP + card2_h
+        self._cards_view_h = max_h
+        self._cards_total_h = total_h
 
+        min_offset = min(0.0, max_h - total_h)
+        self._scroll_offset_y = max(min_offset, min(0.0, self._scroll_offset_y))
+
+        p.save()
+        p.setClipRect(QRectF(x, y, w, max_h))
+        cy = y + self._scroll_offset_y
+
+        inner = ps.draw_card(p, QRectF(x, cy, w, card1_h), "Gösterilecek kartlar")
         ry = inner.top()
         for idx, (key, title, subtitle) in enumerate(CARD_DEFS):
             rect = QRectF(inner.left(), ry, inner.width(), row_h)
@@ -936,6 +982,31 @@ class SettingsWindow(QWidget):
             if idx < len(CARD_DEFS) - 1:
                 self._paint_separator(p, inner.left(), rect.bottom(), inner.width())
             ry += row_h + 1.0
+
+        cy += card1_h + ps.GAP
+        inner2 = ps.draw_card(p, QRectF(x, cy, w, card2_h), "Akıllı araçlar")
+        ry2 = inner2.top()
+        for idx, (key, title, subtitle) in enumerate(TOOL_DEFS):
+            rect = QRectF(inner2.left(), ry2, inner2.width(), row_h)
+            def_val = SETTING_DEFAULTS.get(key, True)
+            val = bool(self.working_settings.get(key, def_val))
+            self._draw_row(
+                p, rect, title, subtitle,
+                checked=val, kind="toggle_setting", extra=key,
+            )
+            if idx < len(TOOL_DEFS) - 1:
+                self._paint_separator(p, inner2.left(), rect.bottom(), inner2.width())
+            ry2 += row_h + 1.0
+
+        if total_h > max_h + 1.0:
+            max_scr = total_h - max_h
+            thumb_h = max(24.0, max_h * (max_h / total_h))
+            thumb_y = y + (-self._scroll_offset_y / max_scr) * (max_h - thumb_h)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 65))
+            p.drawPath(ps.rounded(QRectF(x + w - 4.0, thumb_y, 3.0, thumb_h), 1.5))
+
+        p.restore()
 
     # --------------------------------------------------- Sabitlenen uygulamalar
     def _paint_pinned(self, p: QPainter, x: float, y: float, w: float, max_h: float) -> None:

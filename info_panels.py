@@ -940,7 +940,9 @@ class MailPanel(_BasePopover):
 # 2) QuotaPanel: Antigravity model quotas
 # ---------------------------------------------------------------------------
 class QuotaPanel(_BasePopover):
-    """Antigravity quota panel: one compact row per model group."""
+    """Antigravity model kotaları paneli — her model satırı ince çubuk, sıfırlanma ve % ile."""
+
+    account_selected = Signal(str)
 
     WIDTH: int = int(ps.WIDTH["ag"])
 
@@ -956,11 +958,23 @@ class QuotaPanel(_BasePopover):
         self._groups: List[Dict[str, Any]] = []
         self._rows: List[Dict[str, Any]] = []
         self._sections: List[Dict[str, Any]] = []
+        self._active_account: str = "emre"
+        self._account_hit_rects: List[Tuple[QRectF, str]] = []
+        self._hover_account: Optional[str] = None
         self._fetched_at_str: str = ""
         self._has_error: bool = False
         self._error_text: str = ""
 
         self.resize(self.WIDTH, self.compute_height())
+
+    def set_active_account(self, account: str) -> None:
+        norm = "busra" if "bus" in str(account or "").lower() or "büş" in str(account or "").lower() else "emre"
+        if self._active_account != norm:
+            self._active_account = norm
+            self.update()
+
+    def active_account(self) -> str:
+        return self._active_account
 
     def set_data(self, d: Any) -> None:
         """Update panel with result from fetch_antigravity()."""
@@ -1154,6 +1168,7 @@ class QuotaPanel(_BasePopover):
         p.setClipRect(body_rect)
 
         y = body_top - self._scroll_y
+        self._account_hit_rects = []
         if self._has_error or not self._rows:
             card_h = 2 * ps.CARD_PAD + 15.0 + ps.CARD_GAP + 26.0
             inner = ps.draw_card(p, QRectF(ps.PAD, y, w - 2 * ps.PAD, card_h),
@@ -1164,10 +1179,53 @@ class QuotaPanel(_BasePopover):
                        Qt.AlignmentFlag.AlignCenter, self.ERROR_TEXT)
         else:
             secs = getattr(self, "_sections", []) or [{"overline": "Model kotaları", "rows": self._rows}]
+            multi_acc = len(secs) > 1
             for sec in secs:
                 card_h = self._section_card_height(sec)
-                inner = ps.draw_card(p, QRectF(ps.PAD, y, w - 2 * ps.PAD, card_h),
-                                     overline=sec.get("overline"))
+                c_rect = QRectF(ps.PAD, y, w - 2 * ps.PAD, card_h)
+                ov = str(sec.get("overline") or "Model kotaları")
+                acc_key = "busra" if ("bus" in ov.lower() or "büş" in ov.lower()) else ("emre" if "emre" in ov.lower() else None)
+                is_active_acc = multi_acc and acc_key is not None and (acc_key == self._active_account)
+
+                if multi_acc and acc_key is not None:
+                    hdr_hit = QRectF(c_rect.left(), c_rect.top(), c_rect.width(), ps.CARD_PAD + 20.0)
+                    self._account_hit_rects.append((hdr_hit, acc_key))
+
+                if is_active_acc:
+                    p.save()
+                    p.setPen(QPen(QColor(110, 168, 254, 110), 1.2))
+                    p.setBrush(ps.CARD_BG)
+                    p.drawPath(ps.rounded(c_rect.adjusted(0.5, 0.5, -0.5, -0.5), ps.R_CARD))
+                    p.restore()
+
+                    p.setFont(ps.f_label())
+                    p.setPen(ps.ACCENT)
+                    p.drawText(
+                        QRectF(c_rect.left() + ps.CARD_PAD, c_rect.top() + ps.CARD_PAD, 120.0, 15.0),
+                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                        ps.turkish_upper(ov),
+                    )
+                    pill_r = QRectF(c_rect.right() - ps.CARD_PAD - 96.0, c_rect.top() + ps.CARD_PAD - 2.0, 96.0, 18.0)
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QColor(110, 168, 254, 34))
+                    p.drawPath(ps.rounded(pill_r, 9.0))
+                    p.setFont(ps.font(10.5, QFont.Weight.DemiBold))
+                    p.setPen(ps.ACCENT)
+                    p.drawText(pill_r, Qt.AlignmentFlag.AlignCenter, "● Çubukta aktif")
+                    inner = QRectF(
+                        c_rect.left() + ps.CARD_PAD,
+                        c_rect.top() + ps.CARD_PAD + 15.0 + ps.CARD_GAP,
+                        c_rect.width() - 2 * ps.CARD_PAD,
+                        card_h - 2 * ps.CARD_PAD - 15.0 - ps.CARD_GAP,
+                    )
+                elif multi_acc and acc_key is not None:
+                    is_hov = (self._hover_account == acc_key)
+                    inner = ps.draw_card(
+                        p, c_rect, overline=ov, overline_right="Çubuğa al ›", hover=is_hov
+                    )
+                else:
+                    inner = ps.draw_card(p, c_rect, overline=ov)
+
                 ry = inner.top()
                 for row in sec.get("rows") or []:
                     self._paint_row(p, row, QRectF(inner.left(), ry, inner.width(), self.LINE_H))
@@ -1239,3 +1297,33 @@ class QuotaPanel(_BasePopover):
         self._refresh_rect = QRectF(btn) if btn is not None else QRectF()
         if not self._refresh_rect.isNull():
             self._rects["refresh"] = self._refresh_rect
+
+    # --------------------------------------------------------------- events
+    def mousePressEvent(self, event: Any) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position()
+            for r, acc_key in self._account_hit_rects:
+                if r.contains(pos):
+                    if self._active_account != acc_key:
+                        self._active_account = acc_key
+                        self.account_selected.emit(acc_key)
+                        self.update()
+                    event.accept()
+                    return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: Any) -> None:
+        pos = event.position()
+        hov_acc: Optional[str] = None
+        for r, acc_key in self._account_hit_rects:
+            if r.contains(pos):
+                hov_acc = acc_key
+                break
+        if hov_acc != self._hover_account:
+            self._hover_account = hov_acc
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event: Any) -> None:
+        self._hover_account = None
+        super().leaveEvent(event)

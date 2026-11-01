@@ -712,8 +712,12 @@ class SeritDock(QWidget):
                     self.mail_panel.refresh_requested.connect(lambda: self.submit_fetch("mail"))
             if hasattr(info_panels, "QuotaPanel"):
                 self.quota_panel = info_panels.QuotaPanel()
+                if hasattr(self.quota_panel, "set_active_account"):
+                    self.quota_panel.set_active_account(str(self.settings.get("ag_active_account", "emre")))
                 if hasattr(self.quota_panel, "refresh_requested"):
                     self.quota_panel.refresh_requested.connect(lambda: self.submit_fetch("ag"))
+                if hasattr(self.quota_panel, "account_selected"):
+                    self.quota_panel.account_selected.connect(self._on_ag_account_selected)
         except (ImportError, Exception) as exc:
             sources.log_err("info_panels_init", exc)
 
@@ -3213,7 +3217,8 @@ class SeritDock(QWidget):
                     elif card_key == "mail":
                         dock_cards.draw_mail_card(p, r_card, mail_data, hover=is_hover, press_scale=press_scale)
                     elif card_key == "ag":
-                        dock_cards.draw_ag_card(p, r_card, ag_data, hover=is_hover, press_scale=press_scale)
+                        ag_acc = str(self.settings.get("ag_active_account", "emre"))
+                        dock_cards.draw_ag_card(p, r_card, ag_data, hover=is_hover, press_scale=press_scale, active_account=ag_acc)
                     elif card_key == "sys":
                         sys_entry = self.store.get("sys") or {}
                         c_disp = None if self.preview_mode else self.anim_cpu.value
@@ -3401,7 +3406,8 @@ class SeritDock(QWidget):
                 if intersects(r_ag):
                     ag_hover = (self._hover_key == "ag")
                     ag_press = self.press_tween.scale if (self._pressed_key == "ag") else 1.0
-                    dock_cards.draw_ag_card(p, r_ag, ag_data, hover=ag_hover, press_scale=ag_press)
+                    ag_acc = str(self.settings.get("ag_active_account", "emre"))
+                    dock_cards.draw_ag_card(p, r_ag, ag_data, hover=ag_hover, press_scale=ag_press, active_account=ag_acc)
                 x += w_ag + GAP_MODULE
 
             if show_sys:
@@ -3918,12 +3924,22 @@ class SeritDock(QWidget):
                         rect.size(),
                     )
                     ag_data = dict(self.store.get("ag") or {})
+                    if hasattr(self.quota_panel, "set_active_account"):
+                        self.quota_panel.set_active_account(str(self.settings.get("ag_active_account", "emre")))
                     try:
                         self.quota_panel.show_for(anchor_global)
                     except TypeError:
                         self.quota_panel.show_for(anchor_global, ag_data)
                     except Exception as exc:
                         sources.log_err("quota_panel_show", exc)
+
+    def _on_ag_account_selected(self, account: str) -> None:
+        norm = "busra" if ("bus" in str(account or "").lower() or "büş" in str(account or "").lower()) else "emre"
+        if self.settings.get("ag_active_account", "emre") != norm:
+            self.settings["ag_active_account"] = norm
+            if not self.preview_mode:
+                save_settings(self.settings)
+            self.update()
 
     def _on_tray_panel_item_activated(self, item: dict, btn: str) -> None:
         if btn == "right":
@@ -4853,6 +4869,16 @@ class SeritDock(QWidget):
                 self.alert_engine.enabled = old["alerts_enabled"]
         if isinstance(new_cfg.get("cards"), dict):
             old["cards"] = dict(new_cfg["cards"])
+        for t_key in ("shelf_enabled", "net_speed_enabled", "updates_enabled", "drag_activate", "app_usage_ctrl"):
+            if t_key in new_cfg:
+                old[t_key] = bool(new_cfg[t_key])
+        if not old.get("net_speed_enabled", True):
+            self._net_state = None
+        if not old.get("updates_enabled", True) and self.updates_panel is not None:
+            try:
+                self.updates_panel.hide()
+            except Exception:
+                pass
         if isinstance(new_cfg.get("pinned"), list):
             self.pins = [dict(p) for p in new_cfg["pinned"] if isinstance(p, dict)]
             old["pinned"] = self.pins

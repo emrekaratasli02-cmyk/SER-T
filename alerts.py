@@ -60,8 +60,8 @@ TOAST_ICON_RADIUS: float = float(panel_style.R_ICON_BOX)   # 6
 TOAST_ICON_TEXT_GAP: float = 10.0                          # kutu ile metin arası
 TOAST_TEXT_X: float = TOAST_PAD + TOAST_ICON_BOX + TOAST_ICON_TEXT_GAP   # 54
 TOAST_TITLE_ROW_H: float = TOAST_ICON_BOX                  # başlık satırı kutuyla aynı yükseklikte
-TOAST_BODY_GAP: float = 2.0                                # başlık satırı -> gövde
-TOAST_FOOTER_GAP: float = 6.0                              # gövde -> 'Şerit · HH:MM'
+TOAST_BODY_GAP: float = 16.0                               # başlık satırı -> gövde (iç kart dolgusu dahil)
+TOAST_FOOTER_GAP: float = 10.0                             # gövde -> 'Şerit · HH:MM' (iç kart alt dolgusu dahil)
 TOAST_MAX_BODY_LINES: int = 3                              # gövde en fazla 3 satır, sonrası '…'
 TOAST_ICON_ALPHA: int = 46                                 # ~%18 aksan dolgusu
 TOAST_HOVER_TINT: QColor = QColor(255, 255, 255, 8)        # tüm gövdeye ince hover tonu
@@ -677,6 +677,23 @@ class Toast(QWidget):
             return "⏱"
         return "!"
 
+    def _get_chip_label(self) -> str:
+        """Kategoriye göre sağ üst rozet (chip) metni."""
+        k = str(self.alert.kind).lower()
+        if "claude" in k or "ag" in k or "quota" in k:
+            return "Kota"
+        if "fx" in k:
+            return "Piyasa"
+        if "sys" in k or "ram" in k:
+            return "Sistem"
+        if "shelf" in k or "download" in k:
+            return "Dosya rafı"
+        if "pomodoro" in k:
+            return "Pomodoro"
+        if "tray" in k:
+            return "Sistem tepsisi"
+        return "Bildirim"
+
     def show_toast(self, x: int, y: int) -> None:
         """Position and show toast with the shared panel entrance (fade + 6 px slide)."""
         self._target_x = x
@@ -874,7 +891,7 @@ class Toast(QWidget):
         p.setPen(accent_col)
         p.drawText(icon_box, Qt.AlignCenter, self._get_glyph())
 
-        # 3. Başlık satırı + sağ üst × (draw_header görünümü: TEXT_CLOSE, BUTTON_HOVER, R_CLOSE)
+        # 3. Başlık satırı + kategori rozeti (chip) + sağ üst ×
         title_row = QRectF(
             TOAST_TEXT_X,
             TOAST_PAD,
@@ -882,15 +899,44 @@ class Toast(QWidget):
             TOAST_TITLE_ROW_H,
         )
         hdr = panel_style.draw_header(
-            p, title_row, self.alert.title, close_hover=self._close_hovered
+            p,
+            title_row,
+            self.alert.title,
+            chip=self._get_chip_label(),
+            close_hover=self._close_hovered,
         )
         close = hdr.get("close")
         if close is not None:
             self._close_rect = QRectF(close)
 
-        # 4. Gövde (f_body, TEXT_BODY; en fazla 3 satır, taşarsa son satır '…' ile kısaltılır)
+        # 4. İç kart (draw_tile) + Gövde (f_body, TEXT_BODY; en fazla 3 satır, taşarsa '…')
         fm_body = QFontMetricsF(self.f_body)
+        fm_footer = QFontMetricsF(self.f_footer)
         lines, _truncated = self._wrap_body(fm_body, self._body_width())
+
+        inner_top = TOAST_PAD + TOAST_TITLE_ROW_H + 8.0
+        inner_bottom = rect.height() - TOAST_PAD + 4.0
+        inner_card = QRectF(
+            TOAST_PAD,
+            inner_top,
+            rect.width() - 2 * TOAST_PAD,
+            max(28.0, inner_bottom - inner_top),
+        )
+        panel_style.draw_tile(p, inner_card)
+
+        # İç kartın solunda zarif aksan vurgu çizgisi (x >= 22 px)
+        p.save()
+        p.setPen(Qt.NoPen)
+        p.setBrush(accent_col)
+        accent_bar = QRectF(
+            inner_card.left() + 8.0,
+            inner_card.top() + 8.0,
+            3.0,
+            max(12.0, inner_card.height() - 16.0),
+        )
+        p.drawPath(panel_style.rounded(accent_bar, 1.5))
+        p.restore()
+
         p.setFont(self.f_body)
         p.setPen(panel_style.TEXT_BODY)
         line_box = QRectF(
@@ -906,7 +952,6 @@ class Toast(QWidget):
             line_box = line_box.translated(0.0, fm_body.height())
 
         # 5. 'Şerit · HH:MM' alt satırı (f_small, TEXT_META)
-        fm_footer = QFontMetricsF(self.f_footer)
         now_clock = dt.datetime.now(sources.LOCAL_TZ).strftime("%H:%M")
         p.setFont(self.f_footer)
         p.setPen(panel_style.TEXT_META)

@@ -937,6 +937,7 @@ def draw_ag_card(
     ag_data: Dict[str, Any],
     hover: bool = False,
     press_scale: float = 1.0,
+    active_account: Optional[str] = None,
 ) -> None:
     """Renders 184x52 Antigravity quota card according to D4 'Konsantrik çift halka' spec."""
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
@@ -950,16 +951,27 @@ def draw_ag_card(
     has_err = bool(ag_data.get("err")) or not ag_data.get("groups")
 
     groups = ag_data.get("groups") or []
-    # Claude: prefer Emre's group if present, otherwise any group with 'claude'
-    claude_grp = next((g for g in groups if "emre" in str(g.get("label", "")).lower() and "claude" in str(g.get("label", "")).lower()), None)
+    req_acc = str(active_account if active_account is not None else ag_data.get("active_account") or "emre").lower()
+    want_busra = ("bus" in req_acc or "büş" in req_acc)
+
+    def _matches_acc(lbl_str: str) -> bool:
+        low = lbl_str.lower()
+        if want_busra:
+            return "bus" in low or "büş" in low
+        return "emre" in low
+
+    multi_accounts = any(" · " in str(g.get("label", "")) for g in groups)
+
+    # Claude: prefer requested account's group if present, otherwise any group with 'claude'
+    claude_grp = next((g for g in groups if _matches_acc(str(g.get("label", ""))) and "claude" in str(g.get("label", "")).lower()), None)
     if not claude_grp:
         claude_grp = next((g for g in groups if "claude" in str(g.get("label", "")).lower()), None)
     used_claude: Optional[float] = float(claude_grp["used"]) if (claude_grp and "used" in claude_grp) else None
     claude_reset_raw = (claude_grp.get("reset_at") or claude_grp.get("reset_tr")) if claude_grp else ""
 
-    # Gemini: prefer Emre's group if present, otherwise max among groups with 'gemini'
-    emre_gemini_grps = [g for g in groups if "emre" in str(g.get("label", "")).lower() and "gemini" in str(g.get("label", "")).lower()]
-    gemini_grps = emre_gemini_grps if emre_gemini_grps else [g for g in groups if "gemini" in str(g.get("label", "")).lower()]
+    # Gemini: prefer requested account's group if present, otherwise max among groups with 'gemini'
+    acc_gemini_grps = [g for g in groups if _matches_acc(str(g.get("label", ""))) and "gemini" in str(g.get("label", "")).lower()]
+    gemini_grps = acc_gemini_grps if acc_gemini_grps else [g for g in groups if "gemini" in str(g.get("label", "")).lower()]
     used_gemini: Optional[float] = None
     gemini_reset_raw = ""
     if gemini_grps:
@@ -977,6 +989,18 @@ def draw_ag_card(
         inner_color=COLOR_GEMINI_BLUE,
         logo_pixmap=ag_pm,
     )
+
+    if not has_err and (multi_accounts or active_account is not None):
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing, True)
+        badge_r = QRectF(slot_rect.right() - 13.0, slot_rect.top() - 1.0, 14.0, 14.0)
+        p.setPen(QPen(QColor(13, 15, 19), 1.5))
+        p.setBrush(COLOR_CLAUDE_CORAL if want_busra else COLOR_GEMINI_BLUE)
+        p.drawEllipse(badge_r)
+        p.setPen(QColor(13, 15, 19))
+        p.setFont(theme.make_font(9.0, QFont.Weight.Bold))
+        p.drawText(badge_r, Qt.AlignCenter, "B" if want_busra else "E")
+        p.restore()
 
     # Right side text area: gap 9px -> x = 10 + 40 + 9 = rect.x() + 59.0
     bx = rect.x() + 59.0
