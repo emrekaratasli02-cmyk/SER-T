@@ -733,6 +733,48 @@ def media_current_position(
     return max(0.0, pos)
 
 
+MARQUEE_SPEED_PX_S: float = 32.0   # kayan başlık hızı
+MARQUEE_PAUSE_S: float = 1.2       # başta ve sonda bekleme
+MARQUEE_FADE_PX: float = 10.0      # kenar solma genişliği
+
+
+def media_title_layout(rect: QRectF) -> Tuple[float, float]:
+    """Başlık sütununun (x, genişlik) değeri; draw_media_card ile aynı hesap."""
+    bx = rect.x() + 56.0
+    ctrl_x = rect.right() - 88.0 - 6.0
+    return bx, max(20.0, ctrl_x - 8.0 - bx)
+
+
+def media_title_overflow(rect: QRectF, title: str) -> float:
+    """Başlık sütuna sığmıyorsa taşan piksel miktarı (0 = sığıyor, kayan yazı gerekmez)."""
+    _bx, bw = media_title_layout(rect)
+    fm = _get_fm(theme.make_font(13.0, QFont.Weight.DemiBold))
+    return max(0.0, fm.horizontalAdvance(title or "") - bw)
+
+
+def marquee_offset(elapsed_s: float, overflow_px: float) -> float:
+    """Git-gel kayan yazı ofseti: bekle -> sola kay -> bekle -> geri kay (döngü)."""
+    if overflow_px <= 0.0:
+        return 0.0
+    travel = overflow_px / MARQUEE_SPEED_PX_S
+    cycle = 2.0 * (MARQUEE_PAUSE_S + travel)
+    t = elapsed_s % cycle
+    if t < MARQUEE_PAUSE_S:
+        return 0.0
+    t -= MARQUEE_PAUSE_S
+    if t < travel:
+        return overflow_px * _ease_in_out(t / travel)
+    t -= travel
+    if t < MARQUEE_PAUSE_S:
+        return overflow_px
+    t -= MARQUEE_PAUSE_S
+    return overflow_px * (1.0 - _ease_in_out(min(1.0, t / travel)))
+
+
+def _ease_in_out(x: float) -> float:
+    return 0.5 - 0.5 * math.cos(math.pi * max(0.0, min(1.0, x)))
+
+
 def draw_media_card(
     p: QPainter,
     rect: QRectF,
@@ -740,6 +782,7 @@ def draw_media_card(
     hover: bool = False,
     press_scale: float = 1.0,
     hovered_control: Optional[str] = None,
+    title_offset: Optional[float] = None,
 ) -> Dict[str, QRectF]:
     """Renders 314x52 media card with tile, title, sub, and playback control buttons.
 
@@ -781,13 +824,31 @@ def draw_media_card(
     fm_l = _get_fm(f_lbl)
     fm_s = _get_fm(f_sub)
 
-    elided_title = _elided_text(fm_l, title, bw)
     elided_sub = _elided_text(fm_s, sub, bw)
+    title_w = fm_l.horizontalAdvance(title)
+    scrolling = title_offset is not None and title_w > bw
 
     p.save()
     p.setFont(f_lbl)
-    p.setPen(COLOR_TXT_PRIMARY)
-    p.drawText(QRectF(bx, by, bw, 18.0), Qt.AlignLeft | Qt.AlignVCenter, elided_title)
+    if scrolling:
+        # Kayan yazı: sütuna kırp, kenarlarda yumuşak solma (kesik kenar görünmesin)
+        off = max(0.0, min(float(title_offset or 0.0), title_w - bw))
+        r_title = QRectF(bx, by, bw, 18.0)
+        fade = MARQUEE_FADE_PX / bw
+        grad = QLinearGradient(bx, 0.0, bx + bw, 0.0)
+        c_on = QColor(COLOR_TXT_PRIMARY)
+        c_off = QColor(c_on.red(), c_on.green(), c_on.blue(), 0)
+        grad.setColorAt(0.0, c_off if off > 0.5 else c_on)
+        grad.setColorAt(fade, c_on)
+        grad.setColorAt(1.0 - fade, c_on)
+        grad.setColorAt(1.0, c_off if off < title_w - bw - 0.5 else c_on)
+        p.setClipRect(r_title.adjusted(0.0, -2.0, 0.0, 2.0))
+        p.setPen(QPen(QBrush(grad), 1.0))
+        p.drawText(QRectF(bx - off, by, title_w + 2.0, 18.0), Qt.AlignLeft | Qt.AlignVCenter, title)
+        p.setClipping(False)
+    else:
+        p.setPen(COLOR_TXT_PRIMARY)
+        p.drawText(QRectF(bx, by, bw, 18.0), Qt.AlignLeft | Qt.AlignVCenter, _elided_text(fm_l, title, bw))
 
     p.setFont(f_sub)
     p.setPen(COLOR_TXT_MUTED)

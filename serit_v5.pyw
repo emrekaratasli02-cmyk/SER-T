@@ -1442,6 +1442,15 @@ class SeritDock(QWidget):
         self.media_ring_timer.timeout.connect(self._on_media_ring_tick)
         self.media_ring_timer.start()
 
+        # Kayan medya başlığı: yalnız başlık sığmadığında çalışır, yalnız başlık şeridini boyar.
+        self._marquee_title: Optional[str] = None
+        self._marquee_t0: float = 0.0
+        self._marquee_last_off: float = -1.0
+        self._marquee_rect: Optional[QRectF] = None
+        self.marquee_timer = QTimer(self)
+        self.marquee_timer.setInterval(33)
+        self.marquee_timer.timeout.connect(self._on_marquee_tick)
+
         # Top processes polling timer (60 s)
         self.top_timer = QTimer(self)
         self.top_timer.setInterval(60000)
@@ -1651,6 +1660,47 @@ class SeritDock(QWidget):
             r = self._get_card_rect(key)
             if r is not None:
                 self.update(r.toRect().adjusted(-2, -2, 2, 2))
+
+    def _media_title_offset(self, r_media: QRectF) -> Optional[float]:
+        """Kayan başlık ofseti; başlık sığıyorsa / kapalıysa None (normal kısaltma çizilir)."""
+        if getattr(self, "marquee_timer", None) is None:
+            return None  # önizleme/test: zamanlayıcı kurulmadı -> düz kısaltma
+        info = self._now_playing_info or {}
+        title = str(info.get("title") or "")
+        overflow = dock_cards.media_title_overflow(r_media, title) if title else 0.0
+        if overflow <= 0.0 or not bool(self.settings.get("media_marquee_enabled", True)):
+            self._marquee_rect = None
+            if self.marquee_timer.isActive():
+                self.marquee_timer.stop()
+            return None
+        if title != self._marquee_title:
+            self._marquee_title = title
+            self._marquee_t0 = time.monotonic()
+        bx, bw = dock_cards.media_title_layout(r_media)
+        self._marquee_rect = QRectF(bx - 1.0, r_media.y() + 5.0, bw + 2.0, 24.0)
+        if not self.marquee_timer.isActive():
+            self.marquee_timer.start()
+        off = dock_cards.marquee_offset(time.monotonic() - self._marquee_t0, overflow)
+        self._marquee_last_off = off
+        return off
+
+    def _on_marquee_tick(self) -> None:
+        r = self._marquee_rect
+        if r is None or not self.isVisible():
+            self.marquee_timer.stop()
+            return
+        if not self._now_playing_info:
+            self.marquee_timer.stop()
+            return
+        title = self._marquee_title or ""
+        media_r = self._media_rect
+        if media_r is None:
+            return
+        off = dock_cards.marquee_offset(time.monotonic() - self._marquee_t0,
+                                        dock_cards.media_title_overflow(media_r, title))
+        if abs(off - self._marquee_last_off) < 0.05:
+            return  # bekleme evresi: boyama yok (CPU ~0)
+        self.update(r.toAlignedRect())
 
     def _on_media_ring_tick(self) -> None:
         """Repaint media card rect for smooth progress ring & bottom line progression (~2 fps, near-zero CPU)."""
@@ -3456,7 +3506,8 @@ class SeritDock(QWidget):
                     m_press = self.press_tween.scale if (self._pressed_key == "media") else 1.0
                     m_ctrl_hover = getattr(self, "_hover_media_ctrl", None)
                     self._media_hit_rects = dock_cards.draw_media_card(
-                        p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, hovered_control=m_ctrl_hover
+                        p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, hovered_control=m_ctrl_hover,
+                        title_offset=self._media_title_offset(r_media)
                     )
                 cur_rw_x += media_w + GAP_MODULE
 
@@ -3641,7 +3692,8 @@ class SeritDock(QWidget):
                     m_press = self.press_tween.scale if (self._pressed_key == "media") else 1.0
                     m_ctrl_hover = getattr(self, "_hover_media_ctrl", None)
                     self._media_hit_rects = dock_cards.draw_media_card(
-                        p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, hovered_control=m_ctrl_hover
+                        p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, hovered_control=m_ctrl_hover,
+                        title_offset=self._media_title_offset(r_media)
                     )
                 x += MEDIA_CARD_WIDTH + GAP_MODULE
 

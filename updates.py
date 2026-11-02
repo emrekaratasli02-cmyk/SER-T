@@ -371,15 +371,16 @@ def draw_updates_badge(
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
+    # Sade görünüm: mavi yok; simge ve sayı ikincil beyaz, üzerine gelince parlar.
     cy = rect.center().y()
     gx = rect.left() + 9.0
-    col = ps.TEXT if hover else ps.TEXT_BODY
+    col = ps.TEXT if hover else ps.TEXT_CHIP
     _draw_tray_glyph(p, gx, cy, col)
 
     tx = gx + 11.0
-    f = theme.make_font(10.0, QFont.Weight.DemiBold, tabular=True)
+    f = theme.make_font(10.0, QFont.Weight.Medium, tabular=True)
     p.setFont(f)
-    p.setPen(ps.ACCENT)
+    p.setPen(ps.TEXT_BODY if hover else ps.TEXT_MUTED)
     txt = str(count) if count <= 99 else "99+"
     p.drawText(QPointF(tx, cy + 3.5), txt)
 

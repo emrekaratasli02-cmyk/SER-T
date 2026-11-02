@@ -68,6 +68,7 @@ TOOL_DEFS: List[Tuple[str, str, str]] = [
     ("window_flash_enabled", "Pencere dikkat bildirimi", "Arka planda dikkat isteyen uygulamalarda turuncu nabız"),
     ("app_badges_enabled", "Uygulama rozetleri", "Okunmamış mesaj sayısı ve indirme rozetleri"),
     ("media_seek_enabled", "Medya ilerleme ve sarma", "Kart altında canlı ilerleme çizgisi, tıklayarak sarma ve ses"),
+    ("media_marquee_enabled", "Kayan medya başlığı", "Sığmayan şarkı/video adı yavaşça kayar"),
 ]
 
 SETTING_DEFAULTS: Dict[str, bool] = {
@@ -86,6 +87,7 @@ SETTING_DEFAULTS: Dict[str, bool] = {
     "window_flash_enabled": True,
     "app_badges_enabled": True,
     "media_seek_enabled": True,
+    "media_marquee_enabled": True,
 }
 
 STALL_NOTE = "300 ms ve üstü takılmalar sayılır · uyku süresi sayılmaz"
