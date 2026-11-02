@@ -934,12 +934,12 @@ def draw_media_card(
     p.drawPath(_PATH_MEDIA_NEXT)
     p.restore()
 
-    # 4. Bottom progress line (inset 6px, 4px above card bottom, 2px stroke, only when duration_s > 0)
+    # 4. Canlı ilerleme çizgisi: artık tüm kartı kesmez; metin sütununun altına oturur (bx .. ctrl_x - 4).
     if progress_frac is not None:
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
-        lx1 = rect.x() + 6.0
-        lx2 = rect.right() - 6.0
+        lx1 = bx
+        lx2 = max(bx + 20.0, ctrl_x - 4.0)
         ly = rect.bottom() - 4.0
         p.setPen(_PEN_BAR_TRACK_2)
         p.drawLine(QPointF(lx1, ly), QPointF(lx2, ly))
@@ -1274,20 +1274,22 @@ def draw_sys_card(
     size = SYS_RING_SIZE
     stroke = SYS_RING_STROKE
     r = (size - stroke) / 2.0
-    cy = rect.y() + rect.height() / 2.0
+    # Estetik: halka hafif yukarı (cy=21), alta minik CPU/RAM etiketi (8.5 px) sığsın
+    cy = rect.y() + 21.0
 
-    pad_x = 9.0
+    pad_x = 10.0
     cx_cpu = rect.x() + pad_x + size / 2.0
     cx_ram = rect.x() + rect.width() - pad_x - size / 2.0
 
     f_num = theme.make_font(11.0, QFont.Weight.DemiBold, tabular=True)
+    f_lbl = theme.make_font(8.5, QFont.Weight.Medium, letter_spacing=0.6)
 
     rings = [
-        (cx_cpu, c_val, COLOR_CPU_BAR, False),
-        (cx_ram, r_val, COLOR_RAM_BAR, True),
+        (cx_cpu, c_val, COLOR_CPU_BAR, False, "CPU"),
+        (cx_ram, r_val, COLOR_RAM_BAR, True, "RAM"),
     ]
 
-    for cx, val, base_col, is_ram in rings:
+    for cx, val, base_col, is_ram, lbl in rings:
         arc_rect = QRectF(cx - r, cy - r, 2.0 * r, 2.0 * r)
 
         # 1. Background full track circle (rgba(255, 255, 255, 0.13))
@@ -1309,6 +1311,12 @@ def draw_sys_card(
         num_str = f"{int(round(val))}" if val is not None else "–"
         text_rect = QRectF(cx - r, cy - r - 0.5, 2.0 * r, 2.0 * r)
         p.drawText(text_rect, Qt.AlignCenter, num_str)
+
+        # 4. Alt etiket: CPU / RAM (8.5 px, halkaya ortalı, sönük gri)
+        p.setFont(f_lbl)
+        p.setPen(COLOR_TXT_MUTED)
+        lbl_rect = QRectF(cx - size / 2.0 - 2.0, rect.bottom() - 13.0, size + 4.0, 11.0)
+        p.drawText(lbl_rect, Qt.AlignCenter, lbl)
 
     p.restore()
 

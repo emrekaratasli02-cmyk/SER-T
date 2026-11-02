@@ -2283,8 +2283,8 @@ class SeritDock(QWidget):
 
     # Kart içeriğinin kart kenarına uzaklığı (sol, sağ): ayraç iki yandaki içeriğin tam ortasına konur.
     _CONTENT_INSET: Dict[str, Tuple[float, float]] = {
-        "claude": (11.8, 10.0), "ag": (11.8, 10.0), "mail": (10.0, 10.0), "sys": (9.0, 9.0),
-        "apps": (6.0, 6.0), "media": (6.0, 10.0), "cal": (12.0, 12.0),
+        "claude": (10.0, 10.0), "ag": (10.0, 10.0), "mail": (10.0, 10.0), "sys": (10.0, 10.0),
+        "apps": (6.0, 6.0), "media": (6.0, 10.0), "cal": (10.0, 10.0),
     }
 
     @classmethod
@@ -2305,6 +2305,7 @@ class SeritDock(QWidget):
     # Modüller yoksa / etkin değilse hiçbir şey çizilmez, yerleşim ve piksel değişmez.
     V25_SHELF_GAP = 28.0        # raf simgesi | uygulamalar (ve pomodoro | uygulamalar)
     V25_SHELF_POMO_GAP = 24.0   # raf simgesi | pomodoro
+    V25_SHELF_APPS_GAP = 20.0   # pomodoro yokken raf simgesi | uygulamalar (araya ayraç düşer)
     V25_TIGHT_APPS_GAP = 20.0   # yer darsa önce boşluklar daralır, görev satırı kalır (30 Eki: canlı
     V25_TIGHT_POMO_GAP = 16.0   # barda uzun görev adı 14 px sığmıyordu; daralma 16 px kazandırır)
     V25_MIN_CLEAR = 12.0        # sol kanat ile yeni blok arası en az boşluk
@@ -3094,13 +3095,10 @@ class SeritDock(QWidget):
         def build(pw_: float, with_shelf: bool, gap_apps: Optional[float] = None,
                   gap_sp: Optional[float] = None) -> Tuple[float, Dict[str, Optional[QRectF]]]:
             out: Dict[str, Optional[QRectF]] = {"shelf": None, "pomo": None}
-            # v27: Pomodoro yokken ataş simgesini optik olarak sol kanat (lw_end) ile uygulamalar arasına tam ortala
+            # Estetik (2 Kas): ataş artık boşlukta ortalanmaz; uygulamalara yaslanır ve araya ince
+            # ayraç çizilir (_paint_v25_left), "dosya rafı | uygulamalar" diye tek grup okunur.
             if pw_ <= 0.0 and with_shelf and gap_apps is None:
-                avail = apps_x - lw_end
-                if avail > shelf_w + 2.0 * self.V25_MIN_CLEAR:
-                    # Boşluğu iki yana eşit dağıt (tam ortalama)
-                    side_gap = (avail - shelf_w) / 2.0
-                    gap_apps = side_gap
+                gap_apps = self.V25_SHELF_APPS_GAP
             x = apps_x - (gap if gap_apps is None else gap_apps)
             if pw_ > 0.0:
                 x -= pw_
@@ -3150,6 +3148,10 @@ class SeritDock(QWidget):
         self._v25_rects.pop("shelf", None)
         self._v25_rects.pop("pomo", None)
         r_sh, r_po = lay.get("shelf"), lay.get("pomo")
+        if r_sh is not None and r_po is None:
+            # raf | uygulamalar ayracı: raf simgesinin sağ kenarı ile ilk uygulama simgesi arası ortada
+            self._draw_divider(p, (r_sh.right() + apps_x + self._CONTENT_INSET["apps"][0]) / 2.0,
+                               CARD_Y + CARD_HEIGHT / 2.0, intersects)
         if r_sh is not None:
             self._v25_rects["shelf"] = r_sh
             if is_full:
