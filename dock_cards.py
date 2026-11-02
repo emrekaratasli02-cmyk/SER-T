@@ -757,7 +757,8 @@ def draw_media_card(
     by = rect.y() + 8.0  # ölçüldü: başlık büyük harf üstü .. alt satır tabanı kartın ortasına düşer
     # v24: kontroller (24+8+32+8+24 = 96 px) sağa yaslanır; başlık aradaki tüm boşluğu kullanır
     # (eskiden 314 px kartta başlık 128 px'de kesiliyordu, sağda boşluk kalıyordu).
-    ctrl_x = rect.right() - 96.0 - 10.0
+    # Estetik: kontroller 24+4+32+4+24 = 88 px, sağ pay 6 -> başlığa ~16 px daha yer.
+    ctrl_x = rect.right() - 88.0 - 6.0
     bw = max(20.0, ctrl_x - 8.0 - bx)
 
     progress_frac = media_progress_fraction(media_info)
@@ -798,8 +799,8 @@ def draw_media_card(
 
     # Hit targets: prev (24x28), play (32x32), next (24x28)
     r_prev = QRectF(ctrl_x, cy - 14.0, 24.0, 28.0)
-    r_play = QRectF(ctrl_x + 24.0 + 8.0, cy - 16.0, 32.0, 32.0)
-    r_next = QRectF(ctrl_x + 24.0 + 8.0 + 32.0 + 8.0, cy - 14.0, 24.0, 28.0)
+    r_play = QRectF(ctrl_x + 24.0 + 4.0, cy - 16.0, 32.0, 32.0)
+    r_next = QRectF(ctrl_x + 24.0 + 4.0 + 32.0 + 4.0, cy - 14.0, 24.0, 28.0)
 
     # 1. Prev button (plain glyph without circle)
     p.save()
@@ -1967,7 +1968,8 @@ def draw_battery_pill(
     dpr = _device_ratio(p)
 
     if on_ac_full and not hovered and not active:
-        f = theme.make_font(13.0, QFont.Weight.DemiBold)
+        # Estetik: yeşil yalnız fiş simgesinde; yazı sakin ikincil beyaz (bantta en yüksek sesli öğe olmasın).
+        f = theme.make_font(12.0, QFont.Weight.Medium)
         fm = _get_fm(f)
         txt, gap = "Prizde", 6.0
         x = rect.center().x() - (PLUG_GLYPH_W + gap + _text_width(fm, txt)) / 2.0
@@ -1976,7 +1978,7 @@ def draw_battery_pill(
         _paint_plug(p, x, cy, green, dpr)
         p.save()
         p.setFont(f)
-        p.setPen(green)
+        p.setPen(QColor(255, 255, 255, int(255 * 0.78)))
         p.drawText(QPointF(x + PLUG_GLYPH_W + gap, cy + fm.capHeight() / 2.0), txt)
         p.restore()
         return QRectF(rect)

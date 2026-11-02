@@ -124,7 +124,8 @@ def test_media_title_uses_free_width() -> None:
                                        {"title": "Örnek dizi · 3. Sezon 4. Bölüm", "app": "Chrome",
                                         "artist": "Web Yayını", "playing": True})
     p.end()
-    assert abs(rects["prev"].left() - (10.0 + 314.0 - 106.0)) < 0.01  # kontroller sağa yaslı
+    assert abs(rects["prev"].left() - (10.0 + 314.0 - 94.0)) < 0.01  # kontroller sağa yaslı (88 + 6 pay)
+    assert rects["prev"].right() < rects["playpause"].left() < rects["playpause"].right() < rects["next"].left()
     title_cols = [x / DPR for x in _ink_cols(img, int(14 * DPR), int(30 * DPR), thr=60) if x / DPR < rects["prev"].left()]
     assert title_cols[-1] > 66.0 + 128.0, "başlık eski 128 px sınırını aşmalı"
     assert title_cols[-1] < rects["prev"].left() - 4.0, "başlık önceki düğmesine değmemeli"
