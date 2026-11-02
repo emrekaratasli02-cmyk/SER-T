@@ -319,13 +319,20 @@ class DownloadsWatcher:
         self._baselined = False
         self._known: Dict[str, tuple] = {}
         self._pending: Dict[str, tuple] = {}
+        self._active_downloads: int = 0
 
     @property
     def folder(self) -> str:
         return self._folder
 
+    @property
+    def active_downloads(self) -> int:
+        with self._lock:
+            return self._active_downloads
+
     def _scan(self) -> Dict[str, tuple]:
         out: Dict[str, tuple] = {}
+        active_cnt = 0
         try:
             with os.scandir(self._folder) as it:
                 for e in it:
@@ -333,6 +340,7 @@ class DownloadsWatcher:
                         if e.is_dir(follow_symlinks=False):
                             continue
                         if e.name.lower().endswith(_TEMP_EXTS):
+                            active_cnt += 1
                             continue
                         if self._exts is not None and not e.name.lower().endswith(self._exts):
                             continue
@@ -344,6 +352,7 @@ class DownloadsWatcher:
                         continue
         except OSError:
             pass
+        self._active_downloads = active_cnt
         return out
 
     def poll(self) -> List[str]:

@@ -399,8 +399,10 @@ def draw_tile(
         by = icon_rect.top() - 3.0
         badge_box = QRectF(bx, by, bw, bh)
         b_path = theme.rounded_path(badge_box, bh / 2.0)
-        # Kırmızı-mercan Apple tarzı bildirim rozeti
-        p.fillPath(b_path, QColor(255, 59, 48))
+        # İndirme ise canlı mavi, okunmamış mesaj ise kırmızı-mercan rozet
+        is_dl = badge_str.startswith("↓")
+        badge_bg = QColor(10, 132, 255) if is_dl else QColor(255, 59, 48)
+        p.fillPath(b_path, badge_bg)
         p.setPen(QPen(QColor(255, 255, 255, 220), 0.8))
         p.drawPath(b_path)
         p.setPen(QColor(255, 255, 255))

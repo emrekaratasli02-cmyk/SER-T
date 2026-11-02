@@ -2272,6 +2272,7 @@ class SeritDock(QWidget):
         self._pomo_sig: Tuple[Any, ...] = (False, 0.0)
         self._pomo_compact: bool = False
         self._pomo_action_menu: Optional[action_menu.ActionMenu] = None
+        self._shelf_action_menu: Optional[action_menu.ActionMenu] = None
         self._presence_usage: Dict[str, Any] = {"mic": [], "cam": []}
         self._shelf_drag_over: bool = False
         self._shelf_fs_watcher: Optional[QFileSystemWatcher] = None
@@ -2597,6 +2598,46 @@ class SeritDock(QWidget):
     # --- shelf
     def _shelf_visible(self) -> bool:
         return bool(shelf is not None and self.shelf_store is not None and self.settings.get("shelf_enabled", True))
+
+    def build_shelf_menu_actions(self) -> List[Dict[str, Any]]:
+        acts: List[Dict[str, Any]] = [
+            {
+                "id": "screen_snip",
+                "text": "Ekran alıntısı yap (Win+Shift+S)",
+                "icon": "open",
+                "callback": lambda: os.startfile("ms-screenclip:")
+            },
+            {"type": "separator"},
+        ]
+        if shelf is not None:
+            dl_fn = getattr(shelf, "_downloads_folder", None)
+            if dl_fn:
+                acts.append({
+                    "id": "open_downloads",
+                    "text": "İndirilenler klasörünü aç",
+                    "icon": "open",
+                    "callback": lambda: os.startfile(dl_fn()) if os.path.exists(dl_fn()) else None
+                })
+            shot_fn = getattr(shelf, "screenshots_folder", None)
+            if shot_fn:
+                acts.append({
+                    "id": "open_screenshots",
+                    "text": "Ekran görüntüleri klasörünü aç",
+                    "icon": "open",
+                    "callback": lambda: os.startfile(shot_fn()) if os.path.exists(shot_fn()) else None
+                })
+        if getattr(self, "shelf_store", None):
+            acts.extend([
+                {"type": "separator"},
+                {
+                    "id": "clear_shelf",
+                    "text": "Geçici öğeleri temizle",
+                    "icon": "close",
+                    "danger": True,
+                    "callback": lambda: self.shelf_store.clear(keep_pinned=True)
+                }
+            ])
+        return acts
 
     def action_show_shelf(self) -> None:
         if self._shelf_visible():
@@ -4567,7 +4608,15 @@ class SeritDock(QWidget):
         return True
 
     def _tile_badge(self, tile: dict) -> Optional[str]:
-        """Uygulama pencerelerinin başlığından (Gelen Kutusu (5), [3] vb.) okunmamış rozetini çıkarır."""
+        """Uygulama pencerelerinin başlığından okunmamış rozetini veya aktif indirme rozetini çıkarır."""
+        # 1. Aktif indirme kontrolü (Chrome, Edge vb. tarayıcılar için)
+        exe = (tile.get("exe") or "").lower()
+        if any(b in exe for b in ("chrome", "msedge", "brave", "firefox", "zen")):
+            dl_w = getattr(self, "_dl_watcher", None)
+            if dl_w and getattr(dl_w, "active_downloads", 0) > 0:
+                cnt = dl_w.active_downloads
+                return f"↓{cnt}" if cnt > 1 else "↓"
+
         raw_wins = getattr(self, "_raw_windows", None) or []
         hwnds = set(tile.get("hwnds") or [])
         if not hwnds:
@@ -4974,6 +5023,21 @@ class SeritDock(QWidget):
                     self._pomo_action_menu = action_menu.ActionMenu()
                 self._pomo_action_menu.set_actions(self.build_pomo_menu_actions())
                 self._pomo_action_menu.show_at(anchor_global)
+                return
+            if key == "shelf" and r.contains(cpos):
+                if getattr(self, "_shelf_action_menu", None) is None:
+                    self._shelf_action_menu = action_menu.ActionMenu()
+                self._shelf_action_menu.set_header("Geçici Dosya Rafı", "Ataş & Hızlı Araçlar")
+                self._shelf_action_menu.set_actions(self.build_shelf_menu_actions())
+                self._shelf_action_menu.show_at(anchor_global)
+                return
+            if key == "media" and r.contains(cpos):
+                media_anchor = QRectF(
+                    self.mapToGlobal(QPoint(int(r.x()), int(r.y()))),
+                    r.size(),
+                )
+                self.vol_popover.show_for(media_anchor, self._vol_level, self._vol_muted, self._vol_device)
+                self.submit_fetch("vol")
                 return
             if key == "tray_icon" and extra and r.contains(cpos):
                 tray_anchor = QRectF(
