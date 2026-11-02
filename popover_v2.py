@@ -124,9 +124,19 @@ def make_font(
     tabular: bool = False,
     letter_spacing: Optional[float] = None,
 ) -> QFont:
-    """Create a high-DPI Segoe UI Variable font instance with tabular numerals."""
-    f = QFont("Segoe UI Variable Text")
-    f.setFamilies(["Segoe UI Variable Text", "Segoe UI", "Inter", "sans-serif"])
+    """Create a high-DPI Segoe UI Variable font instance with optical sizing and tabular numerals."""
+    if size_px >= 15:
+        primary = "Segoe UI Variable Display"
+        fallbacks = ["Segoe UI Variable", "Segoe UI Variable Text", "Segoe UI", "sans-serif"]
+    elif size_px <= 10:
+        primary = "Segoe UI Variable Small"
+        fallbacks = ["Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", "sans-serif"]
+    else:
+        primary = "Segoe UI Variable Text"
+        fallbacks = ["Segoe UI Variable", "Segoe UI", "sans-serif"]
+
+    f = QFont(primary)
+    f.setFamilies(fallbacks)
     f.setPixelSize(size_px)
     f.setWeight(weight)
     f.setStyleStrategy(QFont.PreferAntialias)

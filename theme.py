@@ -179,14 +179,27 @@ def make_font(
 ) -> QFont:
     """Creates a high-DPI Segoe UI Variable font instance with OpenType feature support.
 
+    Selects the optimal optical size axis (Display for >=15px, Small for <=10.5px, Text for 11-14px)
+    for razor-sharp rendering on modern Windows 11 high-DPI screens.
     Cached internally and returned as the SAME shared instance (v23 perf). Callers must not mutate it;
     copy with QFont(f) before calling setters.
     """
     key = (round(float(size_px), 2), weight, tabular, letter_spacing)
     cached = _FONT_CACHE.get(key)
     if cached is None:
-        f = QFont(FONT_FAMILY)
-        f.setFamilies(FONT_FALLBACKS)
+        sz = float(size_px)
+        if sz >= 15.0:
+            primary = "Segoe UI Variable Display"
+            fallbacks = ["Segoe UI Variable", "Segoe UI Variable Text", "Segoe UI", "sans-serif"]
+        elif sz <= 10.5:
+            primary = "Segoe UI Variable Small"
+            fallbacks = ["Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", "sans-serif"]
+        else:
+            primary = "Segoe UI Variable Text"
+            fallbacks = ["Segoe UI Variable", "Segoe UI", "sans-serif"]
+
+        f = QFont(primary)
+        f.setFamilies(fallbacks)
         f.setPixelSize(max(1, int(round(size_px))))
         f.setWeight(weight)
         f.setStyleStrategy(QFont.PreferAntialias)

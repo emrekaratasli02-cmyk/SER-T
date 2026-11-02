@@ -236,9 +236,20 @@ def turkish_upper(text: str) -> str:
 
 
 def font(px: float, weight: QFont.Weight = QFont.Weight.Normal, tabular: bool = False) -> QFont:
-    """Piksel boyutlu yazı tipi (Segoe UI Variable, yoksa Segoe UI)."""
-    f = QFont(FONT_FAMILY)
-    f.setFamilies([FONT_FAMILY, "Segoe UI"])
+    """Piksel boyutlu yazı tipi (optik Segoe UI Variable eksenleri)."""
+    sz = float(px)
+    if sz >= 15.0:
+        fam = "Segoe UI Variable Display"
+        fallbacks = ["Segoe UI Variable", "Segoe UI", "sans-serif"]
+    elif sz <= 10.5:
+        fam = "Segoe UI Variable Small"
+        fallbacks = ["Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", "sans-serif"]
+    else:
+        fam = "Segoe UI Variable Text"
+        fallbacks = ["Segoe UI Variable", "Segoe UI", "sans-serif"]
+
+    f = QFont(fam)
+    f.setFamilies(fallbacks)
     f.setPixelSize(max(1, int(round(px))))
     f.setWeight(weight)
     if tabular:
