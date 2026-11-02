@@ -180,12 +180,23 @@ def draw_net_band(p: QPainter, rect: QRectF, state: Optional[Dict[str, Any]], ho
     x = rect.left()
     col_text = ps.TEXT if hover else ps.TEXT_BODY
 
+    # Boşta (iki yön de < 1 KB/s): oklar ve değerler sönük gri; trafik başlayınca renk geri gelir.
+    def _idle_rate(v: Any) -> bool:
+        try:
+            return v is not None and float(v) < 1000.0
+        except (TypeError, ValueError):
+            return False
+
+    idle = (not hover) and _idle_rate(state.get("down")) and _idle_rate(state.get("up"))
+    if idle:
+        col_text = ps.TEXT_MUTED
+
     p.setFont(f)
 
     # Üst satır: ↓
     down_rate = state.get("down")
     down_str = fmt_rate(down_rate)
-    p.setPen(ps.ACCENT)
+    p.setPen(ps.TEXT_MUTED if idle else ps.ACCENT)
     p.drawText(QPointF(x, base_down), "↓")
     arrow_w = max(fm.horizontalAdvance("↓ "), fm.horizontalAdvance("↑ "))
     p.setPen(col_text)
@@ -194,7 +205,7 @@ def draw_net_band(p: QPainter, rect: QRectF, state: Optional[Dict[str, Any]], ho
     # Alt satır: ↑
     up_rate = state.get("up")
     up_str = fmt_rate(up_rate)
-    p.setPen(CORAL)
+    p.setPen(ps.TEXT_MUTED if idle else CORAL)
     p.drawText(QPointF(x, base_up), "↑")
     p.setPen(col_text)
     p.drawText(QPointF(x + arrow_w, base_up), up_str)

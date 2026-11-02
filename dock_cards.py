@@ -2233,8 +2233,11 @@ def draw_action_button(
         p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
         p.drawRoundedRect(rect, 8.0, 8.0)
 
-    glyph_col = QColor(255, 255, 255) if (hover or active) else QColor(255, 255, 255, int(255 * 0.78))
-    pen = QPen(glyph_col, 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    # Estetik: gizli simgeler oku (tray) boştayken komşu sağ küme simgeleriyle aynı sönüklükte
+    # (güncellemeler simgesi .65) ve aynı inceliktedir; üzerine gelince tam beyaz.
+    rest_a = 0.65 if kind == "tray" else 0.78
+    glyph_col = QColor(255, 255, 255) if (hover or active) else QColor(255, 255, 255, int(255 * rest_a))
+    pen = QPen(glyph_col, 1.7 if kind == "tray" else 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.NoBrush)
 

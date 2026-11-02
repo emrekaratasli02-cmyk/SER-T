@@ -33,6 +33,31 @@ MONITORED_FILES = [
 ]
 
 
+# Çalışan dock bu dosyaya 5 dakikada bir kendisi yazar (sources.fetch_claude, aralık 300 s).
+# Dock açıkken buradaki değişim test kaynaklı olduğu kanıtlanamaz -> uyarı; dock kapalıyken -> hata.
+LIVE_WRITTEN_FILES = {"claude_cache.json"}
+
+
+def live_dock_running() -> bool:
+    """Kurulu dock (D:/Apps/serit/serit_v5.pyw) şu an çalışıyor mu?"""
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return False
+    # resolve() kullanılmaz: başka süreçlerin argümanlarında pipe yolları olabilir (WinError 231).
+    target = os.path.normcase(os.path.abspath(str(APP_DIR / "serit_v5.pyw")))
+    for p in psutil.process_iter(["cmdline"]):
+        try:
+            cl = p.info["cmdline"] or []
+            if not cl or not str(cl[-1]).lower().endswith("serit_v5.pyw"):
+                continue
+            if os.path.normcase(os.path.abspath(str(cl[-1]))) == target:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def file_sha256(path: Path) -> str:
     """Return SHA-256 hex digest of file, or '<missing>' if not found."""
     if not path.exists():
@@ -155,11 +180,18 @@ def main() -> int:
     print("\n--- MONITORED FILES (AFTER) ---")
     after_hashes = {}
     hashes_changed = False
+    live_warns = 0
+    dock_live = live_dock_running()
     for f in MONITORED_FILES:
         h = file_sha256(f)
         after_hashes[f] = h
-        match = "MATCH (UNCHANGED)" if h == before_hashes[f] else "MODIFIED (FAILED!)"
-        if h != before_hashes[f]:
+        if h == before_hashes[f]:
+            match = "MATCH (UNCHANGED)"
+        elif f.name in LIVE_WRITTEN_FILES and dock_live:
+            match = "MODIFIED (WARN: canlı dock açık, 5 dk'lık kendi yenilemesi olabilir; kesin test için dock'u kapatıp tekrar koş)"
+            live_warns += 1
+        else:
+            match = "MODIFIED (FAILED!)"
             hashes_changed = True
         print(f"  {f.name}: {h} -> {match}")
 
@@ -172,7 +204,10 @@ def main() -> int:
     # 6. Final verdict
     print("=" * 60)
     if failed == 0 and not hashes_changed:
-        print(f"ALL TESTS PASSED ({passed}/{len(test_files)}) & REAL FILES UNTOUCHED.")
+        if live_warns:
+            print(f"ALL TESTS PASSED ({passed}/{len(test_files)}); {live_warns} file(s) changed by the live dock (WARN).")
+        else:
+            print(f"ALL TESTS PASSED ({passed}/{len(test_files)}) & REAL FILES UNTOUCHED.")
         print("=" * 60)
         return 0
     else:
