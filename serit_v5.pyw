@@ -3958,7 +3958,7 @@ class SeritDock(QWidget):
                         lambda a=action: media.media_control(a),
                         on_done=lambda: QTimer.singleShot(350, lambda: self.submit_fetch("media")),
                     )
-                else:
+                elif bool(self.settings.get("media_seek_enabled", True)):
                     # Butonların dışına tıklandı -> İlerleme çizgisine göre sarma (Seek) kontrolü
                     m_rect = getattr(self, "_media_rect", None) or rect
                     # Kartın alt 8 piksellik çizgisine tıklandıysa veya orta alana tıklandıysa
@@ -4609,6 +4609,8 @@ class SeritDock(QWidget):
 
     def _tile_badge(self, tile: dict) -> Optional[str]:
         """Uygulama pencerelerinin başlığından okunmamış rozetini veya aktif indirme rozetini çıkarır."""
+        if not bool(self.settings.get("app_badges_enabled", True)):
+            return None
         # 1. Aktif indirme kontrolü (Chrome, Edge vb. tarayıcılar için)
         exe = (tile.get("exe") or "").lower()
         if any(b in exe for b in ("chrome", "msedge", "brave", "firefox", "zen")):
@@ -4641,6 +4643,8 @@ class SeritDock(QWidget):
 
     def _flash_phase(self, tile: dict) -> Optional[float]:
         """Yanıp sönme durumundaki uygulama için nabız parlaklığı 0.20-1.0 döner."""
+        if not bool(self.settings.get("window_flash_enabled", True)):
+            return None
         if not self._flashing_hwnds:
             return None
         hwnds = tile.get("hwnds") or []

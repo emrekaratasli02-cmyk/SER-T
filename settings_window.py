@@ -65,6 +65,9 @@ TOOL_DEFS: List[Tuple[str, str, str]] = [
     ("updates_enabled", "Güncelleme rozeti", "Winget güncellemelerini sağ kümede bildir"),
     ("drag_activate", "Sürükle-öne-getir", "Dosya sürüklerken uygulama penceresini aç"),
     ("app_usage_ctrl", "Ctrl ile kullanım süresi", "İkon üzerinde Ctrl basılıyken süreyi göster"),
+    ("window_flash_enabled", "Pencere dikkat bildirimi", "Arka planda dikkat isteyen uygulamalarda turuncu nabız"),
+    ("app_badges_enabled", "Uygulama rozetleri", "Okunmamış mesaj sayısı ve indirme rozetleri"),
+    ("media_seek_enabled", "Medya ilerleme ve sarma", "Kart altında canlı ilerleme çizgisi, tıklayarak sarma ve ses"),
 ]
 
 SETTING_DEFAULTS: Dict[str, bool] = {
@@ -80,6 +83,9 @@ SETTING_DEFAULTS: Dict[str, bool] = {
     "presence_enabled": True,
     "hide_on_fullscreen": True,
     "hover_preview": True,
+    "window_flash_enabled": True,
+    "app_badges_enabled": True,
+    "media_seek_enabled": True,
 }
 
 STALL_NOTE = "300 ms ve üstü takılmalar sayılır · uyku süresi sayılmaz"
