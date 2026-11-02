@@ -1028,13 +1028,13 @@ class QuotaPanel(_BasePopover):
 
             display_label = raw_label
             account = None
-            if "argon" in raw_label.lower():
-                account = None
-                display_label = "Argon"
-            elif " · " in raw_label:
+            if " · " in raw_label and not raw_label.lower().startswith("argon"):
                 parts = raw_label.split(" · ", 1)
                 account = parts[0].strip()
                 display_label = parts[1].strip()
+            elif "argon" in raw_label.lower():
+                account = None
+                display_label = "Argon"
 
             rows.append({
                 "label": raw_label,

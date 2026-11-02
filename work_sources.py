@@ -731,7 +731,7 @@ def fetch_antigravity(
                 local_argon = not logpath.is_running_under_test()
             except Exception:
                 local_argon = False
-        if local_argon:
+        if local_argon and not any("argon" in str(g.get("label", "")).lower() for g in groups):
             argon = _argon_group()
             if argon:
                 groups.append(argon)
