@@ -416,26 +416,36 @@ def draw_tile(
     is_active = bool(tile.get("active", False))
 
     if is_running:
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
         if is_active:
-            # Active indicator pill or white 85% dot
-            theme.draw_app_indicator(
-                p,
-                center_x=cx,
-                center_y=ind_y,
-                width=INDICATOR_ACTIVE_W,
-                height=INDICATOR_ACTIVE_H,
-                radius=INDICATOR_ACTIVE_R,
-                is_active=True,
-            )
-        else:
-            # 4x4 white 85% running dot
+            # Öndeki aktif uygulama: Işıldayan 14x3 beyaz hap gösterge
+            pill_w = 14.0
+            pill_h = 3.0
+            pill_rect = QRectF(cx - pill_w / 2.0, ind_y - pill_h / 2.0, pill_w, pill_h)
+            p.fillPath(theme.rounded_path(pill_rect, 1.5), QColor(255, 255, 255, 255))
+            # Hafif aydınlık hare
+            p.setPen(QPen(QColor(255, 255, 255, 45), 0.8))
+            p.drawPath(theme.rounded_path(pill_rect.adjusted(-0.5, -0.5, 0.5, 0.5), 2.0))
+        elif dot_count is not None and dot_count > 1:
+            # Çoklu pencere: İki zarif minik nokta (macOS tarzı)
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, int(255 * 0.85)))
-            p.drawEllipse(QPointF(cx, ind_y), 2.0, 2.0)
+            p.setBrush(QColor(255, 255, 255, 140))
+            p.drawEllipse(QPointF(cx - 3.5, ind_y), 1.8, 1.8)
+            p.drawEllipse(QPointF(cx + 3.5, ind_y), 1.8, 1.8)
+        else:
+            # Arka plan tek pencere: Yumuşak 3.6px nokta
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, 130))
+            p.drawEllipse(QPointF(cx, ind_y), 1.8, 1.8)
+        p.restore()
     elif launch_phase is not None:  # v24: açılıyor, nabız gibi atan nokta
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * max(0.0, min(1.0, launch_phase)))))
+        p.setBrush(QColor(255, 255, 255, int(220 * max(0.0, min(1.0, launch_phase)))))
         p.drawEllipse(QPointF(cx, ind_y), 2.0, 2.0)
+        p.restore()
 
     p.restore()
 

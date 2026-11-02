@@ -3217,10 +3217,13 @@ class SeritDock(QWidget):
         w_apps = (n_tiles * pinned.TILE_WIDTH + max(0, n_tiles - 1) * pinned.GAP) if n_tiles > 0 else 0.0
 
         if self._is_band():
-            # Tam genişlik koyu şerit (köşesiz) + üstte ince ayırıcı çizgi
+            # Tam genişlik koyu şerit (köşesiz) + üstte specular kenar parıltısı ve mikro-gölge
             if exp_f is None or exp_f.y() < DOCK_HEIGHT:
-                p.fillRect(QRectF(0, 0, self.width(), DOCK_HEIGHT), QColor(13, 15, 19))
-                p.fillRect(QRectF(0, 0, self.width(), 1.0), QColor(255, 255, 255, 18))
+                w_band = float(self.width())
+                p.fillRect(QRectF(0, 0, w_band, DOCK_HEIGHT), QColor(13, 15, 19))
+                # Üst kenar 3D specular parıltı (1px aydınlık çizgi + altında 1px mikro gölge)
+                p.fillRect(QRectF(0, 0, w_band, 1.0), QColor(255, 255, 255, 28))
+                p.fillRect(QRectF(0, 1.0, w_band, 1.0), QColor(0, 0, 0, 50))
 
             # Sol alt köşe: masaüstünü göster / geri getir (ekran kenarında, fareyi köşeye atınca bulunur)
             r_desk = QRectF(0.0, 1.0, DESKTOP_STRIP_W, DOCK_HEIGHT - 1.0)

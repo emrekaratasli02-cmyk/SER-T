@@ -394,8 +394,7 @@ def draw_card_base(
     hover: bool = False,
     press_scale: float = 1.0,
 ) -> None:
-    """v24 kutusuz kart (Emre: B): zemin ve çerçeve yok, kart doğrudan bandın üstünde durur; kartlar
-    arasını draw_card_divider ayırır. Üzerine gelince hafif zemin (tıklanabilir olduğu belli olsun)."""
+    """v24 kutusuz kart: yalnız üzerine gelince yumuşak akrilik vurgu ve ince specular kenar."""
     if not hover:
         return
     p.save()
@@ -405,7 +404,13 @@ def draw_card_base(
         p.translate(pc)
         p.scale(press_scale, press_scale)
         p.translate(-pc)
-    p.fillPath(theme.rounded_path(rect, radius), CARD_FILL_HOVER)
+    c_path = theme.rounded_path(rect, radius)
+    hover_grad = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
+    hover_grad.setColorAt(0.0, QColor(255, 255, 255, 26))
+    hover_grad.setColorAt(1.0, QColor(255, 255, 255, 13))
+    p.fillPath(c_path, hover_grad)
+    p.setPen(QPen(QColor(255, 255, 255, 34), 0.8))
+    p.drawPath(c_path)
     p.restore()
 
 
