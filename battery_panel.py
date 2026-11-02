@@ -7,6 +7,7 @@ işçisinde yapılır. Veri yoksa '—' gösterilir, hiçbir değer uydurulmaz.
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 from pathlib import Path
@@ -46,6 +47,20 @@ AV_ROW_H = 42.0        # 'Ses ve parlaklık' satırı (etiket + 18 px iz + 20 px
 AV_ROW_GAP = 8.0
 AV_OVER_H = 25.0       # kart üst başlığı (15 px + 10 px boşluk)
 AV_CHEV_SZ = 20.0      # satır sonu '›' hayalet düğmesi
+
+BT_ROW_H = 20.0
+BT_ROW_GAP = 6.0
+BT_BAR_W = 54.0
+BT_BAR_H = 6.0
+BT_PCT_W = 38.0
+
+POWER_PLAN_LABELS = {
+    "Balanced": "Dengeli",
+    "Power saver": "Tasarruf",
+    "High performance": "Yüksek performans",
+    "Gaming": "Oyun",
+    "Office": "Ofis",
+}
 
 
 def _clamp_level(value: Any) -> Optional[float]:
@@ -231,6 +246,7 @@ class BatteryPanel(QWidget):
     brightness_requested = Signal(str, int)  # monitör id, 0-100
     open_volume_mixer = Signal()
     open_brightness = Signal()
+    power_plan_requested = Signal(str)     # guid
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -242,6 +258,8 @@ class BatteryPanel(QWidget):
         self._bat: Dict[str, Any] = {}
         self._wifi: Dict[str, Any] = {}
         self._bt: Dict[str, Any] = {}
+        self._bt_devices: List[Dict[str, Any]] = []
+        self._power_plans: List[Dict[str, Any]] = []
         self._top: List[Dict[str, Any]] = []
         self._busy: Dict[str, Optional[str]] = {"wifi": None, "bluetooth": None}  # None | 'on' | 'off' (istenen)
         self._supported: Dict[str, bool] = {"wifi": True, "bluetooth": True}
@@ -278,7 +296,64 @@ class BatteryPanel(QWidget):
     def set_bluetooth(self, info: Optional[Dict[str, Any]]) -> None:
         self._bt = dict(info) if isinstance(info, dict) else {}
         self._busy["bluetooth"] = None
-        self.update()
+        self._relayout()
+
+    def set_bt_devices(self, devices: Any) -> None:
+        raw = devices if isinstance(devices, list) else []
+        out: List[Dict[str, Any]] = []
+        f = ps.font(12.0, QFont.Weight.Medium)
+        fm = QFontMetricsF(f)
+        max_name_w = 180.0
+        for d in raw:
+            if not isinstance(d, dict):
+                continue
+            raw_name = d.get("name")
+            name_str = str(raw_name) if raw_name is not None and not (isinstance(raw_name, float) and math.isnan(raw_name)) else ""
+            name_str = name_str.strip() or "—"
+            elided_name = fm.elidedText(name_str, Qt.TextElideMode.ElideRight, max_name_w)
+
+            bat = d.get("battery")
+            bat_val: Optional[int] = None
+            if bat is not None:
+                try:
+                    fval = float(bat)
+                    if not math.isnan(fval) and not math.isinf(fval):
+                        bat_val = max(0, min(100, int(round(fval))))
+                except (TypeError, ValueError):
+                    bat_val = None
+
+            connected = bool(d.get("connected", True))
+            kind = str(d.get("kind") or "")
+            out.append({
+                "name": elided_name,
+                "battery": bat_val,
+                "connected": connected,
+                "kind": kind,
+            })
+        self._bt_devices = out[:4]
+        self._relayout()
+
+    def set_power_plans(self, plans: Any) -> None:
+        raw = plans if isinstance(plans, list) else []
+        out: List[Dict[str, Any]] = []
+        f = ps.font(12.0, QFont.Weight.Medium)
+        fm = QFontMetricsF(f)
+        for p in raw:
+            if not isinstance(p, dict):
+                continue
+            guid = str(p.get("guid") or "").strip()
+            raw_name = p.get("name")
+            name_str = str(raw_name) if raw_name is not None and not (isinstance(raw_name, float) and math.isnan(raw_name)) else ""
+            name_str = name_str.strip() or "—"
+            elided_name = fm.elidedText(name_str, Qt.TextElideMode.ElideRight, 120.0)
+            active = bool(p.get("active", False))
+            out.append({
+                "guid": guid,
+                "name": elided_name,
+                "active": active,
+            })
+        self._power_plans = out
+        self._relayout()
 
     def set_top_load(self, procs: Optional[List[Dict[str, Any]]]) -> None:
         self._top = [dict(x) for x in (procs or []) if isinstance(x, dict)][:2]
@@ -408,9 +483,37 @@ class BatteryPanel(QWidget):
     def _av_card_height(self) -> float:
         return ps.CARD_PAD * 2 + AV_OVER_H + AV_ROW_H * 2 + AV_ROW_GAP
 
+    def _should_draw_bt_devices(self) -> bool:
+        if self._bt_devices:
+            return True
+        return bool(self._bt.get("available"))
+
+    def _should_draw_power_plans(self) -> bool:
+        return len(self._power_plans) >= 2
+
+    def _bt_devices_card_height(self) -> float:
+        base = ps.CARD_PAD * 2 + 15.0 + ps.CARD_GAP
+        if not self._bt_devices:
+            return base + BT_ROW_H
+        n = len(self._bt_devices)
+        return base + n * BT_ROW_H + max(0, n - 1) * BT_ROW_GAP
+
+    def _power_plans_card_height(self) -> float:
+        n = len(self._power_plans)
+        if n < 2:
+            return 0.0
+        base = ps.CARD_PAD * 2 + 15.0 + ps.CARD_GAP
+        if n <= 3:
+            return base + ps.PRESET_PILL_H
+        return base + ps.PRESET_PILL_H * 2 + 6.0
+
     def compute_height(self) -> int:
         h = ps.PAD + ps.HEADER_H + ps.GAP + self._bat_card_height()
         h += ps.GAP + self._av_card_height()
+        if self._should_draw_bt_devices():
+            h += ps.GAP + self._bt_devices_card_height()
+        if self._should_draw_power_plans():
+            h += ps.GAP + self._power_plans_card_height()
         h += ps.GAP + self._wireless_card_height()
         h += ps.GAP + ps.FOOTER_H + ps.PAD * 0.5
         return int(round(h))
@@ -506,6 +609,9 @@ class BatteryPanel(QWidget):
                     "wifi_main", "wifi_chev", "bt_main", "bt_chev", "footer_btn"):
             r = self._rects.get(key)
             if r is not None and r.contains(pos):
+                return key
+        for key, r in self._rects.items():
+            if key.startswith("plan_") and r is not None and r.contains(pos):
                 return key
         return None
 
@@ -661,6 +767,17 @@ class BatteryPanel(QWidget):
         elif key == "footer_btn":
             self.hide_animated()
             self.settings_requested.emit("power")
+        elif key and key.startswith("plan_"):
+            try:
+                idx = int(key.split("_")[1])
+                if 0 <= idx < len(self._power_plans):
+                    plan = self._power_plans[idx]
+                    if not plan.get("active") and not plan.get("busy"):
+                        guid = plan.get("guid")
+                        if guid:
+                            self.power_plan_requested.emit(str(guid))
+            except (ValueError, IndexError):
+                pass
 
     # ----------------------------------------------------------------- çizim
     def render_to_image(self, dpr: float = 2.0) -> QImage:
@@ -716,6 +833,20 @@ class BatteryPanel(QWidget):
         inner = ps.draw_card(p, QRectF(x0, y, cw, avh), "Ses ve parlaklık")
         self._paint_av(p, inner)
         y += avh + ps.GAP
+
+        # bluetooth cihazlar kartı
+        if self._should_draw_bt_devices():
+            bth = self._bt_devices_card_height()
+            inner = ps.draw_card(p, QRectF(x0, y, cw, bth), "Bluetooth cihazlar")
+            self._paint_bt_devices(p, inner)
+            y += bth + ps.GAP
+
+        # güç modu kartı
+        if self._should_draw_power_plans():
+            pph = self._power_plans_card_height()
+            inner = ps.draw_card(p, QRectF(x0, y, cw, pph), "Güç modu")
+            self._paint_power_plans(p, inner)
+            y += pph + ps.GAP
 
         # kablosuz kartı
         wh = self._wireless_card_height()
@@ -922,3 +1053,116 @@ class BatteryPanel(QWidget):
                            f"%{int(round(cpu))}" if cpu is not None else "—")
                 y += 18.0
         p.restore()
+
+    def _paint_bt_devices(self, p: QPainter, inner: QRectF) -> None:
+        if not self._bt_devices:
+            p.save()
+            p.setFont(ps.font(12.0, QFont.Weight.Medium))
+            p.setPen(ps.TEXT_MUTED)
+            p.drawText(
+                QRectF(inner.left(), inner.top(), inner.width(), BT_ROW_H),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                "Bağlı cihaz yok",
+            )
+            p.restore()
+            return
+
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        ry = inner.top()
+        f_name = ps.font(12.0, QFont.Weight.Medium)
+        fm_name = QFontMetricsF(f_name)
+        f_pct = ps.font(12.0, QFont.Weight.DemiBold, tabular=True)
+
+        for dev in self._bt_devices:
+            name = dev.get("name") or "—"
+            bat = dev.get("battery")
+
+            pct_rect = QRectF(inner.right() - BT_PCT_W, ry, BT_PCT_W, BT_ROW_H)
+            p.setFont(f_pct)
+            p.setPen(ps.TEXT if bat is not None else ps.TEXT_MUTED)
+            p.drawText(pct_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, ps.pct(bat))
+
+            bar_x = pct_rect.left() - 8.0 - BT_BAR_W
+            bar_y = ry + (BT_ROW_H - BT_BAR_H) / 2.0
+            bar_rect = QRectF(bar_x, bar_y, BT_BAR_W, BT_BAR_H)
+            ps.draw_thin_bar(p, bar_rect, bat, ps.ACCENT)
+
+            name_w = max(20.0, bar_x - inner.left() - 8.0)
+            name_rect = QRectF(inner.left(), ry, name_w, BT_ROW_H)
+            elided = fm_name.elidedText(str(name), Qt.TextElideMode.ElideRight, name_w)
+            p.setFont(f_name)
+            p.setPen(ps.TEXT)
+            p.drawText(name_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided)
+
+            ry += BT_ROW_H + BT_ROW_GAP
+
+        p.restore()
+
+    def _paint_power_plans(self, p: QPainter, inner: QRectF) -> None:
+        if len(self._power_plans) < 2:
+            return
+        raw_labels: list[str] = [
+            str(POWER_PLAN_LABELS.get(str(pl.get("name") or ""), str(pl.get("name") or "")))
+            for pl in self._power_plans
+        ]
+        active_idx: Optional[int] = None
+        for i, pl in enumerate(self._power_plans):
+            if pl.get("active"):
+                active_idx = i
+                break
+        hover_idx: Optional[int] = None
+        if self._hover and self._hover.startswith("plan_"):
+            try:
+                hover_idx = int(self._hover.split("_")[1])
+            except ValueError:
+                hover_idx = None
+
+        n_plans = len(self._power_plans)
+        f_meas = ps.font(12.0, QFont.Weight.DemiBold)
+        fm_meas = QFontMetricsF(f_meas)
+
+        if n_plans <= 3:
+            gap = 8.0 if inner.width() > n_plans * 36.0 else 4.0
+            pill_w = max(4.0, (inner.width() - gap * (n_plans - 1)) / n_plans)
+            labels = [
+                fm_meas.elidedText(lbl, Qt.TextElideMode.ElideRight, max(20.0, pill_w - 14.0))
+                for lbl in raw_labels
+            ]
+            r = QRectF(inner.left(), inner.top(), inner.width(), ps.PRESET_PILL_H)
+            rects = ps.draw_preset_pills(p, r, labels, active_index=active_idx, hover_index=hover_idx)
+            for i, pr in enumerate(rects):
+                self._rects[f"plan_{i}"] = pr
+        else:
+            mid = 2 if n_plans == 4 else 3
+            n1 = mid
+            gap1 = 8.0 if inner.width() > n1 * 36.0 else 4.0
+            pill_w1 = max(4.0, (inner.width() - gap1 * (n1 - 1)) / n1)
+
+            n2 = n_plans - mid
+            gap2 = 8.0 if inner.width() > n2 * 36.0 else 4.0
+            pill_w2 = max(4.0, (inner.width() - gap2 * (n2 - 1)) / n2)
+
+            labels1 = [
+                fm_meas.elidedText(lbl, Qt.TextElideMode.ElideRight, max(20.0, pill_w1 - 14.0))
+                for lbl in raw_labels[:mid]
+            ]
+            labels2 = [
+                fm_meas.elidedText(lbl, Qt.TextElideMode.ElideRight, max(20.0, pill_w2 - 14.0))
+                for lbl in raw_labels[mid:]
+            ]
+            r1 = QRectF(inner.left(), inner.top(), inner.width(), ps.PRESET_PILL_H)
+            r2 = QRectF(inner.left(), inner.top() + ps.PRESET_PILL_H + 6.0, inner.width(), ps.PRESET_PILL_H)
+
+            act1 = active_idx if (active_idx is not None and active_idx < mid) else None
+            hov1 = hover_idx if (hover_idx is not None and hover_idx < mid) else None
+            rects1 = ps.draw_preset_pills(p, r1, labels1, active_index=act1, hover_index=hov1)
+
+            act2 = (active_idx - mid) if (active_idx is not None and active_idx >= mid) else None
+            hov2 = (hover_idx - mid) if (hover_idx is not None and hover_idx >= mid) else None
+            rects2 = ps.draw_preset_pills(p, r2, labels2, active_index=act2, hover_index=hov2)
+
+            for i, pr in enumerate(rects1):
+                self._rects[f"plan_{i}"] = pr
+            for j, pr in enumerate(rects2):
+                self._rects[f"plan_{mid + j}"] = pr

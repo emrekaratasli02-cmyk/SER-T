@@ -388,7 +388,7 @@ def _svg_pixmap(kind: str, color: QColor, size: float, dpr: float) -> QPixmap:
     op = f"{color.alphaF():.3f}"
     if kind == "clip":
         svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" '
-               f'stroke="{col}" stroke-opacity="{op}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="{_CLIP_D}"/></svg>')
+               f'stroke="{col}" stroke-opacity="{op}" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"><path d="{_CLIP_D}"/></svg>')
     else:
         svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" '
                f'fill="{col}" fill-opacity="{op}"><path d="{_PIN_D}"/></svg>')
@@ -450,8 +450,9 @@ def draw_shelf_icon(p: QPainter, rect: QRectF, state: str, count: int, hover: bo
             p.setBrush(QColor(110, 168, 254, int(25 * pulse)))
             p.drawRoundedRect(box, 8.0, 8.0)
         glyph = QColor(255, 255, 255, 217 if (hover or pulse > 0.0) else 140)      # .55 (hover .85)
-    pm = _svg_pixmap("clip", glyph, 18.0, _device_dpr(p))
-    p.drawPixmap(QPointF(box.center().x() - 9.0, box.center().y() - 9.0), pm)
+    icon_sz = 26.0
+    pm = _svg_pixmap("clip", glyph, icon_sz, _device_dpr(p))
+    p.drawPixmap(QPointF(box.center().x() - icon_sz / 2.0, box.center().y() - icon_sz / 2.0), pm)
 
     if count and count > 0:
         txt = "99+" if count > 99 else str(int(count))

@@ -167,6 +167,8 @@ def _reset_meta(iso: Any, prefix: str = "Sıfırlanır") -> str:
         txt = dock_cards.format_reset_display(iso)
     except Exception:
         txt = "—"
+    if txt in ("sıfırlandı", "yenilendi"):
+        return "Sıfırlandı"
     return f"{prefix}: {txt}"
 
 
@@ -389,6 +391,8 @@ def _format_reset_inline(iso: Any, short_day: bool = False) -> str:
     if not short_day:
         try:
             left = sources.left_text(iso)
+            if left in ("sıfırlandı", "yenilendi"):
+                return "sıfırlandı"
             return f"sıfırlanır: {left}" if left else ""
         except Exception:
             return ""
@@ -1396,6 +1400,36 @@ class PopoverV2(QWidget):
         self.show()
         self.activateWindow()
         self._anim.start()
+
+    def update_data(self, kind: str, content_dict: dict, **kwargs) -> bool:
+        """Update content of currently open popover in-place if kind matches."""
+        if not self.isVisible() or self._is_closing or self._kind != kind:
+            return False
+        self._content = build_content(kind, content_dict, **kwargs)
+        if self._kit_motion:
+            panel_w = int(panel_style.WIDTH.get(kind, panel_style.PANEL_W))
+            h = self.compute_height(self._content)
+            if h != self.height() or panel_w != self.width():
+                self.resize(panel_w, h)
+                self._close_rect = self._kit_close_rect(float(panel_w))
+                self._refresh_rect = self._kit_footer_button_rect(float(panel_w), float(h))
+                target, dpr = self._kit_target_pos(kind)
+                try:
+                    hwnd = int(self.winId())
+                    winapi.set_round_region(hwnd, self.width(), self.height(),
+                                            int(panel_style.R_PANEL), dpr)
+                except Exception:
+                    pass
+                self.move(target)
+            else:
+                self._refresh_rect = self._kit_footer_button_rect(float(panel_w), float(h))
+        else:
+            h = self.compute_height(self._content)
+            if h != self.height():
+                self.resize(self.WIDTH, h)
+                self._refresh_rect = QRectF(self.WIDTH - 16.0 - 66.0, float(h - 28), 66.0, 22.0)
+        self.update()
+        return True
 
     def _on_kit_closed(self) -> None:
         self._is_closing = False

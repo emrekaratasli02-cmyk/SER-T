@@ -19,6 +19,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import unicodedata
+import urllib.parse
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
@@ -186,6 +187,38 @@ def is_tax_item(title: Any, category: Any = None) -> bool:
     return any(kw in low for kw in TAX_KEYWORDS)
 
 
+_MEETING_HOSTS_EXACT = {
+    "zoom.us",
+    "meet.google.com",
+    "teams.microsoft.com",
+    "teams.live.com",
+    "webex.com",
+}
+_TRAILING_PUNCT = ".,;:!?)>]}\"'`"
+
+
+def extract_meeting_link(*texts: Any) -> Optional[str]:
+    """Find the first https URL whose host is zoom.us / *.zoom.us / meet.google.com /
+    teams.microsoft.com / teams.live.com / *.webex.com. Only https scheme, strip
+    trailing punctuation, never return any other URL.
+    """
+    for t in texts:
+        if not t or not isinstance(t, str):
+            continue
+        for m in re.finditer(r"https?://[^\s<>\"'`]+", t, re.IGNORECASE):
+            raw = m.group(0).rstrip(_TRAILING_PUNCT)
+            try:
+                p = urllib.parse.urlsplit(raw)
+            except Exception:
+                continue
+            if p.scheme.lower() != "https":
+                continue
+            h = (p.hostname or "").lower().strip().rstrip(".")
+            if h in _MEETING_HOSTS_EXACT or h.endswith(".zoom.us") or h.endswith(".webex.com"):
+                return raw
+    return None
+
+
 def get_holiday_events_for_date(d: dt.date) -> List[Dict[str, Any]]:
     """Return Turkish public holiday items for a specific date."""
     items = TURKISH_HOLIDAYS_TABLE.get(d)
@@ -341,6 +374,7 @@ class CalendarPanel(QWidget):
     RADIUS: float = panel_style.R_PANEL
 
     refresh_requested = Signal()
+    join_requested = Signal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -385,6 +419,8 @@ class CalendarPanel(QWidget):
         self._hover_cell_idx: int = -1
         self._hover_selected_idx: int = -1
         self._hover_upcoming_idx: int = -1
+        self._hover_join_sel_idx: int = -1
+        self._hover_join_up_idx: int = -1
 
         # Fixed hit rects (layout bunları her rebuild'de tazeler)
         self._rect_close = QRectF()
@@ -678,6 +714,14 @@ class CalendarPanel(QWidget):
         if self._rect_btn_next.contains(pos):
             return "next"
         for idx, item in enumerate(self._cached_selected_events):
+            jr = item.get("join_rect")
+            if jr and not jr.isEmpty() and jr.contains(pos):
+                return f"join_sel:{idx}"
+        for idx, item in enumerate(self._cached_upcoming):
+            jr = item.get("join_rect")
+            if jr and not jr.isEmpty() and jr.contains(pos):
+                return f"join_up:{idx}"
+        for idx, item in enumerate(self._cached_selected_events):
             if item["rect"].contains(pos):
                 return f"selected:{idx}"
         for idx, item in enumerate(self._cached_upcoming):
@@ -699,6 +743,19 @@ class CalendarPanel(QWidget):
         nxt = self._rect_btn_next.contains(pos)
         footer = self._rect_btn_refresh.contains(pos)
 
+        join_sel_idx = -1
+        for idx, item in enumerate(self._cached_selected_events):
+            jr = item.get("join_rect")
+            if jr and not jr.isEmpty() and jr.contains(pos):
+                join_sel_idx = idx
+                break
+        join_up_idx = -1
+        for idx, item in enumerate(self._cached_upcoming):
+            jr = item.get("join_rect")
+            if jr and not jr.isEmpty() and jr.contains(pos):
+                join_up_idx = idx
+                break
+
         sel_idx = -1
         for idx, item in enumerate(self._cached_selected_events):
             if item["rect"].contains(pos):
@@ -715,10 +772,11 @@ class CalendarPanel(QWidget):
                 cell_idx = idx
                 break
 
-        if (close, tax, prev, today, nxt, footer, sel_idx, up_idx, cell_idx) != (
+        if (close, tax, prev, today, nxt, footer, sel_idx, up_idx, cell_idx, join_sel_idx, join_up_idx) != (
             self._hover_close, self._hover_tax, self._hover_prev, self._hover_today,
             self._hover_next, self._hover_footer, self._hover_selected_idx,
             self._hover_upcoming_idx, self._hover_cell_idx,
+            self._hover_join_sel_idx, self._hover_join_up_idx,
         ):
             self._hover_close = close
             self._hover_tax = tax
@@ -729,6 +787,8 @@ class CalendarPanel(QWidget):
             self._hover_selected_idx = sel_idx
             self._hover_upcoming_idx = up_idx
             self._hover_cell_idx = cell_idx
+            self._hover_join_sel_idx = join_sel_idx
+            self._hover_join_up_idx = join_up_idx
             self.update()
 
         super().mouseMoveEvent(event)
@@ -758,6 +818,20 @@ class CalendarPanel(QWidget):
                 return
             if hit == "footer":
                 self.trigger_refresh()
+                event.accept()
+                return
+            if hit and hit.startswith("join_sel:"):
+                idx = int(hit.split(":", 1)[1])
+                meeting = self._cached_selected_events[idx].get("meeting")
+                if meeting:
+                    self.join_requested.emit(meeting)
+                event.accept()
+                return
+            if hit and hit.startswith("join_up:"):
+                idx = int(hit.split(":", 1)[1])
+                meeting = self._cached_upcoming[idx].get("meeting")
+                if meeting:
+                    self.join_requested.emit(meeting)
                 event.accept()
                 return
             if hit and hit.startswith("cell:"):
@@ -799,6 +873,8 @@ class CalendarPanel(QWidget):
         self._hover_cell_idx = -1
         self._hover_selected_idx = -1
         self._hover_upcoming_idx = -1
+        self._hover_join_sel_idx = -1
+        self._hover_join_up_idx = -1
         self.update()
         super().leaveEvent(event)
 
@@ -842,12 +918,29 @@ class CalendarPanel(QWidget):
         category = str(ev.get("category") or CAT_GOOGLE)
         m = _amount_match(title)
         amount = m.group(0).strip() if m else ""
+        meeting = ev.get("meeting")
+        if not meeting:
+            meeting = extract_meeting_link(ev.get("yer"), ev.get("title"), ev.get("link"), ev.get("aciklama"))
+
+        now = self._now()
+        st = ev.get("start")
+        show_join = False
+        if meeting and isinstance(st, dt.datetime):
+            local_tz = getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))
+            st_local = _event_start_local(st, local_tz)
+            if st_local and st_local.date() == self.today:
+                delta_sec = (now - st_local).total_seconds()
+                # Starts within 10 minutes before (-600s) until 60 minutes after (+3600s)
+                if -600.0 <= delta_sec <= 3600.0:
+                    show_join = True
+
         return {
             "title": title,
             "category": category,
             "start": ev.get("start"),
             "all_day": bool(ev.get("all_day", False)),
             "link": ev.get("link", ""),
+            "meeting": meeting,
             "target_date": target_date,
             "date_label": date_label,
             "amount": amount,
@@ -855,6 +948,8 @@ class CalendarPanel(QWidget):
             "strip_color": _category_color(category),
             "sub": f"{self._event_time_label(ev)} · {category}",
             "rect": QRectF(),
+            "join_rect": QRectF(),
+            "show_join": show_join,
         }
 
     def _find_tax_chip(self, events: List[Dict[str, Any]], now_local: dt.datetime) -> Optional[Dict[str, Any]]:
@@ -1061,10 +1156,25 @@ class CalendarPanel(QWidget):
         # 5. Layout + row hit rects
         self._cached_selected_header_text = self._selected_header()
         self._layout = self._compute_layout()
+        fm_join = QFontMetricsF(panel_style.font(10.5, QFont.Weight.DemiBold))
+        btn_join_w = max(46.0, fm_join.horizontalAdvance("Katıl") + 16.0)
+        btn_join_h = 20.0
         for item, rect in zip(self._cached_selected_events, self._layout["selected_rows"]):
             item["rect"] = QRectF(rect)
+            if item.get("show_join"):
+                btn_x = rect.right() - 4.0 - btn_join_w
+                btn_y = rect.center().y() - btn_join_h / 2.0
+                item["join_rect"] = QRectF(btn_x, btn_y, btn_join_w, btn_join_h)
+            else:
+                item["join_rect"] = QRectF()
         for item, rect in zip(self._cached_upcoming, self._layout["upcoming_rows"]):
             item["rect"] = QRectF(rect)
+            if item.get("show_join"):
+                btn_x = rect.right() - 4.0 - btn_join_w
+                btn_y = rect.center().y() - btn_join_h / 2.0
+                item["join_rect"] = QRectF(btn_x, btn_y, btn_join_w, btn_join_h)
+            else:
+                item["join_rect"] = QRectF()
         self._cached_selected_cards = self._cached_selected_events
 
         # 6. Month grid (6x7 cells) + month event count
@@ -1271,7 +1381,7 @@ class CalendarPanel(QWidget):
             p.restore()
             return
         for idx, item in enumerate(self._cached_selected_events):
-            self._paint_event_row(p, item["rect"], item, self._hover_selected_idx == idx)
+            self._paint_event_row(p, item["rect"], item, self._hover_selected_idx == idx, self._hover_join_sel_idx == idx)
 
     def _paint_upcoming_card(self, p: QPainter) -> None:
         rect = self._layout.get("upcoming_card")
@@ -1289,12 +1399,12 @@ class CalendarPanel(QWidget):
             p.restore()
             return
         for idx, item in enumerate(self._cached_upcoming):
-            self._paint_event_row(p, item["rect"], item, self._hover_upcoming_idx == idx)
+            self._paint_event_row(p, item["rect"], item, self._hover_upcoming_idx == idx, self._hover_join_up_idx == idx)
 
-    def _paint_event_row(self, p: QPainter, rect: QRectF, item: Dict[str, Any], hover: bool) -> None:
+    def _paint_event_row(self, p: QPainter, rect: QRectF, item: Dict[str, Any], hover: bool, join_hover: bool = False) -> None:
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        if hover:
+        if hover and not join_hover:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(255, 255, 255, 12))
             p.drawPath(panel_style.rounded(rect.adjusted(0.0, 1.0, 0.0, -1.0), 8.0))
@@ -1305,8 +1415,15 @@ class CalendarPanel(QWidget):
         p.drawPath(panel_style.rounded(
             QRectF(rect.left() + 2.0, rect.center().y() - 14.0, 3.0, 28.0), 1.5))
 
+        join_rect = item.get("join_rect")
+        has_join = bool(item.get("show_join") and join_rect and not join_rect.isEmpty())
+
         text_x = rect.left() + 12.0
-        text_w = max(10.0, rect.right() - text_x)
+        if has_join and join_rect is not None:
+            text_w = max(10.0, join_rect.left() - 8.0 - text_x)
+        else:
+            text_w = max(10.0, rect.right() - text_x)
+
         title = str(item.get("title") or "(Başlıksız)")
         amount = str(item.get("amount") or "")
 
@@ -1341,6 +1458,25 @@ class CalendarPanel(QWidget):
         p.drawText(QRectF(text_x, rect.top() + 17.0, text_w, 12.0),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                    fm_s.elidedText(str(item.get("sub") or "—"), Qt.TextElideMode.ElideRight, text_w))
+
+        if has_join and join_rect is not None:
+            p.save()
+            f_btn = panel_style.font(10.5, QFont.Weight.DemiBold)
+            p.setFont(f_btn)
+            r_pill = join_rect.height() / 2.0
+            if join_hover:
+                p.setPen(QPen(panel_style.ACCENT, 1.2))
+                p.setBrush(panel_style.ACCENT)
+                p.drawPath(panel_style.rounded(join_rect.adjusted(0.5, 0.5, -0.5, -0.5), r_pill))
+                p.setPen(QColor("#0F141C"))
+            else:
+                p.setPen(QPen(panel_style.ACCENT, 1.0))
+                p.setBrush(QColor(110, 168, 254, 40))
+                p.drawPath(panel_style.rounded(join_rect.adjusted(0.5, 0.5, -0.5, -0.5), r_pill))
+                p.setPen(panel_style.ACCENT)
+            p.drawText(join_rect, Qt.AlignmentFlag.AlignCenter, "Katıl")
+            p.restore()
+
         p.restore()
 
     def _paint_month_card(self, p: QPainter) -> None:

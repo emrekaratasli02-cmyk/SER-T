@@ -386,14 +386,17 @@ def left_text(iso: str) -> str:
         return ""
     if end.tzinfo is None:
         end = end.replace(tzinfo=dt.timezone.utc)
-    sec = max(0, (end - dt.datetime.now(dt.timezone.utc)).total_seconds())
+    diff = (end - dt.datetime.now(dt.timezone.utc)).total_seconds()
+    if diff <= 0:
+        return "sıfırlandı"
+    sec = max(0, diff)
     d, rem = divmod(int(sec), 86400)
     h, m = rem // 3600, (rem % 3600) // 60
     if d:
         return f"{d}g {h}sa"
     if h:
         return f"{h}sa {m}dk"
-    return f"{m}dk"
+    return f"{max(1, m)}dk"
 
 
 def reset_clock(iso: str) -> str:
@@ -818,6 +821,43 @@ def _parse_month_date_or_dt(val: Any) -> Tuple[Optional[Union[dt.date, dt.dateti
         return None, False
 
 
+_MEETING_HOSTS_EXACT = {
+    "zoom.us",
+    "meet.google.com",
+    "teams.microsoft.com",
+    "teams.live.com",
+    "webex.com",
+}
+_TRAILING_PUNCT = ".,;:!?)>]}\"'`"
+
+
+def extract_meeting_link(*texts: Any) -> Optional[str]:
+    """Extract first valid meeting link (Zoom, Google Meet, Teams, Webex).
+
+    Finds the first https URL whose host is zoom.us / *.zoom.us / meet.google.com /
+    teams.microsoft.com / teams.live.com / *.webex.com. Only https scheme, strips
+    trailing punctuation, never returns any other URL.
+    """
+    import re
+    import urllib.parse
+
+    for t in texts:
+        if not t or not isinstance(t, str):
+            continue
+        for m in re.finditer(r"https?://[^\s<>\"'`]+", t, re.IGNORECASE):
+            raw = m.group(0).rstrip(_TRAILING_PUNCT)
+            try:
+                p = urllib.parse.urlsplit(raw)
+            except Exception:
+                continue
+            if p.scheme.lower() != "https":
+                continue
+            h = (p.hostname or "").lower().strip().rstrip(".")
+            if h in _MEETING_HOSTS_EXACT or h.endswith(".zoom.us") or h.endswith(".webex.com"):
+                return raw
+    return None
+
+
 def fetch_month_calendar(
     path: Optional[Path] = None,
     now: Optional[dt.datetime] = None,
@@ -825,7 +865,7 @@ def fetch_month_calendar(
     """Read and parse month calendar data from ay.json.
 
     Returns:
-        {'events': [{title, start, end, all_day, link, category}],
+        {'events': [{title, start, end, all_day, link, category, meeting}],
          'updated': 'HH:MM',
          'stale': bool,
          'range': (date_from, date_to),
@@ -937,6 +977,7 @@ def fetch_month_calendar(
                     "all_day": all_day,
                     "link": str(e.get("link") or ""),
                     "category": cat,
+                    "meeting": extract_meeting_link(e.get("yer"), title_str, e.get("aciklama")),
                 })
 
         # Sort events by start date/time

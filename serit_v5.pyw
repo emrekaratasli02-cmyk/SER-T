@@ -102,6 +102,20 @@ try:
 except Exception:
     appusage = None
 
+# v27: bluetooth cihazları / güç planları / toplantı katılımı / pencere yanıp sönme (isteğe bağlı modüller)
+try:
+    import bt_devices
+except Exception:
+    bt_devices = None
+try:
+    import power_plan
+except Exception:
+    power_plan = None
+try:
+    import window_flash
+except Exception:
+    window_flash = None
+
 
 class LRUCache(collections.OrderedDict):
     """Bounded LRU cache backed by OrderedDict."""
@@ -664,6 +678,10 @@ class SeritDock(QWidget):
         self.battery_panel = battery_panel.BatteryPanel()
         self.battery_panel.toggle_requested.connect(self._on_bat_toggle_requested)
         self.battery_panel.settings_requested.connect(self._on_bat_settings_requested)
+        # v27: güç planı değiştirme sinyali
+        sig_plan = getattr(self.battery_panel, "power_plan_requested", None)
+        if sig_plan is not None:
+            sig_plan.connect(self._on_bat_power_plan_requested)
         # v22: ses ve parlaklık sürgüleri pil panelinde (kapsülde yalnız pil kaldı)
         for sig_name, slot in (
             ("volume_requested", self._on_bat_volume_requested),
@@ -689,6 +707,20 @@ class SeritDock(QWidget):
         self._launch_timer = QTimer(self)
         self._launch_timer.setInterval(60)
         self._launch_timer.timeout.connect(self._tick_launching)
+
+        # v27: Pencere yanıp sönme (turuncu dikkat bildirimi) izleyici
+        self._flash_watcher = None
+        self._flashing_hwnds: Set[int] = set()
+        self._flash_timer = QTimer(self)
+        self._flash_timer.setInterval(80)
+        self._flash_timer.timeout.connect(self._tick_flash)
+        if window_flash is not None and not self.preview_mode:
+            try:
+                self._flash_watcher = window_flash.FlashWatcher()
+                self._flash_watcher.start()
+            except Exception as exc:
+                sources.log_err("flash_watcher_start", exc)
+                self._flash_watcher = None
 
         # Tray Panel contract
         self.tray_panel = None
@@ -761,6 +793,9 @@ class SeritDock(QWidget):
             self.cal_panel = calendar_panel.CalendarPanel()
             if hasattr(self.cal_panel, "refresh_requested"):
                 self.cal_panel.refresh_requested.connect(self._on_cal_refresh_requested)
+            # v27: toplantı katılım sinyali
+            if hasattr(self.cal_panel, "join_requested"):
+                self.cal_panel.join_requested.connect(self._on_cal_join_requested)
         except (ImportError, Exception) as exc:
             sources.log_err("cal_panel_init", exc)
             self.cal_panel = None
@@ -969,7 +1004,19 @@ class SeritDock(QWidget):
     @staticmethod
     def _read_batnet() -> Dict[str, Any]:
         sup = power_net.radio_toggle_supported()
-        return {"wifi": power_net.wifi_info(), "bt": power_net.bluetooth_info(), "supported": sup}
+        out = {"wifi": power_net.wifi_info(), "bt": power_net.bluetooth_info(), "supported": sup}
+        # v27: bluetooth cihazları ve güç planları
+        if bt_devices is not None and hasattr(bt_devices, "list_bt_devices"):
+            try:
+                out["bt_devices"] = bt_devices.list_bt_devices()
+            except Exception as exc:
+                sources.log_err("bt_devices_read", exc)
+        if power_plan is not None and hasattr(power_plan, "list_plans"):
+            try:
+                out["power_plans"] = power_plan.list_plans()
+            except Exception as exc:
+                sources.log_err("power_plan_read", exc)
+        return out
 
     @staticmethod
     def _read_top_load() -> List[Dict[str, Any]]:
@@ -1038,6 +1085,10 @@ class SeritDock(QWidget):
                 panel.set_wifi(res["wifi"])
             if isinstance(res.get("bt"), dict) and (settled or not panel.is_busy("bluetooth")):
                 panel.set_bluetooth(res["bt"])
+            if "bt_devices" in res and hasattr(panel, "set_bt_devices"):
+                panel.set_bt_devices(res["bt_devices"])
+            if "power_plans" in res and hasattr(panel, "set_power_plans"):
+                panel.set_power_plans(res["power_plans"])
 
     def _on_bat_toggle_requested(self, kind: str, target_on: bool) -> None:
         """Wi-Fi/Bluetooth anahtari: ayar ve yeniden okuma arka plan iscisinde."""
@@ -1063,6 +1114,31 @@ class SeritDock(QWidget):
         def _worker() -> bool:
             return bool(power_net.open_settings(page))
         sources.submit("bat_settings", _worker)
+
+    def _on_bat_power_plan_requested(self, guid: str) -> None:
+        """Güç planı değişimi: arka plan iş parçacığında çalıştır ve listeyi tazele."""
+        def _worker() -> Dict[str, Any]:
+            if power_plan is not None and hasattr(power_plan, "set_plan"):
+                try:
+                    power_plan.set_plan(str(guid))
+                except Exception as exc:
+                    sources.log_err("power_plan_set", exc)
+            return self._read_batnet()
+        sources.submit("power_plan_set", _worker, lambda k, r: self.dispatcher.data_ready.emit("batnet", r))
+
+    def _on_cal_join_requested(self, url: str) -> None:
+        """Takvim toplantı linkine katıl: doğrulanmış linki güvenle açar."""
+        if not url or not isinstance(url, str):
+            return
+        clean_url = url.strip()
+        if not clean_url.lower().startswith("https://"):
+            return
+        try:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+            QDesktopServices.openUrl(QUrl(clean_url))
+        except Exception as exc:
+            sources.log_err("cal_join_open", exc)
 
     # ---------------------------------------------------- kapsul paneli gecisi
     def _pill_panel(self, key: str):
@@ -1287,6 +1363,13 @@ class SeritDock(QWidget):
         if self._cleaned_up:
             return
         self._cleaned_up = True
+        # v27: flash_watcher durdur
+        if getattr(self, "_flash_watcher", None) is not None:
+            try:
+                self._flash_watcher.stop()
+            except Exception:
+                pass
+            self._flash_watcher = None
         # Bekçiye "isteyerek kapandı" işareti (serit_bekci.pyw bu dosyayı görünce barı yeniden başlatmaz)
         try:
             import logpath as _logpath
@@ -1570,7 +1653,7 @@ class SeritDock(QWidget):
                 self.update(r.toRect().adjusted(-2, -2, 2, 2))
 
     def _on_media_ring_tick(self) -> None:
-        """Repaint only the media play button rect for smooth ring progression (~2 fps, near-zero CPU)."""
+        """Repaint media card rect for smooth progress ring & bottom line progression (~2 fps, near-zero CPU)."""
         if not self._now_playing_info or not self._now_playing_info.get("playing"):
             t = getattr(self, "media_ring_timer", None)
             if t is not None:
@@ -1579,11 +1662,11 @@ class SeritDock(QWidget):
         dur = self._now_playing_info.get("duration_s")
         if dur is None or float(dur) <= 0.0:
             return
-        if self._media_hit_rects and "playpause" in self._media_hit_rects:
+        if self._media_rect is not None:
+            self.update(self._media_rect.toRect().adjusted(-2, -2, 2, 2))
+        elif self._media_hit_rects and "playpause" in self._media_hit_rects:
             r_play = self._media_hit_rects["playpause"]
             self.update(r_play.toRect().adjusted(-3, -3, 3, 3))
-        elif self._media_rect is not None:
-            self.update(self._media_rect.toRect())
 
     def _poll_media_and_volume(self) -> None:
         """Poll media in background worker."""
@@ -1717,6 +1800,19 @@ class SeritDock(QWidget):
             sources.log_err(key, RuntimeError(str(res.get("err"))))
         old_val = self.store.get(key)
         self.store.update(key, res)
+
+        if hasattr(self, "popover") and self.popover and self.popover.is_open(key):
+            pop_kwargs = {}
+            if key == "wx":
+                pop_kwargs["city"] = self.settings.get("city", "Aksaray")
+            self.popover.update_data(key, res if isinstance(res, dict) else {}, **pop_kwargs)
+        elif key == "top" and hasattr(self, "popover") and self.popover and self.popover.is_open("sys"):
+            sys_data = dict(self.store.get("sys") or {})
+            if isinstance(res, dict):
+                sys_data["top"] = res.get("top") or res.get("data") or []
+            elif isinstance(res, list):
+                sys_data["top"] = res
+            self.popover.update_data("sys", sys_data)
 
         if key == "mail":
             if _is_same_data(old_val, res):
@@ -1927,6 +2023,15 @@ class SeritDock(QWidget):
             exe = t.get("exe") or t.get("path") or ""
             if exe and exe not in self._icon_cache:
                 self._icon_cache[exe] = winapi.app_icon(exe, 64)
+
+        # v27: yanıp sönen pencereleri güncelle
+        if getattr(self, "_flash_watcher", None) is not None:
+            cur_flash = self._flash_watcher.flashing_hwnds()
+            if cur_flash != self._flashing_hwnds:
+                self._flashing_hwnds = set(cur_flash)
+                if self._flashing_hwnds and not self._flash_timer.isActive():
+                    self._flash_timer.start()
+                self.update()
 
         sig = tuple(
             (
@@ -2898,6 +3003,13 @@ class SeritDock(QWidget):
         def build(pw_: float, with_shelf: bool, gap_apps: Optional[float] = None,
                   gap_sp: Optional[float] = None) -> Tuple[float, Dict[str, Optional[QRectF]]]:
             out: Dict[str, Optional[QRectF]] = {"shelf": None, "pomo": None}
+            # v27: Pomodoro yokken ataş simgesini optik olarak sol kanat (lw_end) ile uygulamalar arasına tam ortala
+            if pw_ <= 0.0 and with_shelf and gap_apps is None:
+                avail = apps_x - lw_end
+                if avail > shelf_w + 2.0 * self.V25_MIN_CLEAR:
+                    # Boşluğu iki yana eşit dağıt (tam ortalama)
+                    side_gap = (avail - shelf_w) / 2.0
+                    gap_apps = side_gap
             x = apps_x - (gap if gap_apps is None else gap_apps)
             if pw_ > 0.0:
                 x -= pw_
@@ -3276,6 +3388,7 @@ class SeritDock(QWidget):
                         dot_count=t.get("count"),
                         indicator_y=r_slot.bottom() - 4.0,
                         launch_phase=self._launch_phase(t),
+                        flash_phase=self._flash_phase(t),
                     )
 
             self._paint_v25_left(p, final_apps_x, _lw_end, is_full, intersects)
@@ -3458,15 +3571,16 @@ class SeritDock(QWidget):
 
                     pix = self.get_app_icon(t.get("exe", ""))
                     pinned.draw_tile(
-                        p=p,
-                        rect=r_draw,
-                        tile=t,
+                        p,
+                        r_draw,
+                        t,
                         pixmap=pix,
                         hover_t=hover_t,
-                        press_scale=press_scale * scale,
+                        press_scale=press_scale,
                         dot_count=t.get("count"),
                         indicator_y=r_slot.bottom() - 4.0,
                         launch_phase=self._launch_phase(t),
+                        flash_phase=self._flash_phase(t),
                     )
 
             if n_tiles > 0:
@@ -4365,6 +4479,11 @@ class SeritDock(QWidget):
 
     def handle_tile_click(self, tile: dict, rect: Optional[QRectF] = None) -> None:
         self._hide_hover_preview(force=True)
+        # v27: Tıklanan uygulamanın yanıp sönmesini yerel listeden de temizle
+        if getattr(self, "_flashing_hwnds", None):
+            hwnds = tile.get("hwnds") or []
+            for h in hwnds:
+                self._flashing_hwnds.discard(h)
         if tile.get("running"):
             hwnds = tile.get("hwnds", [])
             if not hwnds:
@@ -4430,6 +4549,25 @@ class SeritDock(QWidget):
         self.update()
         QTimer.singleShot(500, self.update_windows)
         return True
+
+    def _flash_phase(self, tile: dict) -> Optional[float]:
+        """Yanıp sönme durumundaki uygulama için nabız parlaklığı 0.20-1.0 döner."""
+        if not self._flashing_hwnds:
+            return None
+        hwnds = tile.get("hwnds") or []
+        if not any(h in self._flashing_hwnds for h in hwnds):
+            return None
+        # ~1 Hz yumuşak turuncu nefes alma (sinüs dalgası)
+        t = time.monotonic()
+        return 0.35 + 0.65 * (0.5 + 0.5 * math.sin(t * 2.0 * math.pi * 1.2))
+
+    def _tick_flash(self) -> None:
+        """Flash animasyonu için döşemeleri yeniler."""
+        if not self._flashing_hwnds and not (self._flash_watcher and self._flash_watcher.flashing_hwnds()):
+            if self._flash_timer.isActive():
+                self._flash_timer.stop()
+            return
+        self.update()
 
     def _launch_phase(self, tile: dict) -> Optional[float]:
         """Açılmakta olan (henüz penceresi gelmemiş) döşeme için nokta parlaklığı 0.30-0.95, yoksa None."""

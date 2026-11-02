@@ -316,6 +316,7 @@ def draw_tile(
     dot_count: Optional[int] = None,
     indicator_y: Optional[float] = None,
     launch_phase: Optional[float] = None,
+    flash_phase: Optional[float] = None,
 ) -> None:
     """Draw a 44x46 cell application tile with crisp 32x32 icon and running dot.
 
@@ -333,8 +334,15 @@ def draw_tile(
     cx = rect.center().x()
     cy = rect.center().y()
 
-    # Draw rounded tile hover fill
-    if eff_hover > 0.0:
+    # Draw rounded tile hover fill or orange attention flash
+    if flash_phase is not None and flash_phase > 0.0:
+        # Turuncu dikkat parlaması (RGBA 255, 140, 0)
+        flash_alpha = int(255 * 0.35 * max(0.0, min(1.0, flash_phase)))
+        tile_path = theme.rounded_path(rect, TILE_RADIUS)
+        p.fillPath(tile_path, QColor(255, 140, 0, flash_alpha))
+        p.setPen(QPen(QColor(255, 160, 20, int(255 * 0.70 * flash_phase)), 1.2))
+        p.drawPath(tile_path)
+    elif eff_hover > 0.0:
         hover_bg = QColor(255, 255, 255, int(255 * 0.09 * eff_hover))
         tile_path = theme.rounded_path(rect, TILE_RADIUS)
         p.fillPath(tile_path, hover_bg)

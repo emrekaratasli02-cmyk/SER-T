@@ -16,6 +16,7 @@ import datetime as dt
 import math
 from pathlib import Path
 import re
+import time
 from typing import Any, Dict, Optional, Tuple
 
 from PySide6.QtCore import QByteArray, QPointF, QRectF, Qt
@@ -223,8 +224,8 @@ def format_reset_display(
         if target_dt.tzinfo is None:
             target_dt = target_dt.replace(tzinfo=dt.timezone.utc)
         diff_sec = (target_dt - now_utc).total_seconds()
-        if diff_sec < 0:
-            diff_sec = 0.0
+        if diff_sec <= 0:
+            return "yenilendi"
         if diff_sec < 86400.0:  # less than 24h away
             sec = int(round(diff_sec))
             h, rem = divmod(sec, 3600)
@@ -234,7 +235,7 @@ def format_reset_display(
             elif h > 0:
                 return f"{h} sa"
             else:
-                return f"{m} dk"
+                return f"{max(1, m)} dk"
         else:
             tz_tr = getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))
             # Anthropic sıfırlamayı 05:59:59.79 UTC verir: yalnızca 59. saniyedeki değerler yukarı
@@ -628,6 +629,105 @@ def draw_equalizer_tile(p: QPainter, rect: QRectF, playing: bool = True) -> None
     p.restore()
 
 
+def fmt_media_time(seconds: Any) -> str:
+    """Format seconds into 'm:ss' or 'h:mm:ss'. Returns '--:--' if None, NaN or invalid."""
+    if seconds is None:
+        return "--:--"
+    try:
+        val = float(seconds)
+    except (TypeError, ValueError):
+        return "--:--"
+    if math.isnan(val) or math.isinf(val):
+        return "--:--"
+    s = max(0, int(val))
+    h = s // 3600
+    m = (s % 3600) // 60
+    sec = s % 60
+    if h > 0:
+        return f"{h}:{m:02d}:{sec:02d}"
+    return f"{m}:{sec:02d}"
+
+
+def media_progress_fraction(
+    media_info: Dict[str, Any],
+    now_monotonic: Optional[float] = None,
+) -> Optional[float]:
+    """Calculate normalized media playback progress fraction [0.0, 1.0].
+
+    Returns None if duration is unknown, non-positive, or invalid.
+    Interpolates position when playing and updated_at timestamp is present.
+    """
+    if not isinstance(media_info, dict):
+        return None
+    dur_raw = media_info.get("duration_s")
+    if dur_raw is None:
+        return None
+    try:
+        dur = float(dur_raw)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(dur) or math.isinf(dur) or dur <= 0.0:
+        return None
+
+    pos_raw = media_info.get("position_s")
+    try:
+        pos = float(pos_raw) if pos_raw is not None else 0.0
+        if math.isnan(pos) or math.isinf(pos):
+            pos = 0.0
+    except (TypeError, ValueError):
+        pos = 0.0
+
+    playing = bool(media_info.get("playing", True))
+    if playing and media_info.get("updated_at") is not None:
+        try:
+            upd = float(media_info["updated_at"])
+            now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+            elapsed = max(0.0, now - upd)
+            pos += elapsed
+        except Exception:
+            pass
+
+    return max(0.0, min(1.0, pos / dur))
+
+
+def media_current_position(
+    media_info: Dict[str, Any],
+    now_monotonic: Optional[float] = None,
+) -> Optional[float]:
+    """Returns interpolated current playback position in seconds, or None if unknown."""
+    if not isinstance(media_info, dict):
+        return None
+    pos_raw = media_info.get("position_s")
+    if pos_raw is None:
+        return None
+    try:
+        pos = float(pos_raw)
+        if math.isnan(pos) or math.isinf(pos):
+            return None
+    except (TypeError, ValueError):
+        return None
+
+    playing = bool(media_info.get("playing", True))
+    if playing and media_info.get("updated_at") is not None:
+        try:
+            upd = float(media_info["updated_at"])
+            now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+            pos += max(0.0, now - upd)
+        except Exception:
+            pass
+
+    dur_raw = media_info.get("duration_s")
+    if dur_raw is not None:
+        try:
+            dur = float(dur_raw)
+            if not (math.isnan(dur) or math.isinf(dur)) and dur > 0.0:
+                pos = min(dur, pos)
+        except (TypeError, ValueError):
+            pass
+
+    return max(0.0, pos)
+
+
 def draw_media_card(
     p: QPainter,
     rect: QRectF,
@@ -655,13 +755,22 @@ def draw_media_card(
     ctrl_x = rect.right() - 96.0 - 10.0
     bw = max(20.0, ctrl_x - 8.0 - bx)
 
+    progress_frac = media_progress_fraction(media_info)
+
     title = str(media_info.get("title") or "Bilinmeyen Başlık")
-    app_name = str(media_info.get("app") or "Medya")
-    artist = str(media_info.get("artist") or "web yayını")
-    sub = f"{app_name} · {artist}"
+    tabular_sub = False
+    if hover and hovered_control is None:
+        cur_pos = media_current_position(media_info)
+        dur_s = media_info.get("duration_s")
+        sub = f"{fmt_media_time(cur_pos)} / {fmt_media_time(dur_s)}"
+        tabular_sub = True
+    else:
+        app_name = str(media_info.get("app") or "Medya")
+        artist = str(media_info.get("artist") or "web yayını")
+        sub = f"{app_name} · {artist}"
 
     f_lbl = theme.make_font(13.0, QFont.Weight.DemiBold)
-    f_sub = theme.make_font(11.0, QFont.Weight.Normal)
+    f_sub = theme.make_font(11.0, QFont.Weight.Normal, tabular=tabular_sub)
 
     fm_l = _get_fm(f_lbl)
     fm_s = _get_fm(f_sub)
@@ -724,22 +833,6 @@ def draw_media_card(
     ring_rect = QRectF(pcx - ring_radius, pcy - ring_radius, ring_radius * 2.0, ring_radius * 2.0)
     p.drawEllipse(ring_rect)
 
-    pos_s = media_info.get("position_s")
-    dur_s = media_info.get("duration_s")
-    progress_frac: Optional[float] = None
-    if dur_s is not None and float(dur_s) > 0.0:
-        d_val = float(dur_s)
-        p_val = float(pos_s) if pos_s is not None else 0.0
-        # Interpolate if playing and updated_at available
-        if playing and "updated_at" in media_info and media_info["updated_at"]:
-            try:
-                import time
-                elapsed = max(0.0, time.monotonic() - float(media_info["updated_at"]))
-                p_val += elapsed
-            except Exception:
-                pass
-        progress_frac = max(0.0, min(1.0, p_val / d_val))
-
     if progress_frac is not None and progress_frac > 0.0:
         p.setPen(_PEN_ARC_ACCENT)
         start_angle = 90 * 16
@@ -773,6 +866,21 @@ def draw_media_card(
     p.setBrush(next_col)
     p.drawPath(_PATH_MEDIA_NEXT)
     p.restore()
+
+    # 4. Bottom progress line (inset 6px, 4px above card bottom, 2px stroke, only when duration_s > 0)
+    if progress_frac is not None:
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        lx1 = rect.x() + 6.0
+        lx2 = rect.right() - 6.0
+        ly = rect.bottom() - 4.0
+        p.setPen(_PEN_BAR_TRACK_2)
+        p.drawLine(QPointF(lx1, ly), QPointF(lx2, ly))
+        if progress_frac > 0.0:
+            p.setPen(_PEN_ARC_ACCENT)
+            fill_x2 = lx1 + (lx2 - lx1) * progress_frac
+            p.drawLine(QPointF(lx1, ly), QPointF(fill_x2, ly))
+        p.restore()
 
     return {"prev": r_prev, "playpause": r_play, "next": r_next}
 

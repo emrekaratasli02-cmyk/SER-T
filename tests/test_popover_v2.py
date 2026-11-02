@@ -195,6 +195,17 @@ def test_refresh_button_and_callbacks():
     assert refreshed_kinds[0] == "claude"
     assert popover._refresh_spinning is True
 
+    # Test update_data updates the open popover in-place
+    updated = popover.update_data("claude", {"session": 42.0, "week": 15.0, "plan": "Pro"})
+    assert updated is True
+    assert popover._content["session"] == 42.0
+    assert popover._content["week"] == 15.0
+    assert popover._content["plan"] == "Pro"
+
+    # Mismatched kind returns False and does not change content
+    assert popover.update_data("sys", {"cpu": 99.0}) is False
+    assert popover._content["session"] == 42.0
+
     print("✓ Refresh button and callback test passed.")
 
 
