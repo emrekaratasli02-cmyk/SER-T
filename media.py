@@ -615,6 +615,54 @@ def _now_playing_winrt() -> Optional[Dict[str, object]]:
     return val  # type: ignore[return-value]
 
 
+def media_seek_to_fraction(fraction: float) -> bool:
+    """Belirtilen kesre (0.0 - 1.0) göre medya oynatma pozisyonunu ayarlar."""
+    try:
+        from logpath import is_running_under_test
+        if is_running_under_test() and os.environ.get("SERIT_ALLOW_REAL_AUDIO") != "1":
+            return False
+    except Exception:
+        pass
+    _ensure_com_initialized()
+    if not (_HAS_WINRT and _WinrtMediaManager is not None):
+        return False
+
+    frac = max(0.0, min(1.0, float(fraction)))
+
+    async def _do() -> bool:
+        global _cached_winrt_mgr
+        mgr = _cached_winrt_mgr
+        if mgr is None:
+            assert _WinrtMediaManager is not None
+            mgr = await _WinrtMediaManager.request_async()
+            _cached_winrt_mgr = mgr
+        s = mgr.get_current_session()
+        if s is None:
+            return False
+        tl = s.get_timeline_properties()
+        if tl is None:
+            return False
+        # Süre kontrolü
+        end_time = getattr(tl, "end_time", None)
+        start_time = getattr(tl, "start_time", None)
+        if end_time is None:
+            return False
+        # WinRT TimeSpan veya timedelta
+        dur_ns = int(getattr(end_time, "duration", 0) or getattr(end_time, "total_seconds", lambda: 0)() * 10_000_000)
+        start_ns = int(getattr(start_time, "duration", 0) or getattr(start_time, "total_seconds", lambda: 0)() * 10_000_000)
+        total_span = dur_ns - start_ns
+        if total_span <= 0:
+            return False
+        target_100ns = int(start_ns + total_span * frac)
+        fn = getattr(s, "try_change_playback_position_async", None)
+        if fn is None:
+            return False
+        return bool(await fn(target_100ns))
+
+    ok, val = _run_on_loop(_do, 1.5)
+    return bool(ok and val)
+
+
 def media_control(action: str) -> bool:
     """Oynat/duraklat/ileri/geri: önce Windows medya oturumuna doğrudan komut, olmazsa medya tuşu."""
     try:

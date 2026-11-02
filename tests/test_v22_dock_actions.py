@@ -62,8 +62,10 @@ def test_app_menu_end_task_only_for_running() -> None:
     running = {"exe": r"C:\Apps\Chrome\chrome.exe", "name": "Chrome", "pinned": True, "running": True, "hwnds": [1, 2]}
     acts = d.build_app_tile_menu_actions(running)
     ids = [a.get("id") for a in acts if a.get("type") != "separator"]
-    # v24: pencereleri kapat eklendi (exe diskte yoksa "Yeni pencere" çıkmaz)
-    assert ids == ["unpin", "close_all", "end_task"], ids
+    # v27: chrome_new_incognito jump list eklendi
+    assert "chrome_new_incognito" in ids
+    assert "close_all" in ids
+    assert "end_task" in ids
     assert [a for a in acts if a.get("id") == "close_all"][0]["text"] == "Tüm pencereleri kapat (2)"
     end = [a for a in acts if a.get("id") == "end_task"][0]
     assert end["text"] == "Görevi sonlandır" and end["danger"] and end["confirm"]

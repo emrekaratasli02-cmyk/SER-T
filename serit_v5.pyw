@@ -3389,6 +3389,7 @@ class SeritDock(QWidget):
                         indicator_y=r_slot.bottom() - 4.0,
                         launch_phase=self._launch_phase(t),
                         flash_phase=self._flash_phase(t),
+                        badge=self._tile_badge(t),
                     )
 
             self._paint_v25_left(p, final_apps_x, _lw_end, is_full, intersects)
@@ -3581,6 +3582,7 @@ class SeritDock(QWidget):
                         indicator_y=r_slot.bottom() - 4.0,
                         launch_phase=self._launch_phase(t),
                         flash_phase=self._flash_phase(t),
+                        badge=self._tile_badge(t),
                     )
 
             if n_tiles > 0:
@@ -3837,7 +3839,7 @@ class SeritDock(QWidget):
                     self.pomo_timer.adjust(5 if event.angleDelta().y() > 0 else -5)
                 event.accept()
                 return
-            if key == "vol" and r.contains(pos):
+            elif key == "media" and r.contains(pos):
                 diff = 2.0 if event.angleDelta().y() > 0 else -2.0
                 new_val = max(0.0, min(100.0, self._vol_level + diff))
                 self._vol_level = new_val
@@ -3846,7 +3848,8 @@ class SeritDock(QWidget):
                 self.update()
                 if not self.preview_mode:
                     self._vol_coalescer.request(new_val, force=False)
-                break
+                event.accept()
+                return
             elif key == "bright" and r.contains(pos):
                 diff = 5 if event.angleDelta().y() > 0 else -5
                 monitors = self._get_store_monitors()
@@ -3914,6 +3917,19 @@ class SeritDock(QWidget):
                         lambda a=action: media.media_control(a),
                         on_done=lambda: QTimer.singleShot(350, lambda: self.submit_fetch("media")),
                     )
+                else:
+                    # Butonların dışına tıklandı -> İlerleme çizgisine göre sarma (Seek) kontrolü
+                    m_rect = getattr(self, "_media_rect", None) or rect
+                    # Kartın alt 8 piksellik çizgisine tıklandıysa veya orta alana tıklandıysa
+                    if m_rect and m_rect.width() > 0:
+                        dur = (self._now_playing_info or {}).get("duration_s")
+                        if dur and float(dur) > 0.0:
+                            frac = max(0.0, min(1.0, (pos.x() - m_rect.left()) / m_rect.width()))
+                            self.submit_action(
+                                "media_seek",
+                                lambda f=frac: media.media_seek_to_fraction(f),
+                                on_done=lambda: QTimer.singleShot(300, lambda: self.submit_fetch("media")),
+                            )
         elif key == "tray":
             if self.preview_mode:
                 pass
@@ -4550,6 +4566,30 @@ class SeritDock(QWidget):
         QTimer.singleShot(500, self.update_windows)
         return True
 
+    def _tile_badge(self, tile: dict) -> Optional[str]:
+        """Uygulama pencerelerinin başlığından (Gelen Kutusu (5), [3] vb.) okunmamış rozetini çıkarır."""
+        raw_wins = getattr(self, "_raw_windows", None) or []
+        hwnds = set(tile.get("hwnds") or [])
+        if not hwnds:
+            return None
+        import re
+        total_count = 0
+        found = False
+        for w in raw_wins:
+            if w.get("hwnd") in hwnds:
+                title = str(w.get("title") or "")
+                # (3), [5], (9+) gibi kalıplar
+                m = re.search(r'[\(\[](\d{1,3})[\)\]]', title)
+                if m:
+                    try:
+                        total_count += int(m.group(1))
+                        found = True
+                    except Exception:
+                        pass
+        if found and total_count > 0:
+            return "99+" if total_count > 99 else str(total_count)
+        return None
+
     def _flash_phase(self, tile: dict) -> Optional[float]:
         """Yanıp sönme durumundaki uygulama için nabız parlaklığı 0.20-1.0 döner."""
         if not self._flashing_hwnds:
@@ -4740,6 +4780,38 @@ class SeritDock(QWidget):
             actions = [{"id": "pin", "text": "Sabitle", "callback": do_pin}]
 
         exe = str(extra.get("exe") or "")
+        name = str(extra.get("name") or "").lower()
+
+        # v27: Uygulama özel görevleri (Jump List / Görevler)
+        tasks: List[Dict[str, Any]] = []
+        if "chrome" in exe.lower() or "chrome" in name:
+            tasks.append({
+                "id": "chrome_new_incognito",
+                "text": "Yeni gizli pencere",
+                "icon": "open",
+                "callback": lambda: pinned.launch(str(extra.get("path") or exe), ["--incognito"])
+            })
+        elif "code" in exe.lower() or "code" in name:
+            tasks.append({
+                "id": "code_new_window",
+                "text": "Yeni boş pencere",
+                "icon": "open",
+                "callback": lambda: pinned.launch(str(extra.get("path") or exe), ["-n"])
+            })
+        elif "explorer" in exe.lower() or "gezgin" in name:
+            # Gezgin için hızlı klasörler
+            user_prof = os.environ.get("USERPROFILE", "")
+            dl_dir = os.path.join(user_prof, "Downloads")
+            tasks.append({
+                "id": "open_downloads",
+                "text": "İndirilenler",
+                "icon": "open",
+                "callback": lambda: os.startfile(dl_dir) if os.path.exists(dl_dir) else None
+            })
+
+        if tasks:
+            actions = tasks + [{"type": "separator"}] + actions
+
         if extra.get("running") and exe:
             def do_end_task():
                 self.end_app_task(extra)

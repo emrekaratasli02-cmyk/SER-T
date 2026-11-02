@@ -317,6 +317,7 @@ def draw_tile(
     indicator_y: Optional[float] = None,
     launch_phase: Optional[float] = None,
     flash_phase: Optional[float] = None,
+    badge: Optional[Union[str, int]] = None,
 ) -> None:
     """Draw a 44x46 cell application tile with crisp 32x32 icon and running dot.
 
@@ -381,6 +382,30 @@ def draw_tile(
         p.drawText(icon_rect, Qt.AlignCenter, name_str[:1].upper())
 
     p.restore()
+
+    # 4.5. Notification Badge (sağ üst köşe kırmızı/turuncu şık rozet)
+    if badge is not None and str(badge).strip():
+        badge_str = str(badge).strip()
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.TextAntialiasing)
+        f_b = theme.make_font(8.5, QFont.Weight.Bold, tabular=True)
+        p.setFont(f_b)
+        fm_b = QFontMetricsF(f_b)
+        txt_w = fm_b.horizontalAdvance(badge_str)
+        bw = max(15.0, txt_w + 7.0)
+        bh = 14.0
+        bx = icon_rect.right() - bw + 4.0
+        by = icon_rect.top() - 3.0
+        badge_box = QRectF(bx, by, bw, bh)
+        b_path = theme.rounded_path(badge_box, bh / 2.0)
+        # Kırmızı-mercan Apple tarzı bildirim rozeti
+        p.fillPath(b_path, QColor(255, 59, 48))
+        p.setPen(QPen(QColor(255, 255, 255, 220), 0.8))
+        p.drawPath(b_path)
+        p.setPen(QColor(255, 255, 255))
+        p.drawText(badge_box, Qt.AlignCenter, badge_str)
+        p.restore()
 
     # 5. Indicators under the tile (centred 2px from cell bottom: y = rect.bottom() - 2.0 - 2.0 = rect.bottom() - 4.0)
     ind_y = indicator_y if indicator_y is not None else (rect.bottom() - 4.0)
