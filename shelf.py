@@ -451,14 +451,19 @@ def draw_shelf_icon(p: QPainter, rect: QRectF, state: str, count: int, hover: bo
         glyph = QColor(255, 255, 255)
     else:
         if hover:
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(255, 255, 255, 13))
-            p.drawRoundedRect(box, 8.0, 8.0)
+            p.setPen(QPen(QColor(255, 255, 255, 28), 0.9))
+            p.setBrush(QColor(255, 255, 255, 16))
+            p.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), 8.0, 8.0)
         elif pulse > 0.0:
             p.setPen(QPen(QColor(110, 168, 254, int(130 * pulse)), 1.0))
             p.setBrush(QColor(110, 168, 254, int(25 * pulse)))
             p.drawRoundedRect(box, 8.0, 8.0)
-        glyph = QColor(255, 255, 255, 217 if (hover or pulse > 0.0) else 140)      # .55 (hover .85)
+        else:
+            # v28: Gömme yuva (Recessed Well) — fiziksel buton derinliği ve ince kenar
+            p.setPen(QPen(QColor(255, 255, 255, 16), 0.8))
+            p.setBrush(QColor(255, 255, 255, 8))
+            p.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), 8.0, 8.0)
+        glyph = QColor(255, 255, 255, 217 if (hover or pulse > 0.0) else 150)      # .59 (hover .85)
     icon_sz = 26.0
     pm = _svg_pixmap("clip", glyph, icon_sz, _device_dpr(p))
     p.drawPixmap(QPointF(box.center().x() - icon_sz / 2.0, box.center().y() - icon_sz / 2.0), pm)

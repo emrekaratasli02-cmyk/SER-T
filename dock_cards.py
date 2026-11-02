@@ -605,27 +605,48 @@ def draw_claude_card(
 # 2. MEDIA CARD
 # ==============================================================================
 
-def draw_equalizer_tile(p: QPainter, rect: QRectF, playing: bool = True) -> None:
-    """40x40 tile pink-to-purple gradient with 5 white rounded equalizer bars."""
+def draw_equalizer_tile(
+    p: QPainter,
+    rect: QRectF,
+    playing: bool = True,
+    phase: Optional[float] = None,
+) -> None:
+    """40x40 recessed well tile with 5 symmetric Dynamic Edge equalizer bars."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
     tile_path = theme.rounded_path(rect, 10.0)
 
     grad = _get_equalizer_grad(rect)
     p.fillPath(tile_path, QBrush(grad))
+    # Gömme yuva (Recessed Well) ince iç kenarlık
+    p.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
+    p.setBrush(Qt.NoBrush)
+    p.drawPath(theme.rounded_path(rect.adjusted(0.5, 0.5, -0.5, -0.5), 9.5))
 
-    # 5 white equalizer bars: static heights 10, 18, 13, 20, 9
-    # Width 3px, gap 2.4px (margin 1.2px)
-    # Total width = 5 * 3 + 4 * 2.4 = 15 + 9.6 = 24.6px
+    # 5 symmetric equalizer bars: Dynamic Edge style [25%, 65%, 100%, 65%, 25%]
     bar_w = 3.0
     bar_gap = 2.4
-    heights = (10.0, 18.0, 13.0, 20.0, 9.0)
+    if not playing:
+        heights = (3.5, 3.5, 3.5, 3.5, 3.5)
+        bar_col = QColor(255, 255, 255, 130)
+    else:
+        t = time.monotonic() if phase is None else float(phase)
+        # Simetrik canlı salınım (merkez bar en yüksek, yanlar simetrik eşlenik)
+        w0 = 0.5 + 0.5 * math.sin(t * 3.2)
+        w1 = 0.5 + 0.5 * math.sin(t * 4.1 + 1.1)
+        w2 = 0.5 + 0.5 * math.sin(t * 5.0 + 2.2)
+        h_outer = 6.0 + 4.5 * w0
+        h_mid = 12.0 + 6.5 * w1
+        h_center = 16.0 + 6.0 * w2
+        heights = (h_outer, h_mid, h_center, h_mid, h_outer)
+        bar_col = QColor(255, 255, 255, 245)
+
     total_w = len(heights) * bar_w + (len(heights) - 1) * bar_gap
     start_x = rect.x() + (rect.width() - total_w) / 2.0
     cy = rect.center().y()
 
     p.setPen(Qt.NoPen)
-    p.setBrush(Qt.white)
+    p.setBrush(bar_col)
     for i, bh in enumerate(heights):
         bx = start_x + i * (bar_w + bar_gap)
         by = cy - bh / 2.0
@@ -2037,18 +2058,37 @@ def draw_battery_pill(
     dpr = _device_ratio(p)
 
     if on_ac_full and not hovered and not active:
-        # Estetik: yeşil yalnız fiş simgesinde; yazı sakin ikincil beyaz (bantta en yüksek sesli öğe olmasın).
+        # v28: Hibrit Radyal Şarj & Güç Halkası (zümrüt yeşili yay + merkezde şimşek glifi)
+        ring_sz = 20.0
+        gap = 6.0
         f = theme.make_font(12.0, QFont.Weight.Medium)
         fm = _get_fm(f)
-        txt, gap = "Prizde", 6.0
-        x = rect.center().x() - (PLUG_GLYPH_W + gap + _text_width(fm, txt)) / 2.0
+        txt = "Prizde"
+        tot_w = ring_sz + gap + _text_width(fm, txt)
+        x = rect.center().x() - tot_w / 2.0
         cy = rect.center().y()
         green = QColor(panel_style.OK)
-        _paint_plug(p, x, cy, green, dpr)
         p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r_ring = QRectF(x, cy - ring_sz / 2.0, ring_sz, ring_sz)
+        # Sönük arka iz + canlı yeşil yay
+        track_col = QColor(green)
+        track_col.setAlpha(45)
+        p.setPen(QPen(track_col, 2.0))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(r_ring)
+        lvl = 100.0 if percent is None else max(0.0, min(100.0, float(percent)))
+        p.setPen(QPen(green, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawArc(r_ring, 90 * 16, -int(round((lvl / 100.0) * 360 * 16)))
+        # Merkezde keskin neon şimşek glifi
+        bolt = _get_bolt_path(r_ring.center().x(), r_ring.center().y(), 7.0, 11.0)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(green)
+        p.drawPath(bolt)
+        # Yanında sakin "Prizde" etiketi
         p.setFont(f)
         p.setPen(QColor(255, 255, 255, int(255 * 0.78)))
-        p.drawText(QPointF(x + PLUG_GLYPH_W + gap, cy + fm.capHeight() / 2.0), txt)
+        p.drawText(QPointF(x + ring_sz + gap, cy + fm.capHeight() / 2.0), txt)
         p.restore()
         return QRectF(rect)
 
@@ -2064,15 +2104,36 @@ def draw_battery_pill(
     fm = _get_fm(f)
     txt = "—" if percent is None else f"%{int(round(max(0.0, min(100.0, float(percent)))))}"
     gap = 6.0
-    glyph_w = BATTERY_GLYPH_W + 3.0
-    content_w = glyph_w + gap + _text_width(fm, txt)
+    ring_sz = 20.0
+    content_w = ring_sz + gap + _text_width(fm, txt)
     x = rect.center().x() - content_w / 2.0
-    outline = QColor(col)
-    outline.setAlpha(150)
-    gw = _paint_round_battery(p, x, rect.center().y(), percent, charging, col, outline, dpr)
+    cy = rect.center().y()
+    r_ring = QRectF(x, cy - ring_sz / 2.0, ring_sz, ring_sz)
+
+    # v28: Hibrit Radyal Pil & Güç Halkası (tüm durumlarda: şarjda, prizde veya pildeyken)
+    track_col = QColor(col)
+    track_col.setAlpha(45)
+    p.setPen(QPen(track_col, 2.0))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawEllipse(r_ring)
+    if percent is not None:
+        lvl = max(0.0, min(100.0, float(percent)))
+        if lvl > 0.0:
+            p.setPen(QPen(col, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(r_ring, 90 * 16, -int(round((lvl / 100.0) * 360 * 16)))
+
+    # Merkezde keskin şimşek glifi (şarjda canlı yeşil, pildeyken hafif ikincil)
+    bolt = _get_bolt_path(r_ring.center().x(), r_ring.center().y(), 7.0, 11.0)
+    p.setPen(Qt.PenStyle.NoPen)
+    bolt_col = QColor(col)
+    if not charging:
+        bolt_col.setAlpha(185)
+    p.setBrush(bolt_col)
+    p.drawPath(bolt)
+
     p.setFont(f)
     p.setPen(col)
-    tx = x + gw + gap
+    tx = x + ring_sz + gap
     p.drawText(QRectF(tx, rect.top(), max(0.0, rect.right() - tx - 1.0), rect.height()),
                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, txt)
     p.restore()

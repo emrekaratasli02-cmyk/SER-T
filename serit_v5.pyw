@@ -1709,9 +1709,6 @@ class SeritDock(QWidget):
             if t is not None:
                 t.stop()  # çalma başlayınca medya verisi yeniden başlatır
             return
-        dur = self._now_playing_info.get("duration_s")
-        if dur is None or float(dur) <= 0.0:
-            return
         if self._media_rect is not None:
             self.update(self._media_rect.toRect().adjusted(-2, -2, 2, 2))
         elif self._media_hit_rects and "playpause" in self._media_hit_rects:

@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QDesktopServices,
     QFont,
     QFontMetricsF,
+    QLinearGradient,
     QPainter,
     QPen,
     QPixmap,
@@ -335,7 +336,10 @@ def draw_tile(
     cx = rect.center().x()
     cy = rect.center().y()
 
-    # Draw rounded tile hover fill or orange attention flash
+    is_running = bool(tile.get("running", False)) or (dot_count is not None and dot_count > 0)
+    is_active = bool(tile.get("active", False))
+
+    # Draw rounded tile hover fill, active recessed well, or orange attention flash
     if flash_phase is not None and flash_phase > 0.0:
         # Turuncu dikkat parlaması (RGBA 255, 140, 0)
         flash_alpha = int(255 * 0.35 * max(0.0, min(1.0, flash_phase)))
@@ -343,10 +347,27 @@ def draw_tile(
         p.fillPath(tile_path, QColor(255, 140, 0, flash_alpha))
         p.setPen(QPen(QColor(255, 160, 20, int(255 * 0.70 * flash_phase)), 1.2))
         p.drawPath(tile_path)
+    elif is_active:
+        # v28: Aktif pencere için belirgin cam kapsül + 1px specular kenarlık (Threads / ExtraDock vurgusu)
+        tile_path = theme.rounded_path(rect, TILE_RADIUS)
+        act_grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        act_grad.setColorAt(0.0, QColor(255, 255, 255, int(255 * (0.16 + 0.04 * eff_hover))))
+        act_grad.setColorAt(1.0, QColor(255, 255, 255, int(255 * (0.09 + 0.03 * eff_hover))))
+        p.fillPath(tile_path, act_grad)
+        p.setPen(QPen(QColor(255, 255, 255, 42), 1.0))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(theme.rounded_path(rect.adjusted(0.5, 0.5, -0.5, -0.5), TILE_RADIUS - 0.5))
     elif eff_hover > 0.0:
         hover_bg = QColor(255, 255, 255, int(255 * 0.09 * eff_hover))
         tile_path = theme.rounded_path(rect, TILE_RADIUS)
         p.fillPath(tile_path, hover_bg)
+    elif is_running:
+        # Açık ama arka plandaki uygulama: hafif gömme yuva (Recessed Well)
+        well_path = theme.rounded_path(rect, TILE_RADIUS)
+        p.fillPath(well_path, QColor(255, 255, 255, 8))
+        p.setPen(QPen(QColor(255, 255, 255, 16), 0.8))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(theme.rounded_path(rect.adjusted(0.5, 0.5, -0.5, -0.5), TILE_RADIUS - 0.5))
 
     # Draw icon with lift and scale
     p.save()
