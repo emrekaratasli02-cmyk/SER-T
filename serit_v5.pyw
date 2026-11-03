@@ -3450,7 +3450,10 @@ class SeritDock(QWidget):
             leftmost_x = x
             div_cy = CARD_Y + CARD_HEIGHT / 2.0
             div_x = leftmost_x - (self.V25_RIGHT_GAP / 2.0)
-            dock_cards.draw_card_divider(p, div_x, div_cy)
+            p.save()
+            p.setRenderHint(QPainter.Antialiasing, False)
+            p.fillRect(QRectF(round(div_x), round(div_cy - dock_cards.CARD_DIVIDER_H / 2.0), 1.0, dock_cards.CARD_DIVIDER_H), QColor(255, 255, 255, 60))
+            p.restore()
 
     def _left_open_sig(self) -> Tuple[bool, bool, bool, bool]:
         """Sol kanat kartlarının paneli açık mı: (Claude, Mail, Antigravity, Sistem)."""
