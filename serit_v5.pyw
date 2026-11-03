@@ -5019,7 +5019,8 @@ class SeritDock(QWidget):
     def _launch_tile(self, tile: dict, path: str, rect: Optional[QRectF] = None) -> bool:
         """Uygulamayı açar; açılırken ikon soluk + nabız noktası, açılamazsa ikonun üstünde 4 sn balon."""
         name = str(tile.get("name") or Path(path).stem or "Uygulama")
-        if not Path(path).exists():
+        is_uwp = "windowsapps" in path.lower() or path.lower().startswith("shell:appsfolder") or "whatsapp" in path.lower()
+        if not is_uwp and not Path(path).exists():
             self._show_fail_bubble(rect, f"{name} açılamadı · dosya bulunamadı")
             sources.log_err("launch", FileNotFoundError(Path(path).name))
             return False
