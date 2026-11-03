@@ -3450,7 +3450,7 @@ class SeritDock(QWidget):
             leftmost_x = x
             div_cy = CARD_Y + CARD_HEIGHT / 2.0
             div_x = leftmost_x - (self.V25_RIGHT_GAP / 2.0)
-            self._draw_divider(p, div_x, div_cy, intersects)
+            dock_cards.draw_card_divider(p, div_x, div_cy)
 
     def _left_open_sig(self) -> Tuple[bool, bool, bool, bool]:
         """Sol kanat kartlarının paneli açık mı: (Claude, Mail, Antigravity, Sistem)."""
