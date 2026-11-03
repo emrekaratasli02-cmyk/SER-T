@@ -3783,8 +3783,12 @@ class SeritDock(QWidget):
             if _use_A and (has_media or show_cal):  # A: sağ kanat | sağ küme ayracı
                 _last_r = r_cal if show_cal else r_media
                 _inset = self._CONTENT_INSET["cal" if show_cal else "media"][1]
-                self._draw_divider(p, ((_last_r.right() - _inset) + (actions_left_x + 9.0)) / 2.0,
-                                   div_cy, intersects)
+                right_cluster_left = actions_left_x - self._v25_right_width()
+                div_x = ((_last_r.right() - _inset) + right_cluster_left) / 2.0
+                # Sağ küme (ağ hızı/güncellemeler) yokken eski actions_x referansına düş
+                if self._v25_right_width() <= 0.0:
+                    div_x = ((_last_r.right() - _inset) + (actions_left_x + 9.0)) / 2.0
+                self._draw_divider(p, div_x, div_cy, intersects)
 
             # Right end: Clock V1 at the far right edge, Action buttons to its left
             # Right edge padding: 14.0px (matching action buttons padding previously and left edge balance)
