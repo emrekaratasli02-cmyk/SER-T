@@ -3738,6 +3738,9 @@ class SeritDock(QWidget):
             cur_rw_x = final_apps_x + w_apps + (GAP_MODULE if (w_apps > 0) else 0.0)
             if _use_A and has_media and not media_icon_only:
                 cur_rw_x = _media_right - media_w
+            elif _use_A and has_media and media_icon_only and show_cal:
+                # v31: Medya 52px kompakt simge iken takvim kartı sağ kümenin soluna yaslanır
+                cur_rw_x = actions_left_x - 16.0 - cal_w - GAP_MODULE - media_w
             elif _use_A and not has_media and show_cal:
                 cur_rw_x = actions_left_x - 16.0 - cal_w
             if has_media:
@@ -3777,7 +3780,7 @@ class SeritDock(QWidget):
                     dock_cards.draw_calendar_card(p, r_cal, cal_data, hover=cal_hover, press_scale=cal_press)
                 cur_rw_x += cal_w + GAP_MODULE
 
-            if _use_A and (has_media or show_cal) and not (media_icon_only and not show_cal):  # A: sağ kanat | sağ küme ayracı
+            if _use_A and (has_media or show_cal):  # A: sağ kanat | sağ küme ayracı
                 _last_r = r_cal if show_cal else r_media
                 _inset = self._CONTENT_INSET["cal" if show_cal else "media"][1]
                 self._draw_divider(p, ((_last_r.right() - _inset) + (actions_left_x + 9.0)) / 2.0,
