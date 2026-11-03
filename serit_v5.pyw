@@ -2425,7 +2425,7 @@ class SeritDock(QWidget):
     V25_TIGHT_APPS_GAP = 20.0   # yer darsa önce boşluklar daralır, görev satırı kalır (30 Eki: canlı
     V25_TIGHT_POMO_GAP = 16.0   # barda uzun görev adı 14 px sığmıyordu; daralma 16 px kazandırır)
     V25_MIN_CLEAR = 12.0        # sol kanat ile yeni blok arası en az boşluk
-    V25_RIGHT_GAP = 6.0
+    V25_RIGHT_GAP = 12.0
     DRAG_DWELL_MS = 500         # dosya sürüklenirken uygulama kutucuğunda bu kadar bekleyince pencere öne gelir
 
     def _init_v25(self) -> None:
@@ -3426,7 +3426,8 @@ class SeritDock(QWidget):
         self._v25_rects.pop("keepawake", None)
         self._v25_rects.pop("presence", None)
         x = actions_x
-        for key, w in reversed(self._v25_right_items()):
+        items = list(self._v25_right_items())
+        for idx, (key, w) in enumerate(reversed(items)):
             x -= self.V25_RIGHT_GAP + w
             r = QRectF(x, CARD_Y, w, CARD_HEIGHT)
             self._v25_rects[key] = r
@@ -3444,6 +3445,12 @@ class SeritDock(QWidget):
                         presence.draw_presence_icon(p, r, self._presence_usage, hover=(self._hover_key == key))
                 except Exception as exc:
                     sources.log_err(f"{key}_draw", exc)
+        # Sağ kümenin en solundaki modül ile solundaki kart (Takvim/Medya) arasına zarif ayraç
+        if items:
+            leftmost_x = x
+            div_cy = CARD_Y + CARD_HEIGHT / 2.0
+            div_x = leftmost_x - (self.V25_RIGHT_GAP / 2.0)
+            self._draw_divider(p, div_x, div_cy, intersects)
 
     def _left_open_sig(self) -> Tuple[bool, bool, bool, bool]:
         """Sol kanat kartlarının paneli açık mı: (Claude, Mail, Antigravity, Sistem)."""
@@ -3780,14 +3787,11 @@ class SeritDock(QWidget):
                     dock_cards.draw_calendar_card(p, r_cal, cal_data, hover=cal_hover, press_scale=cal_press)
                 cur_rw_x += cal_w + GAP_MODULE
 
-            if _use_A and (has_media or show_cal):  # A: sağ kanat | sağ küme ayracı
+            items = list(self._v25_right_items())
+            if _use_A and (has_media or show_cal) and not bool(items):  # Sağ küme modülleri yoksa eski ayraç
                 _last_r = r_cal if show_cal else r_media
                 _inset = self._CONTENT_INSET["cal" if show_cal else "media"][1]
-                right_cluster_left = actions_left_x - self._v25_right_width()
-                div_x = ((_last_r.right() - _inset) + right_cluster_left) / 2.0
-                # Sağ küme (ağ hızı/güncellemeler) yokken eski actions_x referansına düş
-                if self._v25_right_width() <= 0.0:
-                    div_x = ((_last_r.right() - _inset) + (actions_left_x + 9.0)) / 2.0
+                div_x = ((_last_r.right() - _inset) + (actions_left_x + 9.0)) / 2.0
                 self._draw_divider(p, div_x, div_cy, intersects)
 
             # Right end: Clock V1 at the far right edge, Action buttons to its left
