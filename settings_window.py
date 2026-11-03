@@ -560,6 +560,10 @@ class SettingsWindow(QWidget):
                 self.working_settings["style"] = str(extra)
                 self.update()
                 return
+            if kind == "toggle_focus":
+                self.working_settings["focus_profile"] = str(extra)
+                self.update()
+                return
             if kind == "toggle_setting":
                 default_val = SETTING_DEFAULTS.get(str(extra), False)
                 cur_val = bool(self.working_settings.get(extra, default_val))
@@ -944,7 +948,7 @@ class SettingsWindow(QWidget):
         )
 
         y += card_h + ps.GAP
-        rows2 = [52.0, 52.0]
+        rows2 = [48.0, 48.0]
         card2_h = self._card_height(rows2)
         inner2 = ps.draw_card(p, QRectF(x, y, w, card2_h), "Görev çubuğu")
         hide_tb = bool(self.working_settings.get("hide_taskbar", False))
@@ -960,6 +964,36 @@ class SettingsWindow(QWidget):
             p, r4, "Ekran alanını ayır", "Pencereler şeridin altına girmesin",
             checked=reserve_sp, kind="toggle_setting", extra="reserve_space",
         )
+
+        y += card2_h + ps.GAP
+        cur_focus = str(self.working_settings.get("focus_profile", "work"))
+        seg_card_h = ps.CARD_PAD * 2 + 15.0 + ps.CARD_GAP + 34.0
+        inner3 = ps.draw_card(p, QRectF(x, y, w, seg_card_h), "Odak profili (DockFlow)")
+        seg_bar = QRectF(inner3.left(), inner3.top(), inner3.width(), 32.0)
+        p.setPen(QPen(QColor(255, 255, 255, 18), 1.0))
+        p.setBrush(QColor(0x14, 0x16, 0x1B))
+        p.drawRoundedRect(seg_bar, 8.0, 8.0)
+
+        focus_opts = [
+            ("work", "İş & Rapor"),
+            ("coding", "Kodlama"),
+            ("cinema", "Sinema / Dinlenme"),
+        ]
+        seg_w = seg_bar.width() / len(focus_opts)
+        f_seg = ps.font(11.0, QFont.Weight.DemiBold)
+        p.setFont(f_seg)
+        for idx, (f_id, f_title) in enumerate(focus_opts):
+            rf = QRectF(seg_bar.left() + idx * seg_w, seg_bar.top(), seg_w, seg_bar.height())
+            is_act = (cur_focus == f_id)
+            if is_act:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(255, 255, 255, 240))
+                p.drawRoundedRect(rf.adjusted(2.5, 2.5, -2.5, -2.5), 6.0, 6.0)
+                p.setPen(QColor(0x11, 0x13, 0x17))
+            else:
+                p.setPen(ps.TEXT_MUTED)
+            p.drawText(rf, Qt.AlignmentFlag.AlignCenter, f_title)
+            self._content_hit_boxes.append((rf, "toggle_focus", f_id))
 
     # -------------------------------------------------------------- Kartlar
     def _paint_cards(self, p: QPainter, x: float, y: float, w: float, max_h: float = 360.0) -> None:

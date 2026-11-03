@@ -206,7 +206,7 @@ ACTION_PILL_WIDTH: float = 74.0
 ACTION_PILL_WIDTH_BAT: float = 136.0   # gunes | hoparlor | pil
 ACTION_PILL_HEIGHT: float = 32.0
 DESKTOP_STRIP_W: float = 8.0   # sol alt köşedeki "masaüstünü göster" şeridi
-HOVER_OPEN_MS: int = 450       # kütük üzerinde bu kadar durunca önizleme açılır
+HOVER_OPEN_MS: int = 240       # kütük üzerinde bu kadar durunca önizleme açılır
 HOVER_HIDE_MS: int = 250       # kütükten / önizlemeden çıkınca bu kadar sonra kapanır
 TRAY_ICON_SIZE: float = 26.0
 TRAY_ICON_GAP: float = 2.0
@@ -2170,11 +2170,21 @@ class SeritDock(QWidget):
     def compute_layout_and_resize(self, initial: bool = False) -> None:
         """Computes pixel-precise layout for dock v3 cards and animates dock width."""
         cards_cfg = dict(self.settings.get("cards") or {})
-        show_claude = cards_cfg.get("claude", True)
-        show_mail = cards_cfg.get("mail", True)
-        show_ag = cards_cfg.get("ag", True)
-        show_sys = cards_cfg.get("sys", True)
-        show_cal = cards_cfg.get("cal", True)
+        focus_prof = str(self.settings.get("focus_profile") or "work")
+        if focus_prof == "cinema":
+            show_claude = show_mail = show_ag = show_sys = show_cal = False
+        elif focus_prof == "coding":
+            show_claude = cards_cfg.get("claude", True)
+            show_mail = False
+            show_ag = cards_cfg.get("ag", True)
+            show_sys = cards_cfg.get("sys", True)
+            show_cal = cards_cfg.get("cal", True)
+        else:
+            show_claude = cards_cfg.get("claude", True)
+            show_mail = cards_cfg.get("mail", True)
+            show_ag = cards_cfg.get("ag", True)
+            show_sys = cards_cfg.get("sys", True)
+            show_cal = cards_cfg.get("cal", True)
 
         has_media = bool(self._now_playing_info and self._now_playing_info.get("title"))
 
@@ -2328,6 +2338,11 @@ class SeritDock(QWidget):
         self._shelf_pulse_timer = QTimer(self)
         self._shelf_pulse_timer.setInterval(40)
         self._shelf_pulse_timer.timeout.connect(self._on_shelf_pulse_tick)
+        # v29 Bağlamsal Akıllı Eylem Çipi (Smart Action Chip)
+        self._action_chip: Optional[Dict[str, Any]] = None
+        self._action_chip_timer = QTimer(self)
+        self._action_chip_timer.setSingleShot(True)
+        self._action_chip_timer.timeout.connect(self._clear_action_chip)
         self._v25_rects: Dict[str, QRectF] = {}
         self._v25_notes: set = set()
         self._v25_dirty: bool = False
@@ -2551,6 +2566,14 @@ class SeritDock(QWidget):
                 ))
         except Exception as exc:
             sources.log_err("pomodoro_toast", exc)
+        # v29 Akıllı Eylem Çipi: şerit üzerinde tek tıkla mola/odak aksiyonu
+        chip_txt = f"{title} · {body} ›" if len(body) <= 22 else f"{title} · Aç ›"
+        self.show_action_chip(
+            chip_txt,
+            accent="#FF9F0A" if finished == "focus" else "#30D158",
+            callback=self._open_pomo_panel,
+            duration_ms=12000,
+        )
         try:
             import logpath as _lp
             if not _lp.is_running_under_test():
@@ -2580,6 +2603,35 @@ class SeritDock(QWidget):
             p.show_for(anchor_global)
         except Exception as exc:
             sources.log_err("shelf_panel_show", exc)
+
+    def _on_shelf_Pulse_or_chip(self) -> None:
+        pass
+
+    def show_action_chip(
+        self,
+        text: str,
+        accent: str = "#0A84FF",
+        callback: Optional[Callable[[], Any]] = None,
+        duration_ms: int = 10000,
+    ) -> None:
+        """v29: Şerit üzerinde bağlamsal Akıllı Eylem Çipi göster (örn. 'rapor.xlsx indi · Aç ›')."""
+        if not text:
+            return
+        self._action_chip = {
+            "text": str(text),
+            "accent": str(accent or "#0A84FF"),
+            "callback": callback,
+            "created_at": time.monotonic(),
+        }
+        if duration_ms > 0 and not self.preview_mode:
+            self._action_chip_timer.start(int(duration_ms))
+        self.update()
+
+    def _clear_action_chip(self) -> None:
+        if self._action_chip is not None:
+            self._action_chip = None
+            self._v25_rects.pop("action_chip", None)
+            self.update()
 
     def _trigger_shelf_pulse(self) -> None:
         self._shelf_pulse = 1.0
@@ -2647,13 +2699,57 @@ class SeritDock(QWidget):
     def _shelf_visible(self) -> bool:
         return bool(shelf is not None and self.shelf_store is not None and self.settings.get("shelf_enabled", True))
 
+    def _open_clipboard_tab(self) -> None:
+        p = self.shelf_panel
+        if p is None:
+            return
+        if hasattr(p, "switch_tab"):
+            p.switch_tab("clips")
+        if p.is_open():
+            return
+        rect = self._v25_rects.get("shelf") or QRectF(self.width() / 2.0, CARD_Y, 28.0, CARD_HEIGHT)
+        anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+        try:
+            p.show_for(anchor_global)
+        except Exception as exc:
+            sources.log_err("shelf_clip_show", exc)
+
     def build_shelf_menu_actions(self) -> List[Dict[str, Any]]:
+        cur_prof = str(self.settings.get("focus_profile") or "work")
         acts: List[Dict[str, Any]] = [
+            {
+                "id": "open_clipboard",
+                "text": "Pano geçmişini aç (Son kopyalananlar)",
+                "icon": "open",
+                "callback": self._open_clipboard_tab,
+            },
             {
                 "id": "screen_snip",
                 "text": "Ekran alıntısı yap (Win+Shift+S)",
                 "icon": "open",
                 "callback": lambda: os.startfile("ms-screenclip:")
+            },
+            {"type": "separator"},
+            {
+                "id": "focus_work",
+                "text": "Odak: İş & Rapor",
+                "group": "focus_prof",
+                "checked": cur_prof == "work",
+                "callback": lambda: self.set_focus_profile("work"),
+            },
+            {
+                "id": "focus_coding",
+                "text": "Odak: Kodlama",
+                "group": "focus_prof",
+                "checked": cur_prof == "coding",
+                "callback": lambda: self.set_focus_profile("coding"),
+            },
+            {
+                "id": "focus_cinema",
+                "text": "Odak: Sinema / Dinlenme",
+                "group": "focus_prof",
+                "checked": cur_prof == "cinema",
+                "callback": lambda: self.set_focus_profile("cinema"),
             },
             {"type": "separator"},
         ]
@@ -2743,6 +2839,15 @@ class SeritDock(QWidget):
                     self.shelf_panel.refresh()
                 if added_paths:
                     self._trigger_shelf_pulse()
+                    first_name = os.path.basename(added_paths[0]) or added_paths[0]
+                    short_n = (first_name[:16] + "…") if len(first_name) > 17 else first_name
+                    lbl = f"{short_n} yakalandı · Aç ›" if source == "screenshot" else f"{short_n} indi · Aç ›"
+                    self.show_action_chip(
+                        lbl,
+                        accent="#30D158" if source == "screenshot" else "#0A84FF",
+                        callback=self._open_shelf_panel,
+                        duration_ms=10000,
+                    )
                     if self.settings.get("shelf_notify", True):
                         self._notify_shelf_downloads(added_paths, source)
         except Exception as exc:
@@ -3183,6 +3288,28 @@ class SeritDock(QWidget):
                 except Exception as exc:
                     sources.log_err("pomodoro_draw", exc)
 
+        # v29 Bağlamsal Akıllı Eylem Çipi (Smart Action Chip): sol kanat ile raf/uygulamalar arasındaki boşlukta
+        self._v25_rects.pop("action_chip", None)
+        chip_info = getattr(self, "_action_chip", None)
+        if isinstance(chip_info, dict) and chip_info.get("text"):
+            right_bound = r_sh.left() if r_sh is not None else (r_po.left() if r_po is not None else apps_x)
+            avail_gap = right_bound - lw_end
+            cw_chip = dock_cards.measure_action_chip_width(str(chip_info["text"]))
+            if avail_gap >= cw_chip + 16.0:
+                cx_chip = lw_end + (avail_gap - cw_chip) / 2.0
+                r_chip = QRectF(cx_chip, CARD_Y, cw_chip, CARD_HEIGHT)
+                self._v25_rects["action_chip"] = r_chip
+                if is_full:
+                    self.hit_boxes.append((r_chip, "action_chip", chip_info))
+                if intersects(r_chip):
+                    dock_cards.draw_action_chip(
+                        p,
+                        r_chip,
+                        str(chip_info["text"]),
+                        accent_hex=str(chip_info.get("accent") or "#0A84FF"),
+                        hover=(self._hover_key == "action_chip"),
+                    )
+
     def _paint_v25_right(self, p: QPainter, actions_x: float, is_full: bool,
                          intersects: Callable[[QRectF], bool]) -> None:
         self._v25_rects.pop("net", None)
@@ -3236,11 +3363,21 @@ class SeritDock(QWidget):
             return True if exp_f is None else r.intersects(exp_f)
 
         cards_cfg = dict(self.settings.get("cards") or {})
-        show_claude = cards_cfg.get("claude", True)
-        show_mail = cards_cfg.get("mail", True)
-        show_ag = cards_cfg.get("ag", True)
-        show_sys = cards_cfg.get("sys", True)
-        show_cal = cards_cfg.get("cal", True)
+        focus_prof = str(self.settings.get("focus_profile") or "work")
+        if focus_prof == "cinema":
+            show_claude = show_mail = show_ag = show_sys = show_cal = False
+        elif focus_prof == "coding":
+            show_claude = cards_cfg.get("claude", True)
+            show_mail = False
+            show_ag = cards_cfg.get("ag", True)
+            show_sys = cards_cfg.get("sys", True)
+            show_cal = cards_cfg.get("cal", True)
+        else:
+            show_claude = cards_cfg.get("claude", True)
+            show_mail = cards_cfg.get("mail", True)
+            show_ag = cards_cfg.get("ag", True)
+            show_sys = cards_cfg.get("sys", True)
+            show_cal = cards_cfg.get("cal", True)
 
         has_media = bool(self._now_playing_info and self._now_playing_info.get("title"))
 
@@ -3976,6 +4113,15 @@ class SeritDock(QWidget):
             return
         if key == "shelf":
             self._toggle_v25_panel(self.shelf_panel, "shelf", rect)
+            return
+        if key == "action_chip":
+            cb = extra.get("callback") if isinstance(extra, dict) else None
+            self._clear_action_chip()
+            if callable(cb):
+                try:
+                    cb()
+                except Exception as exc:
+                    sources.log_err("action_chip_cb", exc)
             return
         if key == "pomo":
             if self.pomo_timer is not None:
@@ -4987,6 +5133,18 @@ class SeritDock(QWidget):
             sources.log_err("app_end_task", exc)
         QTimer.singleShot(900, self.update_windows)
         QTimer.singleShot(3000, self.update_windows)
+
+    def set_focus_profile(self, profile: str) -> None:
+        """v29 DockFlow Odak Profili değiştir ('work', 'coding', 'cinema')."""
+        norm = profile if profile in ("work", "coding", "cinema") else "work"
+        self.settings["focus_profile"] = norm
+        if not self.preview_mode:
+            save_settings(self.settings)
+        names = {"work": "İş & Rapor Modu", "coding": "Kodlama Modu", "cinema": "Sinema / Dinlenme Modu"}
+        accents = {"work": "#0A84FF", "coding": "#BF5AF2", "cinema": "#FF9F0A"}
+        self.show_action_chip(f"Odak: {names[norm]}", accent=accents[norm], duration_ms=5000)
+        self.compute_layout_and_resize()
+        self.update()
 
     def build_dock_menu_actions(self) -> List[Dict[str, Any]]:
         # v24 (Emre): 12 seçenek -> 7. Kart aç/kapat satırları Ayarlar > Kartlar'da; "Konumu sıfırla" kalktı

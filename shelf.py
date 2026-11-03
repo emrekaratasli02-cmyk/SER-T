@@ -1083,24 +1083,24 @@ class ShelfPanel(QWidget):
             t_bar = QRectF(tf.left(), tf.top(), tf.width() + tc.width(), tf.height())
 
             p.save()
-            p.setPen(QPen(QColor(255, 255, 255, 15), 1.0))
-            p.setBrush(QColor(0x1D, 0x1F, 0x24))
-            p.drawRoundedRect(t_bar, 6.0, 6.0)
+            p.setPen(QPen(QColor(255, 255, 255, 18), 1.0))
+            p.setBrush(QColor(0x16, 0x18, 0x1D))
+            p.drawRoundedRect(t_bar, 7.0, 7.0)
 
-            f_tab = ps.font(10.5, QFont.Weight.Medium)
+            f_tab = ps.font(10.5, QFont.Weight.DemiBold)
             p.setFont(f_tab)
 
-            # Aktif sekme arka planı
+            # v29 DockFlow / Threads tarzı Inverted Solid Active Pill (parlak beyaz aktif sekme)
             act_r = tf if self._tab == "files" else tc
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(255, 255, 255, 22))
-            p.drawRoundedRect(act_r.adjusted(1.5, 1.5, -1.5, -1.5), 5.0, 5.0)
+            p.setBrush(QColor(255, 255, 255, 240))
+            p.drawRoundedRect(act_r.adjusted(2.0, 2.0, -2.0, -2.0), 5.5, 5.5)
 
-            # Sekme metinleri
-            p.setPen(ps.TEXT if self._tab == "files" else ps.TEXT_MUTED)
+            # Sekme metinleri (aktif sekmede koyu zıt yazı, pasifte ikincil beyaz)
+            p.setPen(QColor(0x11, 0x13, 0x17) if self._tab == "files" else ps.TEXT_MUTED)
             p.drawText(tf, Qt.AlignmentFlag.AlignCenter, f"Dosyalar ({len(self._items)})")
 
-            p.setPen(ps.TEXT if self._tab == "clips" else ps.TEXT_MUTED)
+            p.setPen(QColor(0x11, 0x13, 0x17) if self._tab == "clips" else ps.TEXT_MUTED)
             p.drawText(tc, Qt.AlignmentFlag.AlignCenter, f"Pano ({len(self._clip_items)})")
 
             # Kapat (✕)
@@ -1157,23 +1157,27 @@ class ShelfPanel(QWidget):
                         p.setBrush(QColor(255, 255, 255, 4))
                         p.drawRoundedRect(r, 6.0, 6.0)
 
-                    # Tür etiketi
+                    # Tür etiketi (v29 renkli rozetler)
                     kind = it.get("kind", "text").upper()
                     if kind == "URL":
                         kind_lbl = "LİNK"
+                        tag_bg, tag_fg = QColor(48, 209, 88, 38), QColor("#30D158")
                     elif kind == "CODE":
                         kind_lbl = "KOD"
+                        tag_bg, tag_fg = QColor(191, 90, 242, 42), QColor("#BF5AF2")
                     elif kind == "HEX":
                         kind_lbl = "RENK"
+                        tag_bg, tag_fg = QColor(255, 159, 10, 42), QColor("#FF9F0A")
                     else:
                         kind_lbl = "METİN"
+                        tag_bg, tag_fg = QColor(10, 132, 255, 42), QColor("#5AC8FA")
 
-                    tag_r = QRectF(r.left() + 8.0, r.top() + 7.0, 38.0, 15.0)
+                    tag_r = QRectF(r.left() + 8.0, r.top() + 7.0, 42.0, 15.0)
                     p.setPen(Qt.PenStyle.NoPen)
-                    p.setBrush(QColor(255, 255, 255, 14))
-                    p.drawRoundedRect(tag_r, 3.0, 3.0)
+                    p.setBrush(tag_bg)
+                    p.drawRoundedRect(tag_r, 3.5, 3.5)
                     p.setFont(f_tag)
-                    p.setPen(ps.TEXT_MUTED)
+                    p.setPen(tag_fg)
                     p.drawText(tag_r, Qt.AlignmentFlag.AlignCenter, kind_lbl)
 
                     # Zaman

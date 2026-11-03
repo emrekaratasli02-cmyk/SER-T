@@ -605,21 +605,83 @@ def draw_claude_card(
 # 2. MEDIA CARD
 # ==============================================================================
 
+_ART_DECODE_CACHE: Dict[int, Tuple[Optional[QImage], Optional[QColor]]] = {}
+
+
+def _decode_media_art(art_bytes: Any) -> Tuple[Optional[QImage], Optional[QColor]]:
+    """Decode raw SMTC thumbnail bytes into QImage and extract vibrant dominant accent color."""
+    if not isinstance(art_bytes, (bytes, bytearray)) or len(art_bytes) < 16:
+        return None, None
+    key = hash(bytes(art_bytes[:64])) ^ len(art_bytes)
+    cached = _ART_DECODE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    img = QImage.fromData(bytes(art_bytes))
+    if img.isNull() or img.width() <= 0 or img.height() <= 0:
+        _ART_DECODE_CACHE[key] = (None, None)
+        return None, None
+    # Küçük 16x16 örneklemeden en canlı/doygun rengi bul
+    small = img.scaled(16, 16, Qt.IgnoreAspectRatio, Qt.FastTransformation)
+    best_r, best_g, best_b, best_w = 10.0, 132.0, 255.0, 0.0
+    r_sum = g_sum = b_sum = w_sum = 0.0
+    for y in range(small.height()):
+        for x in range(small.width()):
+            c = QColor(small.pixel(x, y))
+            h, s, v, _ = c.getHsvF()
+            if v < 0.18 or v > 0.96:
+                continue
+            w = (s + 0.15) * v
+            r_sum += c.red() * w
+            g_sum += c.green() * w
+            b_sum += c.blue() * w
+            w_sum += w
+    if w_sum > 0.5:
+        avg = QColor(int(r_sum / w_sum), int(g_sum / w_sum), int(b_sum / w_sum))
+        h, s, v, _ = avg.getHsvF()
+        # Koyu zeminde okunaklı ve canlı olması için doygunluk ve parlaklık dengelenir
+        accent = QColor.fromHsvF(max(0.0, h), max(0.55, min(0.90, s * 1.25)), max(0.78, min(0.96, v * 1.15)))
+    else:
+        accent = None
+    if len(_ART_DECODE_CACHE) >= 16:
+        _ART_DECODE_CACHE.clear()
+    _ART_DECODE_CACHE[key] = (img, accent)
+    return img, accent
+
+
 def draw_equalizer_tile(
     p: QPainter,
     rect: QRectF,
     playing: bool = True,
     phase: Optional[float] = None,
+    art_img: Optional[QImage] = None,
+    accent_color: Optional[QColor] = None,
 ) -> None:
-    """40x40 recessed well tile with 5 symmetric Dynamic Edge equalizer bars."""
+    """40x40 recessed well tile with cover art (if available) and 5 symmetric Dynamic Edge equalizer bars."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
     tile_path = theme.rounded_path(rect, 10.0)
 
-    grad = _get_equalizer_grad(rect)
-    p.fillPath(tile_path, QBrush(grad))
-    # Gömme yuva (Recessed Well) ince iç kenarlık
-    p.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
+    if art_img is not None and not art_img.isNull():
+        p.save()
+        p.setClipPath(tile_path)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        # Kare kırpma (ortadan)
+        iw, ih = art_img.width(), art_img.height()
+        sz = min(iw, ih)
+        src = QRectF((iw - sz) / 2.0, (ih - sz) / 2.0, float(sz), float(sz))
+        p.drawImage(rect, art_img, src)
+        # Ekolayzır barlarının net okunması için hafif koyu scrim
+        p.fillRect(rect, QColor(8, 10, 14, 115 if playing else 145))
+        p.restore()
+    else:
+        grad = _get_equalizer_grad(rect)
+        p.fillPath(tile_path, QBrush(grad))
+
+    # Gömme yuva (Recessed Well) ince iç kenarlık (kapak rengi varsa hafif renkli kenar)
+    rim_col = QColor(accent_color) if accent_color is not None else QColor(255, 255, 255, 24)
+    if accent_color is not None:
+        rim_col.setAlpha(90)
+    p.setPen(QPen(rim_col, 1.0))
     p.setBrush(Qt.NoBrush)
     p.drawPath(theme.rounded_path(rect.adjusted(0.5, 0.5, -0.5, -0.5), 9.5))
 
@@ -811,10 +873,15 @@ def draw_media_card(
     """
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
 
+    art_img, art_accent = _decode_media_art(media_info.get("art_bytes"))
+    # Eğer kapak resmi yoksa ama uygulama biliniyorsa (Spotify = zümrüt, YouTube = kırmızı-mercan) hafif ambient renk
+    if art_accent is None and media_info.get("ambient_hex"):
+        art_accent = QColor(str(media_info["ambient_hex"]))
+
     # 40x40 Tile at left + 6px padding
     tile_rect = QRectF(rect.x() + 6.0, rect.y() + 6.0, 40.0, 40.0)
     playing = bool(media_info.get("playing", True))
-    draw_equalizer_tile(p, tile_rect, playing=playing)
+    draw_equalizer_tile(p, tile_rect, playing=playing, art_img=art_img, accent_color=art_accent)
 
     # Title & Subtitle text column (dynamically shrinks down to 240px compact mode)
     bx = rect.x() + 56.0
@@ -921,8 +988,9 @@ def draw_media_card(
     ring_rect = QRectF(pcx - ring_radius, pcy - ring_radius, ring_radius * 2.0, ring_radius * 2.0)
     p.drawEllipse(ring_rect)
 
+    arc_pen = QPen(art_accent, 2.0, Qt.SolidLine, Qt.RoundCap) if art_accent is not None else _PEN_ARC_ACCENT
     if progress_frac is not None and progress_frac > 0.0:
-        p.setPen(_PEN_ARC_ACCENT)
+        p.setPen(arc_pen)
         start_angle = 90 * 16
         span_angle = -int(round(progress_frac * 360.0 * 16.0))
         p.drawArc(ring_rect, start_angle, span_angle)
@@ -965,7 +1033,7 @@ def draw_media_card(
         p.setPen(_PEN_BAR_TRACK_2)
         p.drawLine(QPointF(lx1, ly), QPointF(lx2, ly))
         if progress_frac > 0.0:
-            p.setPen(_PEN_ARC_ACCENT)
+            p.setPen(arc_pen)
             fill_x2 = lx1 + (lx2 - lx1) * progress_frac
             p.drawLine(QPointF(lx1, ly), QPointF(fill_x2, ly))
         p.restore()
@@ -2462,3 +2530,67 @@ def draw_tray_column(
 
     p.restore()
     return (r_spk, r_chv)
+
+
+# ==============================================================================
+# 8. V29 SMART ACTION CHIP & DOCKFLOW FOCUS PROFILE
+# ==============================================================================
+
+ACTION_CHIP_MAX_W: float = 210.0
+ACTION_CHIP_H: float = 28.0
+
+
+def measure_action_chip_width(text: str) -> float:
+    """Measure width of contextual smart action chip (clamped to ACTION_CHIP_MAX_W)."""
+    if not text:
+        return 0.0
+    f = theme.make_font(11.0, QFont.Weight.DemiBold)
+    fm = _get_fm(f)
+    # Sol renkli nokta (16) + metin + sağ ok/boşluk (14)
+    w = 30.0 + _text_width(fm, text)
+    return max(76.0, min(ACTION_CHIP_MAX_W, w))
+
+
+def draw_action_chip(
+    p: QPainter,
+    rect: QRectF,
+    text: str,
+    accent_hex: str = "#0A84FF",
+    hover: bool = False,
+) -> None:
+    """Draw a contextual Smart Action Chip (e.g. 'rapor.xlsx indi · Aç ›', 'Mola vakti ›')."""
+    if not text or rect.width() <= 0.0:
+        return
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setRenderHint(QPainter.TextAntialiasing, True)
+
+    cy = rect.center().y()
+    chip_r = QRectF(rect.x(), cy - ACTION_CHIP_H / 2.0, rect.width(), ACTION_CHIP_H)
+    accent = QColor(accent_hex)
+    if not accent.isValid():
+        accent = QColor("#0A84FF")
+
+    bg_col = QColor(accent)
+    bg_col.setAlpha(48 if hover else 30)
+    border_col = QColor(accent)
+    border_col.setAlpha(155 if hover else 105)
+
+    p.setPen(QPen(border_col, 1.0))
+    p.setBrush(bg_col)
+    p.drawRoundedRect(chip_r.adjusted(0.5, 0.5, -0.5, -0.5), ACTION_CHIP_H / 2.0, ACTION_CHIP_H / 2.0)
+
+    # Sol canlı durum noktası
+    p.setPen(Qt.NoPen)
+    p.setBrush(accent)
+    p.drawEllipse(QPointF(chip_r.x() + 12.0, cy), 3.4, 3.4)
+
+    # Metin
+    f = theme.make_font(11.0, QFont.Weight.DemiBold)
+    fm = _get_fm(f)
+    p.setFont(f)
+    p.setPen(QColor(255, 255, 255, 245 if hover else 230))
+    txt_r = QRectF(chip_r.x() + 21.0, chip_r.y(), max(10.0, chip_r.width() - 29.0), chip_r.height())
+    p.drawText(txt_r, Qt.AlignVCenter | Qt.AlignLeft, _elided_text(fm, text, txt_r.width()))
+    p.restore()
+

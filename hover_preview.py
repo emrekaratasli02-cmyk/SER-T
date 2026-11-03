@@ -195,7 +195,7 @@ class HoverPreview(QWidget):
     # ---------------------------------------------------------------- olaylar
     def _hit(self, pos: QPointF) -> Tuple[str, Optional[int]]:
         for hwnd, card, _thumb, close in self._cards:
-            if hwnd == self._hover_hwnd and close.contains(pos):
+            if close.contains(pos):
                 return "close", hwnd
             if card.contains(pos):
                 return "card", hwnd
@@ -352,15 +352,17 @@ class HoverPreview(QWidget):
                 p.drawText(QRectF(tr.left(), tr.bottom(), tr.width(), SUB_H),
                            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "küçültülmüş")
 
-            if hovered:
-                hot = self._hover_close == hwnd
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(ps.DANGER if hot else QColor(0, 0, 0, 150))
-                p.drawEllipse(close)
-                p.setPen(QPen(QColor(255, 255, 255), 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                c, d = close.center(), 3.4
-                p.drawLine(QPointF(c.x() - d, c.y() - d), QPointF(c.x() + d, c.y() + d))
-                p.drawLine(QPointF(c.x() + d, c.y() - d), QPointF(c.x() - d, c.y() + d))
+            # × Kapat düğmesi: her pencerede görünür (boşta yarı saydam, kartta belirgin, üstünde kırmızı)
+            hot = self._hover_close == hwnd
+            close_bg = ps.DANGER if hot else (QColor(0, 0, 0, 165) if hovered else QColor(0, 0, 0, 110))
+            close_fg = QColor(255, 255, 255, 255 if (hot or hovered) else 190)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(close_bg)
+            p.drawEllipse(close)
+            p.setPen(QPen(close_fg, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            c, d = close.center(), 3.4
+            p.drawLine(QPointF(c.x() - d, c.y() - d), QPointF(c.x() + d, c.y() + d))
+            p.drawLine(QPointF(c.x() + d, c.y() - d), QPointF(c.x() - d, c.y() + d))
             self._cards.append((hwnd, QRectF(card), QRectF(thumb), QRectF(close)))
             x += THUMB_W + CARD_GAP
 

@@ -537,6 +537,7 @@ def clean_media_title(title: str) -> str:
         t = f"{m.group(1).strip()} · {m.group(2)}"
     return t or (title or "").strip()
 _WINRT_APP_NAMES = {"chrome": "Chrome", "msedge": "Edge", "spotify": "Spotify", "firefox": "Firefox"}
+_THUMB_CACHE: Dict[str, Optional[bytes]] = {}
 
 
 def _now_playing_winrt() -> Optional[Dict[str, object]]:
@@ -590,8 +591,32 @@ def _now_playing_winrt() -> Optional[Dict[str, object]]:
         except Exception as tl_exc:
             _log(f"timeline read: {tl_exc}")
 
+        cleaned_title = clean_media_title(title)
+        cache_key = f"{key}:{cleaned_title}:{cleaned_artist}"
+        art_bytes: Optional[bytes] = _THUMB_CACHE.get(cache_key)
+        if cache_key not in _THUMB_CACHE:
+            try:
+                th_ref = getattr(props, "thumbnail", None)
+                if th_ref is not None:
+                    import winrt.windows.storage.streams as ws
+                    stream = await th_ref.open_read_async()
+                    sz = int(getattr(stream, "size", 0) or 0)
+                    if 0 < sz <= 1_500_000:
+                        dr = ws.DataReader(stream)
+                        await dr.load_async(sz)
+                        buf = bytearray(sz)
+                        dr.read_bytes(buf)
+                        dr.close()
+                        art_bytes = bytes(buf)
+                    stream.close()
+            except Exception:
+                art_bytes = None
+            if len(_THUMB_CACHE) >= 12:
+                _THUMB_CACHE.clear()
+            _THUMB_CACHE[cache_key] = art_bytes
+
         return {
-            "title": clean_media_title(title),
+            "title": cleaned_title,
             "artist": cleaned_artist,
             "app": _WINRT_APP_NAMES.get(key, aumid.split("!")[0] or "Medya"),
             "exe": aumid,
@@ -602,6 +627,7 @@ def _now_playing_winrt() -> Optional[Dict[str, object]]:
             "position_s": pos_s,
             "duration_s": dur_s,
             "updated_at": time.monotonic(),
+            "art_bytes": art_bytes,
         }
 
     # WinRT bazen hiç dönmüyor: ortak döngüde, 1.5 sn sınırla çalıştır.
