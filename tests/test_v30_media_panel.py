@@ -104,9 +104,47 @@ def test_panel_controls_and_seek() -> None:
     pnl.close()
 
 
+def test_media_icon_only_and_preview_filtering() -> None:
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("serit_v5_v30", str(APP_DIR / "serit_v5.pyw"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+
+    dock = m.SeritDock({"style": "band", "media_icon_only": True, "hide_media_win_in_preview": True}, preview_mode=True)
+    dock._now_playing_info = {
+        "title": "Yusuf Kavuk Cinayeti Ortaya Çıktı",
+        "artist": "YouTube",
+        "app": "Chrome",
+        "playing": True,
+    }
+    dock._raw_windows = [
+        {"hwnd": 101, "title": "Reports - Google Chrome", "minimized": False, "active": True},
+        {"hwnd": 102, "title": "Yusuf Kavuk Cinayeti Ortaya Çıktı - YouTube - Google Chrome", "minimized": False, "active": False},
+        {"hwnd": 103, "title": "Arçelik & Beko // IAS Ekim 2026 - Google Chrome", "minimized": False, "active": False},
+    ]
+
+    # 1. Verify preview window list filters out hwnd 102 (the media window)
+    wins = dock._picker_windows([101, 102, 103])
+    assert [w["hwnd"] for w in wins] == [101, 103], wins
+
+    # If there is only 1 window total, never hide it
+    wins_single = dock._picker_windows([102])
+    assert [w["hwnd"] for w in wins_single] == [102], wins_single
+
+    # 2. Verify media_icon_only renders 52px button instead of 314px card
+    dock.resize(1536, 64)
+    dock.compute_layout_and_resize(initial=True)
+    img = QImage(1536, 64, QImage.Format.Format_ARGB32)
+    dock.render(img)
+    r_media = next(r for r, k, _e in dock.hit_boxes if k == "media")
+    assert r_media.width() == 52.0, f"Expected 52.0px icon button, got {r_media.width()}"
+    dock.close()
+
+
 def main() -> int:
     test_fmt_mmss()
     test_panel_controls_and_seek()
+    test_media_icon_only_and_preview_filtering()
     print("ALL TEST_V30_MEDIA_PANEL TESTS PASSED")
     return 0
 

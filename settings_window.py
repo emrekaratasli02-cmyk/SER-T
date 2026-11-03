@@ -67,6 +67,8 @@ TOOL_DEFS: List[Tuple[str, str, str]] = [
     ("app_usage_ctrl", "Ctrl ile kullanım süresi", "İkon üzerinde Ctrl basılıyken süreyi göster"),
     ("window_flash_enabled", "Pencere dikkat bildirimi", "Arka planda dikkat isteyen uygulamalarda turuncu nabız"),
     ("app_badges_enabled", "Uygulama rozetleri", "Okunmamış mesaj sayısı ve indirme rozetleri"),
+    ("media_icon_only", "Kompakt medya simgesi", "Şeritte uzun medya yazısı yerine yalnız simge göster, tıklayınca aç"),
+    ("hide_media_win_in_preview", "Medya penceresini önizlemede gizle", "Tarayıcı önizlemesinde video/müzik penceresini gizle"),
     ("media_seek_enabled", "Medya ilerleme ve sarma", "Kart altında canlı ilerleme çizgisi, tıklayarak sarma ve ses"),
     ("media_marquee_enabled", "Kayan medya başlığı", "Sığmayan şarkı/video adı yavaşça kayar"),
 ]
@@ -86,6 +88,8 @@ SETTING_DEFAULTS: Dict[str, bool] = {
     "hover_preview": True,
     "window_flash_enabled": True,
     "app_badges_enabled": True,
+    "media_icon_only": False,
+    "hide_media_win_in_preview": True,
     "media_seek_enabled": True,
     "media_marquee_enabled": True,
 }

@@ -2319,8 +2319,9 @@ class SeritDock(QWidget):
             lw_w = (sum(lw_items) + max(0, len(lw_items) - 1) * GAP_MODULE) if lw_items else 0.0
 
             rw_items: List[float] = []
+            media_icon_only = bool(self.settings.get("media_icon_only", False))
             if has_media:
-                rw_items.append(MEDIA_CARD_WIDTH)
+                rw_items.append(dock_cards.MEDIA_ICON_W if media_icon_only else MEDIA_CARD_WIDTH)
             if show_cal:
                 rw_items.append(w_cal)
             rw_w = (sum(rw_items) + max(0, len(rw_items) - 1) * GAP_MODULE) if rw_items else 0.0
@@ -2349,8 +2350,9 @@ class SeritDock(QWidget):
             items.append(SYS_CARD_WIDTH)
         if w_apps > 0:
             items.append(w_apps)
+        media_icon_only = bool(self.settings.get("media_icon_only", False))
         if has_media:
-            items.append(MEDIA_CARD_WIDTH)
+            items.append(dock_cards.MEDIA_ICON_W if media_icon_only else MEDIA_CARD_WIDTH)
         if show_cal:
             items.append(w_cal)
         items.append(w_clock)
@@ -3565,7 +3567,8 @@ class SeritDock(QWidget):
             # Order at right edge: [Right Wing: Media, Cal] ... [Actions: ^, Sun, Spk] [Gap] [Weather + Clock]
             # Clock right edge is pinned at sw - 14.0.
             # Actions left edge is: (sw - 14.0) - w_clock - GAP_MODULE - ACTION_BUTTONS_WIDTH
-            media_w = MEDIA_CARD_WIDTH if has_media else 0.0
+            media_icon_only = bool(self.settings.get("media_icon_only", False))
+            media_w = (dock_cards.MEDIA_ICON_W if media_icon_only else MEDIA_CARD_WIDTH) if has_media else 0.0
             cal_w = natural_cal_w
             center_shift = 0.0
 
@@ -3582,8 +3585,8 @@ class SeritDock(QWidget):
                 return actions_left_x - rw_end_calc
 
             # Fitting algorithm:
-            # (a) compact media card: 314 -> 240 px
-            if has_media and calc_clearance(media_w, cal_w, center_shift) < 12.0:
+            # (a) compact media card: 314 -> 240 px (only when full card mode is used)
+            if has_media and not media_icon_only and calc_clearance(media_w, cal_w, center_shift) < 12.0:
                 media_w = MEDIA_CARD_WIDTH_COMPACT
 
             # (b) calendar card max width shrinks with eliding down to 96 px
@@ -3609,7 +3612,7 @@ class SeritDock(QWidget):
             _avail_media = _media_right - (apps_x + w_apps + 40.0)
             # v26.1: Sağ küme genişlediğinde (ağ hızı + güncellemeler) medya kartı 190 px'e
             # kadar esneyebilir; böylece A yerleşimi bozulmaz, Ataş (raf) simgesi kaybolmaz.
-            _min_media_a = 190.0
+            _min_media_a = dock_cards.MEDIA_ICON_W if media_icon_only else 190.0
             if _left_x + lw_w > apps_x - 40.0 or (has_media and _avail_media < _min_media_a):
                 _use_A = False
 
@@ -3617,7 +3620,7 @@ class SeritDock(QWidget):
                 final_apps_x = apps_x
                 cur_lw_x = _left_x
                 if has_media:
-                    media_w = max(_min_media_a, min(380.0, _avail_media))
+                    media_w = dock_cards.MEDIA_ICON_W if media_icon_only else max(_min_media_a, min(380.0, _avail_media))
             else:
                 final_apps_x = apps_x - center_shift
                 cur_lw_x = final_apps_x - (GAP_MODULE if (lw_w > 0 and w_apps > 0) else 0.0) - lw_w
@@ -3721,9 +3724,9 @@ class SeritDock(QWidget):
 
             # Draw Right Wing: Media, Calendar
             cur_rw_x = final_apps_x + w_apps + (GAP_MODULE if (w_apps > 0) else 0.0)
-            if _use_A and has_media:
+            if _use_A and has_media and not media_icon_only:
                 cur_rw_x = _media_right - media_w
-            elif _use_A and show_cal:
+            elif _use_A and not has_media and show_cal:
                 cur_rw_x = actions_left_x - 16.0 - cal_w
             if has_media:
                 r_media = QRectF(cur_rw_x, card_y, media_w, card_h)
@@ -3735,11 +3738,17 @@ class SeritDock(QWidget):
                 if intersects(r_media):
                     m_hover = (self._hover_key == "media")
                     m_press = self.press_tween.scale if (self._pressed_key == "media") else 1.0
-                    m_ctrl_hover = getattr(self, "_hover_media_ctrl", None)
-                    self._media_hit_rects = dock_cards.draw_media_card(
-                        p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, hovered_control=m_ctrl_hover,
-                        title_offset=self._media_title_offset(r_media)
-                    )
+                    if media_icon_only:
+                        mp_open = bool(self.media_panel is not None and self.media_panel.is_open())
+                        self._media_hit_rects = dock_cards.draw_media_icon_button(
+                            p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, active=mp_open
+                        )
+                    else:
+                        m_ctrl_hover = getattr(self, "_hover_media_ctrl", None)
+                        self._media_hit_rects = dock_cards.draw_media_card(
+                            p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, hovered_control=m_ctrl_hover,
+                            title_offset=self._media_title_offset(r_media)
+                        )
                 cur_rw_x += media_w + GAP_MODULE
 
             if show_cal:
@@ -3756,7 +3765,7 @@ class SeritDock(QWidget):
                     dock_cards.draw_calendar_card(p, r_cal, cal_data, hover=cal_hover, press_scale=cal_press)
                 cur_rw_x += cal_w + GAP_MODULE
 
-            if _use_A and (has_media or show_cal):  # A: sağ kanat | sağ küme ayracı
+            if _use_A and (has_media or show_cal) and not (media_icon_only and not show_cal):  # A: sağ kanat | sağ küme ayracı
                 _last_r = r_cal if show_cal else r_media
                 _inset = self._CONTENT_INSET["cal" if show_cal else "media"][1]
                 self._draw_divider(p, ((_last_r.right() - _inset) + (actions_left_x + 9.0)) / 2.0,
@@ -3915,18 +3924,26 @@ class SeritDock(QWidget):
                 x += w_apps + GAP_MODULE
 
             if has_media:
-                r_media = QRectF(x, card_y, MEDIA_CARD_WIDTH, card_h)
+                m_w_pill = dock_cards.MEDIA_ICON_W if media_icon_only else MEDIA_CARD_WIDTH
+                r_media = QRectF(x, card_y, m_w_pill, card_h)
+                self._media_rect = r_media
                 if is_full:
                     self.hit_boxes.append((r_media, "media", self._now_playing_info))
                 if intersects(r_media):
                     m_hover = (self._hover_key == "media")
                     m_press = self.press_tween.scale if (self._pressed_key == "media") else 1.0
-                    m_ctrl_hover = getattr(self, "_hover_media_ctrl", None)
-                    self._media_hit_rects = dock_cards.draw_media_card(
-                        p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, hovered_control=m_ctrl_hover,
-                        title_offset=self._media_title_offset(r_media)
-                    )
-                x += MEDIA_CARD_WIDTH + GAP_MODULE
+                    if media_icon_only:
+                        mp_open = bool(self.media_panel is not None and self.media_panel.is_open())
+                        self._media_hit_rects = dock_cards.draw_media_icon_button(
+                            p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, active=mp_open
+                        )
+                    else:
+                        m_ctrl_hover = getattr(self, "_hover_media_ctrl", None)
+                        self._media_hit_rects = dock_cards.draw_media_card(
+                            p, r_media, self._now_playing_info, hover=m_hover, press_scale=m_press, hovered_control=m_ctrl_hover,
+                            title_offset=self._media_title_offset(r_media)
+                        )
+                x += m_w_pill + GAP_MODULE
 
             if show_cal:
                 r_cal = QRectF(x, card_y, natural_cal_w, card_h)
@@ -4558,6 +4575,23 @@ class SeritDock(QWidget):
             sources.log_err("tray_end_toast", exc)
 
     # ------------------------------------------------------- pencere seçicisi
+    def _is_media_window_title(self, win_title: str) -> bool:
+        """Pencere başlığı şu an çalan medya başlığıyla eşleşiyor mu kontrol eder."""
+        if not bool(self.settings.get("hide_media_win_in_preview", True)):
+            return False
+        np = self._now_playing_info
+        if not isinstance(np, dict):
+            return False
+        m_title = str(np.get("title") or "").strip().lower()
+        w_title = str(win_title or "").strip().lower()
+        if len(m_title) < 4 or not w_title:
+            return False
+        if m_title in w_title:
+            return True
+        # Başlığın ilk anlamlı parçası (örn. 'Yusuf Kavuk Cinayeti...' veya 'The Mentalist')
+        head = m_title.split(" · ")[0].split(" - ")[0].split(" | ")[0].strip()
+        return len(head) >= 5 and head in w_title
+
     def _picker_windows(self, hwnds: List[int]) -> List[Dict[str, Any]]:
         by_hwnd = {int(w.get("hwnd") or 0): w for w in (getattr(self, "_raw_windows", None) or [])}
         out: List[Dict[str, Any]] = []
@@ -4571,6 +4605,12 @@ class SeritDock(QWidget):
                 "minimized": bool(w.get("minimized")),
                 "active": bool(w.get("active")),
             })
+        # Birden fazla pencere varsa ve içlerinden biri aktif medya penceresiyse önizleme/seçiciden gizle
+        # (medya zaten sağdaki Medya simgesi / panelinden yönetiliyor).
+        if len(out) > 1 and bool(self.settings.get("hide_media_win_in_preview", True)):
+            filtered = [w for w in out if not self._is_media_window_title(w.get("title", ""))]
+            if filtered:
+                return filtered
         return out
 
     def _ensure_window_picker(self):

@@ -1041,6 +1041,49 @@ def draw_media_card(
     return {"prev": r_prev, "playpause": r_play, "next": r_next}
 
 
+MEDIA_ICON_W: float = 52.0
+
+
+def draw_media_icon_button(
+    p: QPainter,
+    rect: QRectF,
+    media_info: Dict[str, Any],
+    hover: bool = False,
+    press_scale: float = 1.0,
+    active: bool = False,
+) -> Dict[str, QRectF]:
+    """Renders a compact 52x52 icon-only media button (40x40 cover/equalizer tile + bottom progress line).
+    Clicking opens the MediaPanel mini-popover.
+    """
+    draw_card_base(p, rect, CARD_RADIUS, hover=(hover or active), press_scale=press_scale)
+
+    art_img, art_accent = _decode_media_art(media_info.get("art_bytes"))
+    if art_accent is None and media_info.get("ambient_hex"):
+        art_accent = QColor(str(media_info["ambient_hex"]))
+
+    tile_rect = QRectF(rect.center().x() - 20.0, rect.y() + 6.0, 40.0, 40.0)
+    playing = bool(media_info.get("playing", True))
+    draw_equalizer_tile(p, tile_rect, playing=playing, art_img=art_img, accent_color=art_accent)
+
+    progress_frac = media_progress_fraction(media_info)
+    if progress_frac is not None:
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        lx1 = tile_rect.left() + 4.0
+        lx2 = tile_rect.right() - 4.0
+        ly = rect.bottom() - 3.0
+        p.setPen(_PEN_BAR_TRACK_2)
+        p.drawLine(QPointF(lx1, ly), QPointF(lx2, ly))
+        if progress_frac > 0.0:
+            arc_pen = QPen(art_accent, 2.0, Qt.SolidLine, Qt.RoundCap) if art_accent is not None else _PEN_ARC_ACCENT
+            p.setPen(arc_pen)
+            fill_x2 = lx1 + (lx2 - lx1) * progress_frac
+            p.drawLine(QPointF(lx1, ly), QPointF(fill_x2, ly))
+        p.restore()
+
+    return {}
+
+
 # ==============================================================================
 # 2B. MAIL CARD
 # ==============================================================================
