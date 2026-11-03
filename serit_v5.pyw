@@ -1538,7 +1538,9 @@ class SeritDock(QWidget):
         # v25: indirilenler izleyici (1 sn + dosya sistemi anlık bildirim) ve mikrofon/kamera kullanımı (3 sn)
         if self._dl_watcher is not None:
             self.shelfdl_timer = QTimer(self)
-            self.shelfdl_timer.setInterval(1000)  # hızlı döngü (1 sn)
+            # Boştayken seyrek (klasör değişimini QFileSystemWatcher anında bildirir);
+            # bir şey inerken / boyutu oturmamışken 1 sn. Bkz. _retune_shelf_poll.
+            self.shelfdl_timer.setInterval(self.SHELF_POLL_IDLE_MS)
             self.shelfdl_timer.timeout.connect(self._poll_shelf_watchers)
             self.shelfdl_timer.start()
             self._poll_shelf_watchers()
@@ -1948,9 +1950,11 @@ class SeritDock(QWidget):
     def on_data_ready(self, key: str, res: Any) -> None:
         if key == "shelfdl":
             self._on_shelf_downloads(res)
+            self._retune_shelf_poll()
             return
         if key == "shelfshot":
             self._on_shelf_downloads(res, "screenshot")
+            self._retune_shelf_poll()
             return
         if key == "presence":
             self._on_presence_data(res)
@@ -2911,6 +2915,19 @@ class SeritDock(QWidget):
     def action_show_shelf(self) -> None:
         if self._shelf_visible():
             self._toggle_v25_panel(self.shelf_panel, "shelf")
+
+    SHELF_POLL_FAST_MS = 1000
+    SHELF_POLL_IDLE_MS = 15000
+
+    def _retune_shelf_poll(self) -> None:
+        """İzleyici meşgulse hızlı, değilse seyrek tara (klasör her saniye baştan taranmasın)."""
+        timer = getattr(self, "shelfdl_timer", None)
+        if timer is None:
+            return
+        busy = any(bool(getattr(w, "busy", False)) for w in (self._dl_watcher, self._shot_watcher) if w is not None)
+        want = self.SHELF_POLL_FAST_MS if busy else self.SHELF_POLL_IDLE_MS
+        if timer.interval() != want:
+            timer.setInterval(want)
 
     def _poll_shelf_watchers(self) -> None:
         self.submit_fetch("shelfdl")

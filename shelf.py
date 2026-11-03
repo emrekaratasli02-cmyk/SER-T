@@ -326,6 +326,12 @@ class DownloadsWatcher:
         return self._folder
 
     @property
+    def busy(self) -> bool:
+        """İnen (.crdownload vb.) ya da boyutu henüz oturmamış dosya var mı -> hızlı tarama gerekir."""
+        with self._lock:
+            return self._active_downloads > 0 or bool(self._pending)
+
+    @property
     def active_downloads(self) -> int:
         with self._lock:
             return self._active_downloads
