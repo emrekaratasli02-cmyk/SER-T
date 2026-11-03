@@ -4168,12 +4168,36 @@ class SeritDock(QWidget):
                 save_settings(self.settings)
             else:
                 pos = event.position()
-                for r, key, extra in reversed(self.hit_boxes):
-                    if r.contains(pos):
-                        self.handle_click(key, extra, r, pos)
-                        break
+                if getattr(self, "_dbl_media_suppress", False):
+                    self._dbl_media_suppress = False  # çift tıklamanın 2. bırakışı panel açmasın
+                else:
+                    for r, key, extra in reversed(self.hit_boxes):
+                        if r.contains(pos):
+                            self.handle_click(key, extra, r, pos)
+                            break
             self._drag_start_pos = None
         super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        """Medya kartına/simgesine çift tık: panel yerine medyanın kendi penceresini öne getirir."""
+        if event.button() == Qt.LeftButton:
+            pos = event.position()
+            for r, key, _extra in reversed(self.hit_boxes):
+                if key == "media" and r.contains(pos):
+                    ctrl_hit = any(cr.contains(pos) for cr in (self._media_hit_rects or {}).values())
+                    if not ctrl_hit:
+                        self._dbl_media_suppress = True
+                        mp = getattr(self, "media_panel", None)
+                        if mp is not None and mp.isVisible():
+                            mp.hide_instant()
+                        hwnd = self._find_media_hwnd()
+                        if hwnd and not self.preview_mode:
+                            winapi.activate_window(int(hwnd))
+                            QTimer.singleShot(250, self.update_windows)
+                        event.accept()
+                        return
+                    break
+        super().mouseDoubleClickEvent(event)
 
     def wheelEvent(self, event) -> None:
         pos = event.position()
@@ -4575,6 +4599,12 @@ class SeritDock(QWidget):
             sources.log_err("tray_end_toast", exc)
 
     # ------------------------------------------------------- pencere seçicisi
+    @staticmethod
+    def _norm_title(s: str) -> str:
+        """Emoji, boşluk ve noktalama farklarını yok sayan karşılaştırma anahtarı."""
+        import re as _re
+        return _re.sub(r"[\W_]+", "", str(s or "").casefold())
+
     def _is_media_window_title(self, win_title: str) -> bool:
         """Pencere başlığı şu an çalan medya başlığıyla eşleşiyor mu kontrol eder."""
         if not bool(self.settings.get("hide_media_win_in_preview", True)):
@@ -4582,15 +4612,30 @@ class SeritDock(QWidget):
         np = self._now_playing_info
         if not isinstance(np, dict):
             return False
-        m_title = str(np.get("title") or "").strip().lower()
-        w_title = str(win_title or "").strip().lower()
-        if len(m_title) < 4 or not w_title:
+        m_norm = self._norm_title(np.get("title") or "")
+        w_norm = self._norm_title(win_title or "")
+        if len(m_norm) < 4 or not w_norm:
             return False
-        if m_title in w_title:
+        if m_norm in w_norm:
             return True
-        # Başlığın ilk anlamlı parçası (örn. 'Yusuf Kavuk Cinayeti...' veya 'The Mentalist')
-        head = m_title.split(" · ")[0].split(" - ")[0].split(" | ")[0].strip()
-        return len(head) >= 5 and head in w_title
+        # Başlık sekme başlığında kısaltılmış olabilir: ilk 24 anlamlı karakter yeterli
+        head = m_norm[:24]
+        return len(head) >= 10 and head in w_norm
+
+    def _find_media_hwnd(self) -> Optional[int]:
+        """Çalan medyanın penceresi (başlık eşleşmesiyle); bulunamazsa None."""
+        np = self._now_playing_info
+        if not isinstance(np, dict):
+            return None
+        saved = self.settings.get("hide_media_win_in_preview", True)
+        for w in (getattr(self, "_raw_windows", None) or []):
+            t = str(w.get("title") or "")
+            m_norm = self._norm_title(np.get("title") or "")
+            w_norm = self._norm_title(t)
+            if len(m_norm) >= 4 and (m_norm in w_norm or (len(m_norm[:24]) >= 10 and m_norm[:24] in w_norm)):
+                return int(w.get("hwnd") or 0) or None
+        _ = saved
+        return None
 
     def _picker_windows(self, hwnds: List[int]) -> List[Dict[str, Any]]:
         by_hwnd = {int(w.get("hwnd") or 0): w for w in (getattr(self, "_raw_windows", None) or [])}

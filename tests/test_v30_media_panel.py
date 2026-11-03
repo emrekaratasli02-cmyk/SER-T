@@ -141,10 +141,28 @@ def test_media_icon_only_and_preview_filtering() -> None:
     dock.close()
 
 
+def test_real_world_emoji_title_match() -> None:
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("serit_v5_v30b", str(APP_DIR / "serit_v5.pyw"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    d = m.SeritDock({"style": "band", "hide_media_win_in_preview": True}, preview_mode=True)
+    d._now_playing_info = {"title": "ÇAĞLA TUĞALTAY ANISINA 🅧 X'TE (TWITTER'DA)📅  02 Kasım 2026 I Ömer  & Asya 💫 X Odası", "app": "Chrome"}
+    d._raw_windows = [
+        {"hwnd": 1, "title": "[External] HOW TO ROB A BANK IAS KURULUMLARI - Google Chrome"},
+        {"hwnd": 2, "title": "reporting.integralplatform.com/files/tag/download - Google Chrome"},
+        {"hwnd": 3, "title": "ÇAĞLA TUĞALTAY ANISINA 🅧 X'TE (TWITTER'DA)📅 02 Kasım 2026 I Ömer & Asya 💫 X Odası - YouTube - Google Chrome"},
+    ]
+    assert [w["hwnd"] for w in d._picker_windows([1, 2, 3])] == [1, 2]
+    assert d._find_media_hwnd() == 3
+    d.close()
+
+
 def main() -> int:
     test_fmt_mmss()
     test_panel_controls_and_seek()
     test_media_icon_only_and_preview_filtering()
+    test_real_world_emoji_title_match()
     print("ALL TEST_V30_MEDIA_PANEL TESTS PASSED")
     return 0
 
