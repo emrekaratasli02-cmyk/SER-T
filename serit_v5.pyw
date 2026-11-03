@@ -58,6 +58,7 @@ import brightness_popover
 import dock_cards
 import media
 import pinned
+import uwp
 import popover_v2
 import power_net
 import sources
@@ -578,12 +579,19 @@ class SeritDock(QWidget):
             if not self.preview_mode:
                 self.settings["pinned"] = pins_raw
                 save_settings(self.settings)
-        # WhatsApp UWP otomatik sabitleme (mevcut pinlerde yoksa ve preview_mode değilse ekle)
-        wp_exe = r"C:\Program Files\WindowsApps\5319275A.WhatsAppDesktop_2.2641.101.0_x64__cv1g1gvanyjgm\WhatsApp.Root.exe"
-        if not self.preview_mode and pins_raw and not any("whatsapp" in (p.get("path") or p.get("exe") or "").lower() for p in pins_raw):
-            if os.path.exists(wp_exe) or os.path.exists(r"C:\Program Files\WindowsApps"):
-                pins_raw.append({"path": wp_exe, "name": "WhatsApp"})
+        # Store uygulaması güncellendiyse (klasör adındaki sürüm değişir) pin yolunu tazele
+        if pins_raw:
+            changed = False
+            for p in pins_raw:
+                old_path = p.get("path") or ""
+                if uwp.is_uwp_path(old_path):
+                    new_path = uwp.resolve(old_path)
+                    if new_path != old_path:
+                        p["path"] = new_path
+                        changed = True
+            if changed and not self.preview_mode:
                 self.settings["pinned"] = pins_raw
+                save_settings(self.settings)
         self.pins: List[Dict[str, str]] = list(pins_raw or [])
         self.tiles: List[Dict[str, Any]] = []
         self._last_tiles_sig: Optional[tuple] = None
@@ -5027,8 +5035,8 @@ class SeritDock(QWidget):
     def _launch_tile(self, tile: dict, path: str, rect: Optional[QRectF] = None) -> bool:
         """Uygulamayı açar; açılırken ikon soluk + nabız noktası, açılamazsa ikonun üstünde 4 sn balon."""
         name = str(tile.get("name") or Path(path).stem or "Uygulama")
-        is_uwp = "windowsapps" in path.lower() or path.lower().startswith("shell:appsfolder") or "whatsapp" in path.lower()
-        if not is_uwp and not Path(path).exists():
+        path = uwp.resolve(path)
+        if not Path(path).exists():
             self._show_fail_bubble(rect, f"{name} açılamadı · dosya bulunamadı")
             sources.log_err("launch", FileNotFoundError(Path(path).name))
             return False

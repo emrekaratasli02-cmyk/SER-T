@@ -16,6 +16,7 @@ import ctypes.wintypes as w
 
 import psutil
 from typing import Optional
+import uwp
 from PySide6.QtCore import QFileInfo, Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QFileIconProvider
@@ -485,49 +486,19 @@ _ICON_CACHE: collections.OrderedDict[tuple[str, int], QPixmap] = collections.Ord
 
 
 def _uwp_logo(exe: str, size: int) -> Optional[QPixmap]:
-    """Mağaza (MSIX/UWP) uygulamaları için paketteki gerçek logoyu bulur.
-
-    QFileIconProvider WindowsApps altındaki exe'lerde genel ikon döndürür;
-    gerçek ikon paket kökündeki Assets/AppList.targetsize-N_altform-unplated.png'dir.
-    """
-    if "\\windowsapps\\" not in os.path.normcase(exe):
+    """Store uygulamaları için paketteki gerçek logo (QFileIconProvider genel ikon döndürür)."""
+    if not uwp.is_uwp_path(exe):
         return None
-    d = os.path.dirname(exe)
-    root = None
-    for _ in range(4):
-        if os.path.exists(os.path.join(d, "AppxManifest.xml")):
-            root = d
-            break
-        d = os.path.dirname(d)
-    if not root:
+    f = uwp.logo_file(uwp.resolve(exe), size)
+    if not f:
         return None
-    assets = os.path.join(root, "Assets")
-    if not os.path.isdir(assets):
-        return None
-    best = None
-    best_n = 0
-    try:
-        for fn in os.listdir(assets):
-            low = fn.lower()
-            if not (low.startswith("applist.targetsize-") and low.endswith("_altform-unplated.png")):
-                continue
-            try:
-                n = int(low.split("targetsize-")[1].split("_")[0])
-            except (ValueError, IndexError):
-                continue
-            # istenen boyuta eşit/büyük en küçük; yoksa en büyük
-            if best is None or (best_n < size and n > best_n) or (size <= n < best_n):
-                best, best_n = fn, n
-    except OSError:
-        return None
-    if not best:
-        return None
-    pix = QPixmap(os.path.join(assets, best))
+    pix = QPixmap(f)
     if pix.isNull():
         return None
-    if pix.width() != size:
+    if pix.width() != size or pix.height() != size:
         pix = pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
     return pix
+
 
 
 def app_icon(exe: str, size: int = 64) -> QPixmap:
@@ -551,12 +522,12 @@ def app_icon(exe: str, size: int = 64) -> QPixmap:
         return _ICON_CACHE[norm_key]
 
     try:
+        store_pix = _uwp_logo(exe, size)
+        if store_pix is not None:
+            _ICON_CACHE[norm_key] = store_pix
+            return store_pix
         if not os.path.exists(exe):
             return QPixmap()
-        uwp = _uwp_logo(exe, size)
-        if uwp is not None and not uwp.isNull():
-            _ICON_CACHE[norm_key] = uwp
-            return uwp
         provider = QFileIconProvider()
         pix = provider.icon(QFileInfo(exe)).pixmap(size, size)
         if pix.isNull():

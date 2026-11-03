@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import uwp
 from PySide6.QtCore import QFileInfo, QPointF, QProcess, QRectF, Qt, QUrl
 from PySide6.QtGui import (
     QColor,
@@ -295,20 +296,12 @@ def drag_target_index(tile_centers_x: List[float], mouse_x: float) -> int:
 
 
 def launch(path: str, args: Optional[List[str]] = None) -> bool:
-    """Launch application at path using QDesktopServices.openUrl or QProcess."""
+    """Launch application at path (Store apps via their AUMID, others via shell/QProcess)."""
     if not path:
         return False
-    # UWP / Windows Store Apps (e.g. WhatsApp, Spotify UWP)
-    if "windowsapps" in path.lower() or path.lower().startswith("shell:appsfolder"):
-        if "whatsapp" in path.lower():
-            url = QUrl("whatsapp:")
-            return QDesktopServices.openUrl(url)
-        try:
-            import subprocess
-            subprocess.Popen(["cmd.exe", "/c", "start", "", path], shell=False)
-            return True
-        except Exception:
-            pass
+    if uwp.is_uwp_path(path):
+        # WindowsApps exe'leri doğrudan çalıştırılamaz; paket kimliğiyle açılır
+        return uwp.launch(path)
     if args:
         try:
             return QProcess.startDetached(path, args)
