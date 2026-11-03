@@ -786,8 +786,20 @@ class SeritDock(QWidget):
         except (ImportError, Exception) as exc:
             sources.log_err("action_menu_init", exc)
 
-        # Calendar Panel contract
+        # Calendar Panel contract (v31: TodayPanel ile birleşik Hava+Takvim desteği)
         self.cal_panel = None
+        self.today_panel = None
+        try:
+            import today_panel
+            self.today_panel = today_panel.TodayPanel()
+            if hasattr(self.today_panel, "refresh_requested"):
+                self.today_panel.refresh_requested.connect(self._on_cal_refresh_requested)
+            if hasattr(self.today_panel, "join_requested"):
+                self.today_panel.join_requested.connect(self._on_cal_join_requested)
+        except (ImportError, Exception) as exc:
+            sources.log_err("today_panel_init", exc)
+            self.today_panel = None
+
         try:
             import calendar_panel
             self.cal_panel = calendar_panel.CalendarPanel()
@@ -4343,37 +4355,62 @@ class SeritDock(QWidget):
                     rect.size(),
                 )
                 self.tray_popover.show_for(anchor_global)
-        elif key == "clock" or key == "cal":
-            # Takvim paneli contract: self.cal_panel.show_for(anchor_global, month_data, claude_data)
-            cal_data = dict(self.store.get("cal") or {})
-            month_data = dict(self.store.get("calmonth") or cal_data)
-            c_data = dict(self.store.get("claude") or {})
-            anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
-
-            if self.cal_panel is not None and hasattr(self.cal_panel, "show_for"):
-                is_open = getattr(self.cal_panel, "is_open", None)
-                recently_closed = getattr(self.cal_panel, "recently_closed", None)
-                hide_animated = getattr(self.cal_panel, "hide_animated", None)
-
-                if is_open and is_open():
-                    if hide_animated:
-                        hide_animated()
-                    else:
-                        self.cal_panel.hide()
-                elif recently_closed and recently_closed():
-                    pass
-                else:
-                    try:
-                        self.cal_panel.show_for(anchor_global, month_data, c_data)
-                    except Exception as exc:
-                        sources.log_err("cal_panel_show", exc)
-                        self.popover.show_for("cal", anchor_global, cal_data)
+        elif key in ("clock", "cal", "wx"):
+            if self.preview_mode:
+                pass
             else:
-                if self.popover.is_open("cal"):
-                    self.popover.hide_animated()
-                elif not self.popover.recently_closed("cal"):
-                    self.popover.show_for("cal", anchor_global, cal_data)
-        elif key in ("claude", "sys", "wx", "fx"):
+                # v31: Birleşik Günün Özeti (TodayPanel) - Hem Saat/Takvim hem Hava Durumu burayı açar
+                cal_data = dict(self.store.get("cal") or {})
+                month_data = dict(self.store.get("calmonth") or cal_data)
+                c_data = dict(self.store.get("claude") or {})
+                wx_data = dict(self.store.get("wx") or {})
+                city = self.settings.get("city", "Aksaray")
+                anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+
+                tp = getattr(self, "today_panel", None)
+                if tp is not None and hasattr(tp, "show_for"):
+                    is_open = getattr(tp, "is_open", None)
+                    recently_closed = getattr(tp, "recently_closed", None)
+                    hide_animated = getattr(tp, "hide_animated", None)
+
+                    if is_open and is_open():
+                        if hide_animated:
+                            hide_animated()
+                        else:
+                            tp.hide()
+                    elif recently_closed and recently_closed():
+                        pass
+                    else:
+                        try:
+                            tp.show_for(anchor_global, wx_data, month_data, c_data, city=city)
+                        except Exception as exc:
+                            sources.log_err("today_panel_show", exc)
+                            if self.cal_panel is not None:
+                                self.cal_panel.show_for(anchor_global, month_data, c_data)
+                elif self.cal_panel is not None and hasattr(self.cal_panel, "show_for"):
+                    is_open = getattr(self.cal_panel, "is_open", None)
+                    recently_closed = getattr(self.cal_panel, "recently_closed", None)
+                    hide_animated = getattr(self.cal_panel, "hide_animated", None)
+
+                    if is_open and is_open():
+                        if hide_animated:
+                            hide_animated()
+                        else:
+                            self.cal_panel.hide()
+                    elif recently_closed and recently_closed():
+                        pass
+                    else:
+                        try:
+                            self.cal_panel.show_for(anchor_global, month_data, c_data)
+                        except Exception as exc:
+                            sources.log_err("cal_panel_show", exc)
+                            self.popover.show_for("cal", anchor_global, cal_data)
+                else:
+                    if self.popover.is_open("cal"):
+                        self.popover.hide_animated()
+                    elif not self.popover.recently_closed("cal"):
+                        self.popover.show_for("cal", anchor_global, cal_data)
+        elif key in ("claude", "sys", "fx"):
             if self.popover.is_open(key):
                 self.popover.hide_animated()
             elif self.popover.recently_closed(key):
@@ -4394,8 +4431,6 @@ class SeritDock(QWidget):
                         data["top"] = []
                     self.submit_fetch("top")
                 kwargs = {}
-                if key == "wx":
-                    kwargs["city"] = self.settings.get("city", "Aksaray")
                 self.popover.show_for(key, anchor_global, data, **kwargs)
         elif key == "mail":
             if self.mail_panel is not None and hasattr(self.mail_panel, "show_for"):

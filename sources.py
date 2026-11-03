@@ -623,8 +623,10 @@ def fetch_weather(lat: float = 38.37, lon: float = 34.03) -> Dict[str, Any]:
     try:
         url = (
             f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
-            "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m"
-            "&daily=temperature_2m_max,temperature_2m_min&forecast_days=1&timezone=Europe/Istanbul"
+            "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"
+            "&hourly=temperature_2m,weather_code"
+            "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+            "&forecast_days=2&timezone=Europe/Istanbul"
         )
         resp = _http_get(url, timeout=15)
         if resp.status_code != 200:
@@ -662,6 +664,35 @@ def fetch_weather(lat: float = 38.37, lon: float = 34.03) -> Dict[str, Any]:
         max_val = _safe_float(max_raw, None)
         min_val = _safe_float(min_raw, None)
 
+        # Ek alanlar (v31 birleşik panel): eksikse None / boş liste, uydurma yok.
+        hum_val = _safe_float(cur.get("relative_humidity_2m"), None)
+        rain_list = daily.get("precipitation_probability_max")
+        rain_val = _safe_float(rain_list[0], None) if isinstance(rain_list, list) and rain_list else None
+        hourly_out: List[Dict[str, Any]] = []
+        try:
+            hj = j.get("hourly") or {}
+            h_times = hj.get("time") or []
+            h_temps = hj.get("temperature_2m") or []
+            h_codes = hj.get("weather_code") or []
+            cur_time = str(cur.get("time") or "")
+            for k, ts in enumerate(h_times):
+                if str(ts) <= cur_time:
+                    continue
+                t_h = _safe_float(h_temps[k] if k < len(h_temps) else None, None)
+                if t_h is None:
+                    continue
+                try:
+                    c_h = int(h_codes[k]) if k < len(h_codes) and h_codes[k] is not None else 0
+                except (ValueError, TypeError):
+                    c_h = 0
+                hourly_out.append({"time": str(ts), "temp": t_h, "code": c_h,
+                                   "icon": WMO_ICON.get(c_h, "cloud")})
+                if len(hourly_out) >= 6:
+                    break
+        except Exception as exc:
+            log_err("wx_hourly", exc)
+            hourly_out = []
+
         return {
             "temp": temp_val,
             "feel": feel_val,
@@ -671,6 +702,9 @@ def fetch_weather(lat: float = 38.37, lon: float = 34.03) -> Dict[str, Any]:
             "max": max_val,
             "min": min_val,
             "wind": wind_val,
+            "humidity": hum_val,
+            "rain": rain_val,
+            "hourly": hourly_out,
             "source": "open-meteo.com",
         }
     except (httpx.RequestError, httpx.HTTPStatusError) as exc:
