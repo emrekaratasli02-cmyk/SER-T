@@ -68,6 +68,11 @@ def test_today_panel_wiring_in_serit() -> None:
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
 
+    # Gerçek settings.json'a asla yazmasın: ayar dosyasını geçici kopyaya yönlendir
+    import tempfile
+    from pathlib import Path as _P
+    _tmp = _P(tempfile.mkdtemp(prefix="serit-v31-")) / "settings.json"
+    m.SETTINGS_FILE = _tmp
     dock = m.SeritDock({"style": "band"}, preview_mode=False)
     assert hasattr(dock, "today_panel")
     assert dock.today_panel is not None
