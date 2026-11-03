@@ -172,6 +172,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "pinned": None,
     "alerts_enabled": True,
     "reserve_space": True,
+    "net_speed_enabled": False,
+    "updates_enabled": False,
     # "band" = tam genişlik koyu şerit (Lumabar "full width"), "pill" = ortada kapsül
     "style": "band",
     "cards": {
@@ -576,6 +578,12 @@ class SeritDock(QWidget):
             if not self.preview_mode:
                 self.settings["pinned"] = pins_raw
                 save_settings(self.settings)
+        # WhatsApp UWP otomatik sabitleme (mevcut pinlerde yoksa ve preview_mode değilse ekle)
+        wp_exe = r"C:\Program Files\WindowsApps\5319275A.WhatsAppDesktop_2.2641.101.0_x64__cv1g1gvanyjgm\WhatsApp.Root.exe"
+        if not self.preview_mode and pins_raw and not any("whatsapp" in (p.get("path") or p.get("exe") or "").lower() for p in pins_raw):
+            if os.path.exists(wp_exe) or os.path.exists(r"C:\Program Files\WindowsApps"):
+                pins_raw.append({"path": wp_exe, "name": "WhatsApp"})
+                self.settings["pinned"] = pins_raw
         self.pins: List[Dict[str, str]] = list(pins_raw or [])
         self.tiles: List[Dict[str, Any]] = []
         self._last_tiles_sig: Optional[tuple] = None
