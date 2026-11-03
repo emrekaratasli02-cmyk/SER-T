@@ -800,6 +800,21 @@ class SeritDock(QWidget):
             sources.log_err("cal_panel_init", exc)
             self.cal_panel = None
 
+        # v30: Medya Mini-Popover Paneli (MediaPanel)
+        self.media_panel = None
+        try:
+            import media_panel
+            self.media_panel = media_panel.MediaPanel()
+            self.media_panel.control_requested.connect(self._on_media_panel_control)
+            self.media_panel.seek_requested.connect(self._on_media_panel_seek)
+            self.media_panel.volume_requested.connect(self._on_bat_volume_requested)
+            self.media_panel.mute_requested.connect(self._on_bat_mute_requested)
+            self.media_panel.open_mixer_requested.connect(self._on_media_open_mixer)
+            self.media_panel.open_app_requested.connect(self._on_media_open_app)
+        except (ImportError, Exception) as exc:
+            sources.log_err("media_panel_init", exc)
+            self.media_panel = None
+
         self._init_v25()
 
         # AppBar registered state
@@ -1727,7 +1742,13 @@ class SeritDock(QWidget):
 
     # ---------------------------------------------- pil panelindeki ses / parlaklık
     def _push_bat_panel_controls(self) -> None:
-        """Pil paneli açıksa ses ve parlaklık değerlerini ona da gönderir."""
+        """Pil paneli ve medya paneli açıksa ses ve parlaklık değerlerini onlara da gönderir."""
+        mp = getattr(self, "media_panel", None)
+        if mp is not None and mp.is_open():
+            try:
+                mp.set_volume(self._vol_level, self._vol_muted, self._vol_device or None)
+            except Exception as exc:
+                sources.log_err("media_panel_vol", exc)
         panel = getattr(self, "battery_panel", None)
         if panel is None or not hasattr(panel, "set_volume"):
             return
@@ -1736,6 +1757,78 @@ class SeritDock(QWidget):
             panel.set_brightness(self._get_store_monitors())
         except Exception as exc:
             sources.log_err("bat_panel_controls", exc)
+
+    def _on_media_panel_control(self, action: str) -> None:
+        if self.preview_mode or not action:
+            return
+        self.submit_action(
+            "media_ctl",
+            lambda a=action: media.media_control(a),
+            on_done=lambda: QTimer.singleShot(350, lambda: self.submit_fetch("media")),
+        )
+
+    def _on_media_panel_seek(self, frac: float) -> None:
+        if self.preview_mode:
+            return
+        self.submit_action(
+            "media_seek",
+            lambda f=frac: media.media_seek_to_fraction(f),
+            on_done=lambda: QTimer.singleShot(300, lambda: self.submit_fetch("media")),
+        )
+
+    def _on_media_open_mixer(self) -> None:
+        mp = getattr(self, "media_panel", None)
+        switch_from = int(mp.x()) if (mp is not None and mp.isVisible()) else None
+        if mp is not None:
+            mp.hide_instant()
+        rect = getattr(self, "_media_rect", None) or next((r for r, k, _ in self.hit_boxes if k == "media"), None)
+        if rect is None:
+            rect = QRectF(self.width() - 320.0, 16.0, 200.0, 44.0)
+        anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+        try:
+            if switch_from is not None:
+                self.vol_popover.show_for(anchor_global, self._vol_level, self._vol_muted, self._vol_device, switch_from_x=switch_from)
+            else:
+                self.vol_popover.show_for(anchor_global, self._vol_level, self._vol_muted, self._vol_device)
+        except Exception as exc:
+            sources.log_err("media_open_mixer", exc)
+
+    def _on_media_open_app(self, exe_or_app: str) -> None:
+        if self.preview_mode:
+            return
+        mp = getattr(self, "media_panel", None)
+        if mp is not None:
+            mp.hide_animated()
+        key = str(exe_or_app or "").lower().split("!")[0].split(".")[0]
+        if not key:
+            return
+        for t in self.tiles:
+            texe = str(t.get("exe") or "").lower()
+            tname = str(t.get("name") or "").lower()
+            if key in texe or key in tname:
+                hwnds = t.get("hwnds") or []
+                if hwnds:
+                    winapi.activate_window(int(hwnds[0]))
+                    return
+                path = t.get("path") or t.get("exe")
+                if path:
+                    pinned.launch(str(path))
+                    return
+
+    def _toggle_media_panel(self, rect: QRectF) -> None:
+        mp = getattr(self, "media_panel", None)
+        if mp is None:
+            return
+        if mp.is_open():
+            mp.hide_animated()
+        elif mp.recently_closed():
+            pass
+        else:
+            anchor_global = QRectF(self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))), rect.size())
+            try:
+                mp.show_for(anchor_global, self._now_playing_info, self._vol_level, self._vol_muted, self._vol_device)
+            except Exception as exc:
+                sources.log_err("media_panel_show", exc)
 
     def _on_bat_volume_requested(self, level: float) -> None:
         level = max(0.0, min(100.0, float(level)))
@@ -1952,6 +2045,8 @@ class SeritDock(QWidget):
 
             track_changed = (_track_sig(np) != _track_sig(old_np))
             self._now_playing_info = np
+            if self.media_panel is not None and self.media_panel.is_open():
+                self.media_panel.set_media(np)
             t = getattr(self, "media_ring_timer", None)
             if t is not None and isinstance(np, dict) and np.get("playing") and not t.isActive():
                 t.start()
@@ -4158,19 +4253,27 @@ class SeritDock(QWidget):
                         lambda a=action: media.media_control(a),
                         on_done=lambda: QTimer.singleShot(350, lambda: self.submit_fetch("media")),
                     )
-                elif bool(self.settings.get("media_seek_enabled", True)):
-                    # Butonların dışına tıklandı -> İlerleme çizgisine göre sarma (Seek) kontrolü
-                    m_rect = getattr(self, "_media_rect", None) or rect
-                    # Kartın alt 8 piksellik çizgisine tıklandıysa veya orta alana tıklandıysa
-                    if m_rect and m_rect.width() > 0:
-                        dur = (self._now_playing_info or {}).get("duration_s")
-                        if dur and float(dur) > 0.0:
-                            frac = max(0.0, min(1.0, (pos.x() - m_rect.left()) / m_rect.width()))
-                            self.submit_action(
-                                "media_seek",
-                                lambda f=frac: media.media_seek_to_fraction(f),
-                                on_done=lambda: QTimer.singleShot(300, lambda: self.submit_fetch("media")),
-                            )
+                    return
+                m_rect = getattr(self, "_media_rect", None) or rect
+                # Kartın en alt 12px şeridine tıklandıysa doğrudan sarma (seek), üst/orta gövdeye tıklandıysa Medya Mini-Popover
+                if (
+                    bool(self.settings.get("media_seek_enabled", True))
+                    and m_rect
+                    and m_rect.width() > 0
+                    and pos.y() >= m_rect.bottom() - 12.0
+                ):
+                    dur = (self._now_playing_info or {}).get("duration_s")
+                    if dur and float(dur) > 0.0:
+                        frac = max(0.0, min(1.0, (pos.x() - m_rect.left()) / m_rect.width()))
+                        self.submit_action(
+                            "media_seek",
+                            lambda f=frac: media.media_seek_to_fraction(f),
+                            on_done=lambda: QTimer.singleShot(300, lambda: self.submit_fetch("media")),
+                        )
+                        return
+                self._toggle_media_panel(m_rect)
+            else:
+                self._toggle_media_panel(getattr(self, "_media_rect", None) or rect)
         elif key == "tray":
             if self.preview_mode:
                 pass
