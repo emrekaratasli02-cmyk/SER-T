@@ -97,11 +97,11 @@ def test_dock_layout():
         return boxes
 
     b = layout(BAT_ON)
-    # v22: pil varken kapsülde yalnız pil (ses/parlaklık pil panelinde)
-    assert set(b) >= {"bat", "clock"} and "bright" not in b and "vol" not in b
+    # v33: pil sol kanatta (CPU/RAM yanında 48 px halka); sağda hızlı ayarlar (güneş | hoparlör)
+    assert set(b) >= {"bat", "clock", "bright", "vol"}
     assert abs(nonlocal_sw[0] - b["clock"].right() - 14.0) <= 0.5
-    assert b["bat"].right() < b["clock"].left() and b["tray"].right() < b["bat"].left()
-    assert abs(b["bat"].width() - dock_cards.BATTERY_PILL_W) < 0.01
+    assert b["bat"].right() < b["tray"].left() and b["tray"].right() < b["bright"].left()
+    assert abs(b["bat"].width() - serit_mod.BAT_CARD_WIDTH) < 0.01
     b = layout({})
     assert "bat" not in b and abs(nonlocal_sw[0] - b["clock"].right() - 14.0) <= 0.5
     assert abs(b["vol"].right() - b["bright"].left() - 74.0) < 0.01

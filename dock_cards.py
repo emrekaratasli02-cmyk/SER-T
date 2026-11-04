@@ -2181,85 +2181,54 @@ def draw_battery_pill(
     active: bool = False,
     on_ac_full: bool = False,
 ) -> QRectF:
-    """Yalnız pil (v23 sade): zemin ve ışıma yok; renkli pil simgesi + yüzde doğrudan bantta.
+    """Sol kanat pil halkası: CPU/RAM ile aynı 34 px halka, merkezde şimşek veya yüzde.
 
-    Renk: şarjda yeşil, <=%20 ve şarjda değilse kırmızı, aksi halde beyaz.
-    Üzerine gelince / panel açıkken hafif gri hap zemin (tıklanabilir olduğu belli olsun).
-    on_ac_full (v24, Emre): prizde, şarj olmuyor ve dolu -> yeşil fiş + "Prizde" (pil boşta, makine prizden
-    çalışıyor); üzerine gelince / panel açıkken yine pil + yüzde görünür.
-    Tüm kapsül tek isabet alanıdır; kapsül dikdörtgeni döndürülür.
+    Renk: şarjda/prizde yeşil, <=%20 ve şarjda değilse kırmızı, aksi halde beyaz.
+    Şarjda / prizde merkezde keskin yeşil şimşek; pildeyken tabular yüzde.
+    Üzerine gelince / panel açıkken yumuşak kart zemini.
+    Tüm kart tek isabet alanıdır; dikdörtgen döndürülür.
     """
     col = battery_color(percent, charging)
-    dpr = _device_ratio(p)
-
-    if on_ac_full and not hovered and not active:
-        # v33: Diğer dock halkalarıyla aynı çapta yeşil radyal güç halkası + merkezde şimşek.
-        green = QColor(panel_style.OK)
-        cx = rect.center().x()
-        cy = rect.center().y()
-        stroke = RING_STROKE
-        r_ring = QRectF(cx - SYS_RING_SIZE / 2.0, cy - SYS_RING_SIZE / 2.0, SYS_RING_SIZE, SYS_RING_SIZE)
-        p.save()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        # Sönük arka iz + canlı yeşil yay
-        p.setPen(QPen(COLOR_RING_TRACK, stroke, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawEllipse(r_ring)
-        lvl = 100.0 if percent is None else max(0.0, min(100.0, float(percent)))
-        p.setPen(QPen(green, stroke, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        p.drawArc(r_ring, 90 * 16, -int(round((lvl / 100.0) * 360 * 16)))
-        # Merkezde keskin yeşil şimşek glifi
-        bolt = _get_bolt_path(cx, cy, 10.0, 16.0)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(green)
-        p.drawPath(bolt)
-        p.restore()
-        return QRectF(rect)
+    lvl = 100.0 if percent is None else max(0.0, min(100.0, float(percent)))
+    cx = rect.center().x()
+    # 52 px kart yüksekliğinde 34 px halka; 32 px gibi dar bir rect geçilirse sığacak çap kullanılır
+    avail_h = rect.height()
+    dia = min(SYS_RING_SIZE, avail_h - 2.0)
+    stroke = min(RING_STROKE, dia / 8.0)
+    cy = rect.center().y()
+    r = (dia - stroke) / 2.0
+    r_ring = QRectF(cx - r, cy - r, 2.0 * r, 2.0 * r)
 
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    if hovered or active:
-        sr = _snap_rect(rect, dpr)  # kesirli ölçekte keskin kenar
+    if hovered:
+        draw_card_base(p, rect, CARD_RADIUS, hover=True, press_scale=1.0)
+    elif active:
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, 34 if active else 22))
-        p.drawPath(_rounded_path(sr, sr.height() / 2.0))
+        p.setBrush(QColor(255, 255, 255, 30))
+        p.drawPath(_rounded_path(rect, CARD_RADIUS))
 
-    f = theme.make_font(13.0, QFont.Weight.DemiBold, tabular=True)
-    fm = _get_fm(f)
-    txt = "—" if percent is None else f"%{int(round(max(0.0, min(100.0, float(percent)))))}"
-    gap = 6.0
-    ring_sz = 20.0
-    content_w = ring_sz + gap + _text_width(fm, txt)
-    x = rect.center().x() - content_w / 2.0
-    cy = rect.center().y()
-    r_ring = QRectF(x, cy - ring_sz / 2.0, ring_sz, ring_sz)
-
-    # v28: Hibrit Radyal Pil & Güç Halkası (tüm durumlarda: şarjda, prizde veya pildeyken)
-    track_col = QColor(col)
-    track_col.setAlpha(45)
-    p.setPen(QPen(track_col, 2.0))
+    # Arka iz + aktif yay (12 yönünden saat yönünde)
+    p.setPen(QPen(COLOR_RING_TRACK, stroke, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawEllipse(r_ring)
-    if percent is not None:
-        lvl = max(0.0, min(100.0, float(percent)))
-        if lvl > 0.0:
-            p.setPen(QPen(col, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawArc(r_ring, 90 * 16, -int(round((lvl / 100.0) * 360 * 16)))
+    if lvl > 0.0:
+        p.setPen(QPen(col, stroke, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawArc(r_ring, 90 * 16, -int(round((lvl / 100.0) * 360 * 16)))
 
-    # Merkezde keskin şimşek glifi (şarjda canlı yeşil, pildeyken hafif ikincil)
-    bolt = _get_bolt_path(r_ring.center().x(), r_ring.center().y(), 7.0, 11.0)
-    p.setPen(Qt.PenStyle.NoPen)
-    bolt_col = QColor(col)
-    if not charging:
-        bolt_col.setAlpha(185)
-    p.setBrush(bolt_col)
-    p.drawPath(bolt)
-
-    p.setFont(f)
-    p.setPen(col)
-    tx = x + ring_sz + gap
-    p.drawText(QRectF(tx, rect.top(), max(0.0, rect.right() - tx - 1.0), rect.height()),
-               Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, txt)
+    if charging or on_ac_full:
+        bolt_w = max(6.0, dia * (10.0 / 34.0))
+        bolt_h = max(9.0, dia * (16.0 / 34.0))
+        bolt = _get_bolt_path(cx, cy, bolt_w, bolt_h)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(panel_style.OK))
+        p.drawPath(bolt)
+    else:
+        f = theme.make_font(11.0 if dia >= 30.0 else 9.5, QFont.Weight.DemiBold, tabular=True)
+        p.setFont(f)
+        p.setPen(COLOR_TXT_PRIMARY)
+        txt = f"{int(round(lvl))}" if percent is not None else "—"
+        p.drawText(r_ring, Qt.AlignmentFlag.AlignCenter, txt)
     p.restore()
     return QRectF(rect)
 

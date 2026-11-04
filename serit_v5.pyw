@@ -199,6 +199,7 @@ AG_CARD_WIDTH: float = 204.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
+BAT_CARD_WIDTH: float = 48.0  # sol kanat pil halkası (34 px halka + 7 px iç boşluk)
 MARKET_CARD_WIDTH: float = 160.0
 CLOCK_BLOCK_WIDTH: float = 70.0
 TRAY_COLUMN_WIDTH: float = 32.0
@@ -953,7 +954,7 @@ class SeritDock(QWidget):
         return bool(b.get("present")) and b.get("percent") is not None
 
     def _pill_width(self) -> float:
-        return dock_cards.BATTERY_PILL_W if self._has_battery() else ACTION_PILL_WIDTH
+        return ACTION_PILL_WIDTH
 
     def _draw_quick_pill(
         self,
@@ -963,24 +964,9 @@ class SeritDock(QWidget):
         vol_open: bool,
         register_hitboxes: bool = True,
     ) -> None:
-        """Pil varsa yalnız pil kapsülü (ses/parlaklık pil panelinde); yoksa eski güneş | hoparlör kapsülü."""
-        bat_open = bool(self.battery_panel.is_open())
-        if self._has_battery():
-            r_bat = dock_cards.draw_battery_pill(
-                p,
-                r_pill,
-                float(self._bat_info.get("percent")),
-                # fişteyken de yeşil: Windows %99-100'de 'şarj olmuyor' der ama makine prizde
-                bool(self._bat_info.get("charging")) or bool(self._bat_info.get("plugged")),
-                hovered=(self._hover_key == "bat"),
-                active=bat_open,
-                on_ac_full=battery_panel.on_ac_full(self._bat_info),  # v24: fiş + "Prizde"
-            )
-            if register_hitboxes:
-                self.hit_boxes.append((r_bat, "bat", None))
-            return
-        hov_part = self._hover_key if self._hover_key in ("bright", "vol", "bat") else None
-        act_part = "bright" if bright_open else ("vol" if vol_open else ("bat" if bat_open else None))
+        """Hızlı ayarlar kapsülü: güneş | hoparlör (pil artık sol kanatta ayrı halka)."""
+        hov_part = self._hover_key if self._hover_key in ("bright", "vol") else None
+        act_part = "bright" if bright_open else ("vol" if vol_open else None)
         pill_res = dock_cards.draw_quick_settings_pill(
             p,
             r_pill,
@@ -988,8 +974,8 @@ class SeritDock(QWidget):
             active_part=act_part,
             vol_level=self._vol_level,
             vol_muted=self._vol_muted,
-            bat_percent=self._bat_info.get("percent"),
-            bat_charging=bool(self._bat_info.get("charging")),
+            bat_percent=None,
+            bat_charging=False,
             bat_present=False,
         )
         if register_hitboxes:
@@ -997,14 +983,11 @@ class SeritDock(QWidget):
             self.hit_boxes.append((pill_res[1], "vol", None))
 
     def _register_quick_pill_hitboxes(self, r_pill: QRectF, bright_open: bool, vol_open: bool) -> None:
-        if self._has_battery():
-            self.hit_boxes.append((r_pill, "bat", None))
-        else:
-            hw = r_pill.width() / 2.0
-            r_sun = QRectF(r_pill.x(), r_pill.y(), hw, r_pill.height())
-            r_spk = QRectF(r_pill.x() + hw, r_pill.y(), hw, r_pill.height())
-            self.hit_boxes.append((r_sun, "bright", None))
-            self.hit_boxes.append((r_spk, "vol", None))
+        hw = r_pill.width() / 2.0
+        r_sun = QRectF(r_pill.x(), r_pill.y(), hw, r_pill.height())
+        r_spk = QRectF(r_pill.x() + hw, r_pill.y(), hw, r_pill.height())
+        self.hit_boxes.append((r_sun, "bright", None))
+        self.hit_boxes.append((r_spk, "vol", None))
 
     def _actions_width(self) -> float:
         return ACTION_BTN_SIZE + ACTION_BTN_GAP + self._pill_width()
@@ -2348,6 +2331,8 @@ class SeritDock(QWidget):
                 lw_items.append(w_ag)
             if show_sys:
                 lw_items.append(SYS_CARD_WIDTH)
+            if self._has_battery():
+                lw_items.append(BAT_CARD_WIDTH)
             lw_w = (sum(lw_items) + max(0, len(lw_items) - 1) * GAP_MODULE) if lw_items else 0.0
 
             rw_items: List[float] = []
@@ -2421,6 +2406,7 @@ class SeritDock(QWidget):
     _CONTENT_INSET: Dict[str, Tuple[float, float]] = {
         "claude": (10.0, 10.0), "ag": (10.0, 10.0), "mail": (10.0, 10.0), "sys": (10.0, 10.0),
         "apps": (6.0, 6.0), "media": (6.0, 10.0), "cal": (10.0, 10.0),
+        "bat": (6.0, 6.0),
     }
 
     @classmethod
@@ -3581,12 +3567,14 @@ class SeritDock(QWidget):
             eff_mail_w = w_mail
             eff_claude_w = w_claude
             eff_ag_w = w_ag
-            n_lw = int(show_claude) + int(show_mail) + int(show_ag) + int(show_sys)
+            show_bat = self._has_battery()
+            n_lw = int(show_claude) + int(show_mail) + int(show_ag) + int(show_sys) + int(show_bat)
             needed_space = (
                 (w_claude if show_claude else 0.0)
                 + (eff_mail_w if show_mail else 0.0)
                 + (w_ag if show_ag else 0.0)
                 + (SYS_CARD_WIDTH if show_sys else 0.0)
+                + (BAT_CARD_WIDTH if show_bat else 0.0)
                 + max(0, n_lw - 1) * GAP_MODULE
             )
             max_allowed_lw = apps_x - (GAP_MODULE if (w_apps > 0) else 0.0) - 10.0
@@ -3613,6 +3601,8 @@ class SeritDock(QWidget):
                 lw_cards.append(("ag", eff_ag_w))
             if show_sys:
                 lw_cards.append(("sys", SYS_CARD_WIDTH))
+            if show_bat:
+                lw_cards.append(("bat", BAT_CARD_WIDTH))
 
             lw_w = (sum(w for _, w in lw_cards) + max(0, len(lw_cards) - 1) * GAP_MODULE) if lw_cards else 0.0
             lw_end = apps_x - (GAP_MODULE if (lw_w > 0 and w_apps > 0) else 0.0)
@@ -3697,9 +3687,11 @@ class SeritDock(QWidget):
                 if intersects(r_card):
                     is_hover = (self._hover_key == card_key)
                     press_scale = self.press_tween.scale if (self._pressed_key == card_key) else 1.0
-                    card_open = (open_claude if card_key == "claude" else
-                                 (open_mail if card_key == "mail" else
-                                  (open_ag if card_key == "ag" else open_sys)))
+                    bat_open = bool(self.battery_panel is not None and self.battery_panel.is_open())
+                    card_open = (bat_open if card_key == "bat" else
+                                 (open_claude if card_key == "claude" else
+                                  (open_mail if card_key == "mail" else
+                                   (open_ag if card_key == "ag" else open_sys))))
 
                     if card_open and not is_hover:  # açık panel kartı: kalıcı hafif zemin (A)
                         p.save()
@@ -3727,6 +3719,16 @@ class SeritDock(QWidget):
                             cpu_disp=c_disp,
                             ram_disp=r_disp,
                             opacity=self.anim_sys_op.value,
+                        )
+                    elif card_key == "bat":
+                        dock_cards.draw_battery_pill(
+                            p,
+                            r_card,
+                            float(self._bat_info.get("percent", 100)),
+                            bool(self._bat_info.get("charging")) or bool(self._bat_info.get("plugged")),
+                            hovered=is_hover,
+                            active=bat_open,
+                            on_ac_full=battery_panel.on_ac_full(self._bat_info),
                         )
 
                 cur_lw_x += card_w + GAP_MODULE
