@@ -85,12 +85,39 @@ def parse_powercfg_list(text: str) -> list[dict[str, Any]]:
 
 
 def _decode_console_output(raw_bytes: bytes) -> str:
-    """Windows konsol çıktısını uygun karakter kodlamasıyla metne dönüştürür."""
-    for enc in ("utf-8", "cp1254", "cp857", "cp1252", sys.getfilesystemencoding()):
+    """Windows konsol çıktısını uygun karakter kodlamasıyla metne dönüştürür.
+
+    powercfg çıktısı OEM kod sayfasıyla (TR Windows'ta cp857) gelir; önce konsol
+    kod sayfasını dener, UTF-8'i son çare olarak kullanır (UTF-8-first decode
+    cp857 baytlarını 'başarılı ama yanlış' olarak kabul edip plan adlarını bozar).
+    """
+    if not raw_bytes:
+        return ""
+    encodings: list[str] = []
+    try:
+        import ctypes as _ctypes
+        cp_out = _ctypes.windll.kernel32.GetConsoleOutputCP()
+        if cp_out:
+            encodings.append(f"cp{cp_out}")
+    except Exception:
+        pass
+    try:
+        import ctypes as _ctypes
+        cp_oem = _ctypes.windll.kernel32.GetOEMCP()
+        if cp_oem:
+            enc = f"cp{cp_oem}"
+            if enc not in encodings:
+                encodings.append(enc)
+    except Exception:
+        pass
+    for fallback in ("cp857", "cp1254", "utf-8", "cp1252"):
+        if fallback not in encodings:
+            encodings.append(fallback)
+    for enc in encodings:
         try:
             return raw_bytes.decode(enc)
         except (UnicodeDecodeError, LookupError):
-            pass
+            continue
     return raw_bytes.decode("utf-8", errors="replace")
 
 

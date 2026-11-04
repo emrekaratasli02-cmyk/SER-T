@@ -12,8 +12,8 @@ import math
 from pathlib import Path
 import sys
 import time
+from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-
 import psutil
 from PySide6.QtCore import (
     QEasingCurve,
@@ -118,6 +118,11 @@ COLOR_REFRESH_BORDER: QColor = QColor(255, 255, 255, 24)
 COLOR_REFRESH_TXT: QColor = QColor(255, 255, 255, 245)
 
 
+# Sınırlı font önbelleği (theme/panel_style ile aynı mantık).
+_POPOVER_FONT_CACHE: "OrderedDict[tuple, QFont]" = OrderedDict()
+_POPOVER_FONT_CACHE_MAX: int = 96
+
+
 def make_font(
     size_px: int,
     weight: QFont.Weight = QFont.Weight.Normal,
@@ -125,6 +130,12 @@ def make_font(
     letter_spacing: Optional[float] = None,
 ) -> QFont:
     """Create a high-DPI Segoe UI Variable font instance with optical sizing and tabular numerals."""
+    key = (int(size_px), weight, tabular, letter_spacing)
+    cached = _POPOVER_FONT_CACHE.get(key)
+    if cached is not None:
+        _POPOVER_FONT_CACHE.move_to_end(key)
+        return cached
+
     if size_px >= 15:
         primary = "Segoe UI Variable Display"
         fallbacks = ["Segoe UI Variable", "Segoe UI Variable Text", "Segoe UI", "sans-serif"]
@@ -150,6 +161,9 @@ def make_font(
             f.setLetterSpacing(QFont.AbsoluteSpacing, letter_spacing)
         except Exception:
             pass
+    if len(_POPOVER_FONT_CACHE) >= _POPOVER_FONT_CACHE_MAX:
+        _POPOVER_FONT_CACHE.popitem(last=False)
+    _POPOVER_FONT_CACHE[key] = f
     return f
 
 

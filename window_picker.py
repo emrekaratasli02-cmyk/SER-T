@@ -110,9 +110,11 @@ class WindowPicker(QWidget):
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.NoDropShadowWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setMouseTracking(True)
 
         self._app_name: str = "Pencereler"
@@ -251,10 +253,14 @@ class WindowPicker(QWidget):
             return
 
         ps.animate_in(self, self._target_pos(), switch_from_x=switch_from_x)
-        self.activateWindow()
-        self.setFocus()
+        # Odak çalınmasın: pencere seçici hover/tıklama ile açılırken yazı flow'unu kesmez.
+        # Dışarıya tıklama kapatma eventFilter üzerinden handled.
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
     def hide_animated(self) -> None:
+        self._remove_outside_click_filter()
         if not self.isVisible() or self._closing:
             return
         self._closing = True
@@ -266,6 +272,7 @@ class WindowPicker(QWidget):
         ps.animate_out(self, on_done=_done)
 
     def hide_instant(self) -> None:
+        self._remove_outside_click_filter()
         if self.isVisible():
             self._last_close_time = time.monotonic()
         self._closing = False
@@ -332,6 +339,26 @@ class WindowPicker(QWidget):
                     self.hide_animated()
         super().changeEvent(event)
 
+    def eventFilter(self, obj, event) -> bool:
+        """Dışarıya tıklama ile paneli kapat (aktivasyon kullanılmadığından)."""
+        if (
+            event.type() == QEvent.Type.MouseButtonPress
+            and self.isVisible()
+            and not self._closing
+        ):
+            pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else event.globalPos()
+            if not self.geometry().contains(pos):
+                self.hide_animated()
+        return super().eventFilter(obj, event)
+
+    def _remove_outside_click_filter(self) -> None:
+        app = QGuiApplication.instance()
+        if app is not None:
+            try:
+                app.removeEventFilter(self)
+            except Exception:
+                pass
+
     def _on_anchor_timeout(self) -> None:
         if self.isVisible() and not self.isActiveWindow() and not self._closing:
             self.hide_animated()
@@ -339,6 +366,7 @@ class WindowPicker(QWidget):
     def hideEvent(self, event) -> None:
         self._closing = False
         self._last_close_time = time.monotonic()
+        self._remove_outside_click_filter()
         super().hideEvent(event)
 
     def wheelEvent(self, event) -> None:

@@ -727,7 +727,7 @@ class SeritDock(QWidget):
 
         # v27: Pencere yanıp sönme (turuncu dikkat bildirimi) izleyici
         self._flash_watcher = None
-        self._flashing_hwnds: Set[int] = set()
+        self._flashing_hwnds: set[int] = set()
         self._flash_timer = QTimer(self)
         self._flash_timer.setInterval(80)
         self._flash_timer.timeout.connect(self._tick_flash)
@@ -746,7 +746,7 @@ class SeritDock(QWidget):
             self.tray_panel = tray_panel.TrayPanel()
             if hasattr(self.tray_panel, "item_activated"):
                 self.tray_panel.item_activated.connect(self._on_tray_panel_item_activated)
-        except (ImportError, Exception) as exc:
+        except Exception as exc:
             sources.log_err("tray_panel_init", exc)
             self.tray_panel = None
 
@@ -767,7 +767,7 @@ class SeritDock(QWidget):
                     self.quota_panel.refresh_requested.connect(lambda: self.submit_fetch("ag"))
                 if hasattr(self.quota_panel, "account_selected"):
                     self.quota_panel.account_selected.connect(self._on_ag_account_selected)
-        except (ImportError, Exception) as exc:
+        except Exception as exc:
             sources.log_err("info_panels_init", exc)
 
         # Action Menu & Tray Actions contract
@@ -800,7 +800,7 @@ class SeritDock(QWidget):
                 self.action_menu = action_menu.ActionMenu()
                 if hasattr(self.action_menu, "action_chosen"):
                     self.action_menu.action_chosen.connect(self._on_action_chosen)
-        except (ImportError, Exception) as exc:
+        except Exception as exc:
             sources.log_err("action_menu_init", exc)
 
         # Calendar Panel contract (v31: TodayPanel ile birleşik Hava+Takvim desteği)
@@ -813,7 +813,7 @@ class SeritDock(QWidget):
                 self.today_panel.refresh_requested.connect(self._on_cal_refresh_requested)
             if hasattr(self.today_panel, "join_requested"):
                 self.today_panel.join_requested.connect(self._on_cal_join_requested)
-        except (ImportError, Exception) as exc:
+        except Exception as exc:
             sources.log_err("today_panel_init", exc)
             self.today_panel = None
 
@@ -825,7 +825,7 @@ class SeritDock(QWidget):
             # v27: toplantı katılım sinyali
             if hasattr(self.cal_panel, "join_requested"):
                 self.cal_panel.join_requested.connect(self._on_cal_join_requested)
-        except (ImportError, Exception) as exc:
+        except Exception as exc:
             sources.log_err("cal_panel_init", exc)
             self.cal_panel = None
 
@@ -840,7 +840,7 @@ class SeritDock(QWidget):
             self.media_panel.mute_requested.connect(self._on_bat_mute_requested)
             self.media_panel.open_mixer_requested.connect(self._on_media_open_mixer)
             self.media_panel.open_app_requested.connect(self._on_media_open_app)
-        except (ImportError, Exception) as exc:
+        except Exception as exc:
             sources.log_err("media_panel_init", exc)
             self.media_panel = None
 
@@ -2031,7 +2031,9 @@ class SeritDock(QWidget):
                 return
             changed_visual = False
             v_data = res.get("vol") or {}
-            lvl = float(v_data.get("level", self._vol_level))
+            lvl = safe_float(v_data.get("level"), self._vol_level)
+            if lvl is None:
+                lvl = self._vol_level
             muted = bool(v_data.get("muted", self._vol_muted))
             dev = str(v_data.get("device", self._vol_device))
             if lvl != self._vol_level or muted != self._vol_muted or dev != self._vol_device:
@@ -2718,9 +2720,6 @@ class SeritDock(QWidget):
             p.show_for(anchor_global)
         except Exception as exc:
             sources.log_err("shelf_panel_show", exc)
-
-    def _on_shelf_Pulse_or_chip(self) -> None:
-        pass
 
     def show_action_chip(
         self,
@@ -5529,7 +5528,8 @@ class SeritDock(QWidget):
                     r.size(),
                 )
                 self.vol_popover.show_for(media_anchor, self._vol_level, self._vol_muted, self._vol_device)
-                self.submit_fetch("vol")
+                # "vol" fetcher anahtarı yok; ses durumu zaten "media" fetcher'ında taşınıyor.
+                self.submit_fetch("media")
                 return
             if key == "tray_icon" and extra and r.contains(cpos):
                 tray_anchor = QRectF(

@@ -50,13 +50,29 @@ def _paint(d) -> None:
         p.end()
 
 
+def _paint_dock(d) -> None:
+    img = QImage(1600, int(serit_mod.DOCK_HEIGHT), QImage.Format.Format_ARGB32_Premultiplied)
+    d.resize(1600, int(serit_mod.DOCK_HEIGHT))
+    p = QPainter(img)
+    try:
+        d._paint_content(p)
+    finally:
+        p.end()
+
+
 def test_battery_only_pill_when_battery_present() -> None:
+    """Pil artık sol kanatta ayrı halka; sağdaki hızlı ayarlar kapsülü her zaman güneş | hoparlör."""
     d = _dock(True)
     d.hit_boxes = []
     _paint(d)
     keys = [k for _, k, _ in d.hit_boxes]
-    assert keys == ["bat"], keys
-    assert d._pill_width() == dock_cards.BATTERY_PILL_W
+    assert keys == ["bright", "vol"], keys
+    assert d._pill_width() == serit_mod.ACTION_PILL_WIDTH
+    d.hit_boxes = []
+    _paint_dock(d)
+    keys = [k for _, k, _ in d.hit_boxes]
+    assert "bat" in keys, keys
+    assert keys.count("bat") == 1, keys
 
 
 def test_old_pill_without_battery() -> None:
@@ -127,7 +143,7 @@ def test_plugged_but_not_charging_is_green() -> None:
     serit_mod.dock_cards.draw_battery_pill = lambda p, r, pct, chg, **k: seen.append(chg) or r
     try:
         d.hit_boxes = []
-        _paint(d)
+        _paint_dock(d)
     finally:
         serit_mod.dock_cards.draw_battery_pill = real
     assert seen == [True], seen

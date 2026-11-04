@@ -384,6 +384,8 @@ class SettingsWindow(QWidget):
         target = self._target_position(anchor_global)
         dpr = 1.0
         screen = QGuiApplication.primaryScreen()
+        if anchor_global is not None:
+            screen = QGuiApplication.screenAt(anchor_global.center().toPoint()) or screen
         if screen is not None:
             dpr = screen.devicePixelRatio()
         if winapi is not None and hasattr(winapi, "set_round_region"):

@@ -32,6 +32,29 @@ MAX_CLIPS = 30
 MAX_TEXT_LEN = 50_000
 PREVIEW_LEN = 120
 
+# Windows pano gizlilik bayrağı: şifre yöneticileri ve hassas uygulamalar
+# kopyalanan içeriği pano geçmişine alınmaması için bu formatı işaretler.
+# https://learn.microsoft.com/windows/win32/dataxchg/clipboard-formats
+try:
+    import ctypes as _ctypes
+    _user32 = _ctypes.windll.user32
+    _EXCLUDE_CLIPBOARD_CF = _user32.RegisterClipboardFormatW(
+        "ExcludeClipboardContentFromMarkerProcessing"
+    )
+except Exception:  # pragma: no cover - Windows dışı ortam
+    _user32 = None
+    _EXCLUDE_CLIPBOARD_CF = 0
+
+
+def _clipboard_is_private() -> bool:
+    """Pano içeriği gizlilik bayrağıyla işaretlenmiş mi (şifre/2FA/API anahtarı)."""
+    if _user32 is None or not _EXCLUDE_CLIPBOARD_CF:
+        return False
+    try:
+        return bool(_user32.IsClipboardFormatAvailable(_EXCLUDE_CLIPBOARD_CF))
+    except Exception:
+        return False
+
 _RE_HEX_COLOR = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 _RE_URL = re.compile(r"^https?://[^\s/$.?#].[^\s]*$", re.IGNORECASE)
 _CODE_TOKENS = (
@@ -231,10 +254,12 @@ class ClipboardMonitor(QObject):
         clip = QGuiApplication.clipboard()
         if clip is None:
             return
+        # Şifre yöneticileri ve gizli içerik pano geçmişine alınmamalı.
+        if _clipboard_is_private():
+            return
         text = clip.text()
         if text and self.store.add_text(text):
             self.changed.emit()
-
     def copy_to_system(self, text: str) -> bool:
         """Bir metni sistem panosuna geri yazar (kendi dinleyicisini susturarak)."""
         if not text:

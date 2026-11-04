@@ -520,11 +520,15 @@ def fetch_tasks(
 
         # Strictly 'list' only
         cmd = [h_py, tasks_script, "list"]
+        env = dict(env or {})
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         proc = subprocess.run(
             cmd,
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdin=subprocess.DEVNULL,
             timeout=timeout,
             creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
@@ -670,10 +674,15 @@ def fetch_antigravity(
             return {"err": "Antigravity okunamadı"}
 
         cmd = [h_py, script]
+        env = os.environ.copy()
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         proc = subprocess.run(
             cmd,
+            env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdin=subprocess.DEVNULL,
             timeout=timeout,
             creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,

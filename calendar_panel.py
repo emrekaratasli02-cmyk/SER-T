@@ -383,9 +383,12 @@ class CalendarPanel(QWidget):
             Qt.WindowType.Window
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.NoDropShadowWindowHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+            | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setMouseTracking(True)
 
         # Internal state
@@ -522,13 +525,17 @@ class CalendarPanel(QWidget):
 
             self._is_closing = False
             panel_style.animate_in(self, target, switch_from_x=switch_from_x)
-            self.activateWindow()
-            self.setFocus()
+            # Odak çalınmasın: hover/tıklama ile açılan panel yazı flow'unu kesmez.
+            # Dışarıya tıklama kapatma eventFilter üzerinden handled.
+            app = QGuiApplication.instance()
+            if app is not None:
+                app.installEventFilter(self)
         except Exception as exc:
             _log_err("calendar_show_for", exc)
 
     def hide_animated(self) -> None:
         """Trigger the shared close animation, then hide."""
+        self._remove_outside_click_filter()
         if not self.isVisible() or self._is_closing:
             return
         self._is_closing = True
@@ -537,6 +544,7 @@ class CalendarPanel(QWidget):
 
     def hide_instant(self) -> None:
         """Close without animation (e.g. switching to another capsule panel)."""
+        self._remove_outside_click_filter()
         if self.isVisible():
             self._last_close_time = time.monotonic()
         self._is_closing = False
@@ -544,6 +552,7 @@ class CalendarPanel(QWidget):
 
     def _on_closed(self) -> None:
         self._is_closing = False
+        self._remove_outside_click_filter()
 
     def select_date(self, target_date: dt.date) -> None:
         """Change selected date and synchronize visible month if needed."""
@@ -877,6 +886,26 @@ class CalendarPanel(QWidget):
         self._hover_join_up_idx = -1
         self.update()
         super().leaveEvent(event)
+
+    def eventFilter(self, obj, event) -> bool:
+        """Dışarıya tıklama ile paneli kapat (aktivasyon kullanılmadığından)."""
+        if (
+            event.type() == QEvent.Type.MouseButtonPress
+            and self.isVisible()
+            and not self._is_closing
+        ):
+            pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else event.globalPos()
+            if not self.geometry().contains(pos):
+                self.hide_animated()
+        return super().eventFilter(obj, event)
+
+    def _remove_outside_click_filter(self) -> None:
+        app = QGuiApplication.instance()
+        if app is not None:
+            try:
+                app.removeEventFilter(self)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Cache / layout

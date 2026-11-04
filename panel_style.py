@@ -9,6 +9,7 @@ Eksik değerler (None) her zaman boş iz veya '—' olarak çizilir; uydurma say
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Callable
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
@@ -235,8 +236,18 @@ def turkish_upper(text: str) -> str:
     return str(text).translate(_TR_UPPER_MAP).upper()
 
 
+_PANEL_FONT_CACHE: "OrderedDict[tuple, QFont]" = OrderedDict()
+_PANEL_FONT_CACHE_MAX: int = 96
+
+
 def font(px: float, weight: QFont.Weight = QFont.Weight.Normal, tabular: bool = False) -> QFont:
     """Piksel boyutlu yazı tipi (optik Segoe UI Variable eksenleri)."""
+    key = (round(float(px), 2), weight, tabular)
+    cached = _PANEL_FONT_CACHE.get(key)
+    if cached is not None:
+        _PANEL_FONT_CACHE.move_to_end(key)
+        return cached
+
     sz = float(px)
     if sz >= 15.0:
         fam = "Segoe UI Variable Display"
@@ -258,6 +269,9 @@ def font(px: float, weight: QFont.Weight = QFont.Weight.Normal, tabular: bool = 
         except Exception:
             pass
     f.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+    if len(_PANEL_FONT_CACHE) >= _PANEL_FONT_CACHE_MAX:
+        _PANEL_FONT_CACHE.popitem(last=False)
+    _PANEL_FONT_CACHE[key] = f
     return f
 
 

@@ -147,6 +147,11 @@ class TodayPanel(QWidget):
         self._last_close_time = time.monotonic()
         self.hide()
 
+    def hideEvent(self, event) -> None:
+        self._is_closing = False
+        self._last_close_time = time.monotonic()
+        super().hideEvent(event)
+
     def hide_animated(self) -> None:
         if self._is_closing or not self.isVisible():
             return

@@ -262,7 +262,7 @@ class UpdateChecker:
         self._runner = runner or run_winget_list
         self._now = now or time.time
         self._lock = threading.RLock()
-
+        self._checking = False
     def _save_cache(self, checked_at: float, items: List[Dict[str, Any]], err: Optional[str]) -> None:
         payload = {
             "checked_at": checked_at,
@@ -310,8 +310,18 @@ class UpdateChecker:
         return age >= CHECK_PERIOD_S
 
     def check(self) -> Dict[str, Any]:
-        """İşçi iş parçacığında çalışır: runner'ı çalıştırır, ayrıştırır, önbelleğe yazar."""
+        """İşçi iş parçacığında çalışır: runner'ı çalıştırır, ayrıştırır, önbelleğe yazar.
+
+        Önemli: engelleyici winget çağrısı (≤120 s) lock dışında çalıştırılır; aksi
+        halde GUI iş parçacığından çağrılan due()/state() tüm kontrol süresince
+        donardı. Yalnızca in-flight bayrağı ve cache yazma lock altında yapılır.
+        """
         with self._lock:
+            if self._checking:
+                # Zaten bir kontrol sürüyor; GUI'yi bloklamadan mevcut durumu döndür.
+                return self.state()
+            self._checking = True
+        try:
             t = float(self._now())
             try:
                 out = self._runner()
@@ -320,7 +330,9 @@ class UpdateChecker:
             except Exception as exc:
                 self._save_cache(t, [], str(exc))
             return self.state()
-
+        finally:
+            with self._lock:
+                self._checking = False
 
 def band_width(state: Optional[Dict[str, Any]]) -> float:
     """Güncelleme varsa 38 px genişlik, yoksa veya durum bilinmiyorsa 0 px (gizli)."""
