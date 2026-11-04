@@ -95,11 +95,11 @@ def test_metric_parsing_and_edge_values() -> None:
 # ==============================================================================
 
 def test_colour_thresholds() -> None:
-    """Verify colour thresholds: base (<70), amber (>=70), red (>=90)."""
+    """v33: CPU base (<75), amber (>=75), red (>=90); RAM 85/93. Bant genelinde tek turuncu/kırmızı."""
     cpu_base = dock_cards.COLOR_CPU_BAR
     ram_base = dock_cards.COLOR_RAM_BAR
-    amber = dock_cards.COLOR_BAR_AMBER
-    red = dock_cards.COLOR_BAR_RED
+    amber = dock_cards.COLOR_RING_WARN
+    red = dock_cards.COLOR_RING_CRITICAL
 
     # CPU base colour checks (<70)
     assert dock_cards.get_sys_ring_color(0.0, cpu_base) == cpu_base
@@ -112,7 +112,8 @@ def test_colour_thresholds() -> None:
     assert dock_cards.get_sys_ring_color(69.9, ram_base) == ram_base
 
     # Amber threshold (>= 70 and < 90)
-    assert dock_cards.get_sys_ring_color(70.0, cpu_base) == amber
+    assert dock_cards.get_sys_ring_color(74.9, cpu_base) == cpu_base
+    assert dock_cards.get_sys_ring_color(75.0, cpu_base) == amber
     assert dock_cards.get_sys_ring_color(77.0, cpu_base) == amber
     # Bellek eşiği daha yüksek: normal kullanım %74-77 (85 turuncu, 93 kırmızı)
     assert dock_cards.get_sys_ring_color(77.0, ram_base) == ram_base
@@ -137,7 +138,7 @@ def test_card_width_and_geometry() -> None:
     assert 96.0 <= w <= 110.0, f"Card width {w} out of ~96-110 px range"
     assert serit_mod.SYS_CARD_WIDTH == w, "serit_v5.SYS_CARD_WIDTH mismatch with dock_cards"
     assert dock_cards.SYS_RING_SIZE in (34.0, 35.0, 36.0)
-    assert 3.5 <= dock_cards.SYS_RING_STROKE <= 4.0
+    assert dock_cards.SYS_RING_STROKE == dock_cards.RING_STROKE  # v33: tüm halkalar aynı kalınlık
 
 
 # ==============================================================================

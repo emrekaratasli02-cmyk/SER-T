@@ -146,7 +146,8 @@ def test_type_scale_and_contrast() -> None:
     src = inspect.getsource(dock_cards)
     for bad in ("make_font(9.5", "make_font(10.5", "make_font(12.5", "make_font(14.5"):
         assert bad not in src, bad
-    assert dock_cards.COLOR_TXT_FAINT.alpha() == 133  # .52
+    assert dock_cards.COLOR_TXT_FAINT.alpha() == 168  # v33: .66 (okunurluk)
+    assert dock_cards.COLOR_TXT_MUTED.alpha() == int(255 * 0.74)
     assert ps.TEXT_META.alpha() == 122 and ps.TEXT_LABEL.alpha() == 122  # .48
 
 

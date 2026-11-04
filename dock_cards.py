@@ -53,11 +53,21 @@ CARD_DIVIDER_H: float = 28.0
 # v24 renk düzeni (Emre: B + ortak değişiklikler): Claude turuncusu ve tek mavi vurgu.
 COLOR_ACCENT_BLUE: QColor = QColor("#6EA8FE")
 COLOR_CLAUDE_TILE: QColor = QColor("#D97757")
-COLOR_CLAUDE_CORAL: QColor = QColor("#D97757")
-COLOR_CLAUDE_SKY: QColor = QColor(COLOR_ACCENT_BLUE)
-COLOR_GEMINI_BLUE: QColor = QColor(COLOR_ACCENT_BLUE)
+COLOR_CLAUDE_CORAL: QColor = QColor("#D97757")  # yalnız marka (logo yıldızı); halkalarda kullanılmaz
+# v33 (4 Kas 2026): halka/yüzde renkleri anlam taşır. Normal = mavi (dış halka), açık mavi (iç halka);
+# >=75 turuncu, >=90 kırmızı. Tek eşik fonksiyonu: usage_color().
+COLOR_RING_OUTER: QColor = QColor(COLOR_ACCENT_BLUE)
+COLOR_RING_INNER: QColor = QColor("#A9C8FF")
+COLOR_CLAUDE_SKY: QColor = COLOR_RING_INNER
+COLOR_GEMINI_BLUE: QColor = COLOR_RING_INNER
+COLOR_RING_WARN: QColor = QColor("#FF9F0A")
 COLOR_RING_CRITICAL: QColor = QColor("#F87171")
-COLOR_CONCENTRIC_TRACK: QColor = QColor(255, 255, 255, int(255 * 0.08))
+RING_WARN_AT: float = 75.0
+RING_CRIT_AT: float = 90.0
+# Tüm bant halkaları için ortak çizgi kalınlığı ve iz rengi
+RING_STROKE: float = 3.0
+COLOR_RING_TRACK: QColor = QColor(255, 255, 255, int(255 * 0.12))
+COLOR_CONCENTRIC_TRACK: QColor = COLOR_RING_TRACK
 COLOR_BAR_GREEN: QColor = QColor("#34C759")
 COLOR_BAR_AMBER: QColor = QColor("#FF9F0A")
 COLOR_BAR_RED: QColor = QColor("#FF453A")
@@ -73,8 +83,8 @@ COLOR_CPU_BAR: QColor = QColor(COLOR_ACCENT_BLUE)
 COLOR_RAM_BAR: QColor = QColor(COLOR_ACCENT_BLUE)
 
 COLOR_TXT_PRIMARY: QColor = QColor(255, 255, 255, int(255 * 0.95))
-COLOR_TXT_MUTED: QColor = QColor(235, 238, 245, int(255 * 0.58))
-COLOR_TXT_FAINT: QColor = QColor(235, 238, 245, 133)           # sıfırlanma saati (.52)
+COLOR_TXT_MUTED: QColor = QColor(235, 238, 245, int(255 * 0.74))  # v33: .58 -> .74 (okunurluk)
+COLOR_TXT_FAINT: QColor = QColor(235, 238, 245, 168)           # sıfırlanma saati (v33: .52 -> .66)
 COLOR_CAL_RED: QColor = QColor("#FF453A")
 
 TR_DAYS_SHORT = {0: "Pzt", 1: "Sal", 2: "Çar", 3: "Per", 4: "Cum", 5: "Cmt", 6: "Paz"}
@@ -89,11 +99,11 @@ MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
 SYS_RING_SIZE: float = 34.0
-SYS_RING_STROKE: float = 3.5
+SYS_RING_STROKE: float = RING_STROKE
 
 _PEN_CARD_BORDER: QPen = QPen(CARD_BORDER, 1.0)
 _PEN_BAR_TRACK_2: QPen = QPen(QColor(255, 255, 255, int(255 * 0.14)), 2.0, Qt.SolidLine, Qt.RoundCap)
-_PEN_SYS_TRACK: QPen = QPen(COLOR_BAR_TRACK, SYS_RING_STROKE, Qt.SolidLine, Qt.FlatCap)
+_PEN_SYS_TRACK: QPen = QPen(COLOR_RING_TRACK, SYS_RING_STROKE, Qt.SolidLine, Qt.FlatCap)
 _PEN_ARC_ACCENT: QPen = QPen(COLOR_ACCENT_BLUE, 2.0, Qt.SolidLine, Qt.RoundCap)
 _PEN_BAT_BOLT: QPen = QPen(QColor(13, 15, 19), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
 
@@ -254,6 +264,19 @@ def format_reset_display(
     return "—"
 
 
+def usage_color(val: Optional[float], base_col: QColor, warn_at: float = RING_WARN_AT,
+                crit_at: float = RING_CRIT_AT) -> QColor:
+    """Bant halkaları ve yüzdeleri için tek renk kuralı: normal -> base, >=warn turuncu, >=crit kırmızı."""
+    if val is None:
+        return base_col
+    v = float(val)
+    if v >= crit_at:
+        return COLOR_RING_CRITICAL
+    if v >= warn_at:
+        return COLOR_RING_WARN
+    return base_col
+
+
 def draw_concentric_rings_slot(
     p: QPainter,
     slot_rect: QRectF,
@@ -279,7 +302,7 @@ def draw_concentric_rings_slot(
     scale = slot_rect.width() / 42.0
     r_outer = 18.0 * scale
     r_inner = 13.0 * scale
-    stroke_w = 2.2 * scale
+    stroke_w = RING_STROKE  # v33: tüm halkalarla aynı kalınlık (ölçekten bağımsız)
 
     rect_outer = QRectF(cx - r_outer, cy - r_outer, 2.0 * r_outer, 2.0 * r_outer)
     rect_inner = QRectF(cx - r_inner, cy - r_inner, 2.0 * r_inner, 2.0 * r_inner)
@@ -294,7 +317,7 @@ def draw_concentric_rings_slot(
     # 2. Outer ring arc (start 12 o'clock = 90 deg, clockwise = negative span)
     if outer_pct is not None and outer_pct > 0.0:
         val_clamped = max(0.0, min(100.0, float(outer_pct)))
-        fg_col = COLOR_RING_CRITICAL if val_clamped >= 90.0 else outer_color
+        fg_col = usage_color(val_clamped, outer_color)
         pen_outer = QPen(fg_col, stroke_w, Qt.SolidLine, Qt.RoundCap)
         p.setPen(pen_outer)
         span_angle = -int(round((val_clamped / 100.0) * 360.0 * 16.0))
@@ -303,7 +326,7 @@ def draw_concentric_rings_slot(
     # 3. Inner ring arc
     if inner_pct is not None and inner_pct > 0.0:
         val_clamped = max(0.0, min(100.0, float(inner_pct)))
-        fg_col = COLOR_RING_CRITICAL if val_clamped >= 90.0 else inner_color
+        fg_col = usage_color(val_clamped, inner_color)
         pen_inner = QPen(fg_col, stroke_w, Qt.SolidLine, Qt.RoundCap)
         p.setPen(pen_inner)
         span_angle = -int(round((val_clamped / 100.0) * 360.0 * 16.0))
@@ -349,7 +372,7 @@ def draw_concentric_text_rows(
         if pct_val is not None:
             pct_num = int(round(float(pct_val)))
             pct_str = f"%{pct_num}"
-            pct_col = COLOR_RING_CRITICAL if pct_num >= 90 else base_col
+            pct_col = usage_color(pct_num, base_col)
         else:
             pct_str = "—"
             pct_col = COLOR_TXT_MUTED
@@ -564,7 +587,7 @@ def draw_claude_card(
         p,
         slot_rect,
         outer_pct=outer_pct if not has_err else None,
-        outer_color=COLOR_CLAUDE_CORAL,
+        outer_color=COLOR_RING_OUTER,
         inner_pct=inner_pct if not has_err else None,
         inner_color=COLOR_CLAUDE_SKY,
         logo_pixmap=claude_pm,
@@ -594,7 +617,7 @@ def draw_claude_card(
     w_reset_str = format_reset_display(w_reset)
 
     text_rect = QRectF(bx, rect.y() + 8.0, bw, 36.0)
-    row1 = (outer_pct, COLOR_CLAUDE_CORAL, "Oturum", s_reset_str)
+    row1 = (outer_pct, COLOR_RING_OUTER, "Oturum", s_reset_str)
     row2 = (inner_pct, COLOR_CLAUDE_SKY, "Hafta", w_reset_str)
     draw_concentric_text_rows(p, text_rect, row1, row2)
 
@@ -1291,7 +1314,7 @@ def draw_ag_card(
         p,
         slot_rect,
         outer_pct=used_claude if not has_err else None,
-        outer_color=COLOR_CLAUDE_CORAL,
+        outer_color=COLOR_RING_OUTER,
         inner_pct=used_gemini if not has_err else None,
         inner_color=COLOR_GEMINI_BLUE,
         logo_pixmap=ag_pm,
@@ -1332,7 +1355,7 @@ def draw_ag_card(
     gemini_rst_str = format_reset_display(gemini_reset_raw)
 
     text_rect = QRectF(bx, rect.y() + 8.0, bw, 36.0)
-    row1 = (used_claude, COLOR_CLAUDE_CORAL, "Claude", claude_rst_str)
+    row1 = (used_claude, COLOR_RING_OUTER, "Claude", claude_rst_str)
     row2 = (used_gemini, COLOR_GEMINI_BLUE, "Gemini", gemini_rst_str)
     draw_concentric_text_rows(p, text_rect, row1, row2)
 
@@ -1346,17 +1369,13 @@ def draw_ag_card(
 def get_sys_ring_color(val: float, base_col: QColor, is_ram: Optional[bool] = None) -> QColor:
     """Select base, amber, or red for sys ring gauge.
 
-    İşlemci: >=70 turuncu, >=90 kırmızı. Bellek: Emre'nin bilgisayarında normalde %74-77
+    İşlemci: >=75 turuncu, >=90 kırmızı (v33 ortak kural). Bellek: Emre'nin bilgisayarında normalde %74-77
     olduğu için (27 Eki 2026 ölçümü) >=85 turuncu, >=93 kırmızı; yoksa mor halka hiç görünmezdi.
     """
     if is_ram is None:  # v24'ten beri iki renk aynı: nesne kimliğine bak (eski çağrılar için)
         is_ram = base_col is COLOR_RAM_BAR
-    red_at, amber_at = (93.0, 85.0) if is_ram else (90.0, 70.0)
-    if val >= red_at:
-        return COLOR_BAR_RED
-    if val >= amber_at:
-        return COLOR_BAR_AMBER
-    return base_col
+    red_at, amber_at = (93.0, 85.0) if is_ram else (RING_CRIT_AT, RING_WARN_AT)
+    return usage_color(val, base_col, warn_at=amber_at, crit_at=red_at)
 
 
 def _parse_sys_metric(val: Any) -> Optional[float]:
@@ -1414,7 +1433,7 @@ def draw_sys_card(
     cx_ram = rect.x() + rect.width() - pad_x - size / 2.0
 
     f_num = theme.make_font(11.0, QFont.Weight.DemiBold, tabular=True)
-    f_lbl = theme.make_font(8.5, QFont.Weight.Medium, letter_spacing=0.6)
+    f_lbl = theme.make_font(9.0, QFont.Weight.DemiBold, letter_spacing=0.5)
 
     rings = [
         (cx_cpu, c_val, COLOR_CPU_BAR, False, "CPU"),

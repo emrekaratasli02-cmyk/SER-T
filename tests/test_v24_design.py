@@ -76,17 +76,23 @@ def test_divider_is_one_device_pixel_and_centred() -> None:
 
 def test_two_accent_colours() -> None:
     blue = dock_cards.COLOR_ACCENT_BLUE
-    for name in ("COLOR_CLAUDE_SKY", "COLOR_GEMINI_BLUE", "COLOR_CPU_BAR", "COLOR_RAM_BAR", "COLOR_MEDIA_PLAY_BG"):
+    for name in ("COLOR_RING_OUTER", "COLOR_CPU_BAR", "COLOR_RAM_BAR", "COLOR_MEDIA_PLAY_BG"):
         assert getattr(dock_cards, name) == blue, name
+    # v33: iç halka (Hafta / Gemini) aynı mavinin açık tonu
+    assert dock_cards.COLOR_CLAUDE_SKY == dock_cards.COLOR_GEMINI_BLUE == dock_cards.COLOR_RING_INNER
     assert dock_cards.COLOR_CLAUDE_CORAL == QColor("#D97757")
     for c in (dock_cards.COLOR_MEDIA_GRAD_START, dock_cards.COLOR_MEDIA_GRAD_END):
         assert c.red() == c.green() == c.blue(), "medya karosu nötr (pembe-mor yok)"
     # aynı renkte de işlemci/bellek eşikleri ayrı kalır
     f = dock_cards.get_sys_ring_color
-    assert f(77.0, blue, is_ram=False) == dock_cards.COLOR_BAR_AMBER
+    assert f(77.0, blue, is_ram=False) == dock_cards.COLOR_RING_WARN
     assert f(77.0, blue, is_ram=True) == blue
-    assert f(85.0, blue, is_ram=True) == dock_cards.COLOR_BAR_AMBER
-    assert f(93.0, blue, is_ram=True) == dock_cards.COLOR_BAR_RED
+    assert f(85.0, blue, is_ram=True) == dock_cards.COLOR_RING_WARN
+    assert f(93.0, blue, is_ram=True) == dock_cards.COLOR_RING_CRITICAL
+    # v33: kota halkaları da aynı kural (75 turuncu, 90 kırmızı)
+    u = dock_cards.usage_color
+    assert u(74.0, blue) == blue and u(75.0, blue) == dock_cards.COLOR_RING_WARN
+    assert u(100.0, blue) == dock_cards.COLOR_RING_CRITICAL
 
 
 def test_quota_rows_keep_reset_time_and_share_baseline() -> None:
