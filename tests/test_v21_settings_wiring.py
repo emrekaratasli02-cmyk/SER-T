@@ -103,6 +103,17 @@ def test_garbage_apply_is_ignored() -> None:
     assert d.settings == before
 
 
+def test_apply_with_updates_disabled_does_not_crash() -> None:
+    """4 Kas 2026: 'Uygula' + güncellemeler kapalı -> self.updates_panel AttributeError, kartlar kaydedilmiyordu."""
+    d = _dock({"style": "band", "updates_enabled": True})
+    cfg = dict(d.settings)
+    cfg["updates_enabled"] = False
+    cfg["cards"] = {"claude": True, "mail": False, "ag": True, "sys": True, "cal": False}
+    d.apply_settings_from_window(cfg)
+    assert d.settings["updates_enabled"] is False
+    assert d.settings["cards"]["mail"] is False and d.settings["cards"]["cal"] is False
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

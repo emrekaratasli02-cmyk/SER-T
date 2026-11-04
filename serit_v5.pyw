@@ -5635,9 +5635,9 @@ class SeritDock(QWidget):
                 old[t_key] = bool(new_cfg[t_key])
         if not old.get("net_speed_enabled", True):
             self._net_state = None
-        if not old.get("updates_enabled", True) and self.updates_panel is not None:
+        if not old.get("updates_enabled", True) and self._updates_panel is not None:
             try:
-                self.updates_panel.hide()
+                self._updates_panel.hide()
             except Exception:
                 pass
         if isinstance(new_cfg.get("pinned"), list):
