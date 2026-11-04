@@ -3824,10 +3824,13 @@ class SeritDock(QWidget):
                 cur_rw_x += cal_w + GAP_MODULE
 
             items = list(self._v25_right_items())
-            if _use_A and (has_media or show_cal) and not bool(items):  # Sağ küme modülleri yoksa eski ayraç
+            # v33: Medya/Takvim ile sağ eylem kümesi (^ ok, pil) arasına her zaman net ayraç
+            if _use_A and (has_media or show_cal):
                 _last_r = r_cal if show_cal else r_media
                 _inset = self._CONTENT_INSET["cal" if show_cal else "media"][1]
-                div_x = ((_last_r.right() - _inset) + (actions_left_x + 9.0)) / 2.0
+                # Sağ kümede modüller varsa en soldakinin soluna, yoksa actions_left_x soluna
+                right_bound = (actions_x - self.V25_RIGHT_GAP) if items else (actions_left_x + 9.0)
+                div_x = ((_last_r.right() - _inset) + right_bound) / 2.0
                 self._draw_divider(p, div_x, div_cy, intersects)
 
             # Right end: Clock V1 at the far right edge, Action buttons to its left

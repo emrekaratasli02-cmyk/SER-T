@@ -926,8 +926,12 @@ def draw_media_card(
         tabular_sub = True
     else:
         app_name = str(media_info.get("app") or "Medya")
-        artist = str(media_info.get("artist") or "web yayını")
-        sub = f"{app_name} · {artist}"
+        artist_raw = str(media_info.get("artist") or "").strip()
+        # v33: YouTube / web yayını başlığı sanatçıyla aynı döndüğünde tekrarı önle ('Chrome · Başlık' yerine sadece 'Chrome')
+        if not artist_raw or artist_raw.lower() == "web yayını" or artist_raw.lower() == title.strip().lower():
+            sub = app_name
+        else:
+            sub = f"{app_name} · {artist_raw}"
 
     f_lbl = theme.make_font(13.0, QFont.Weight.DemiBold)
     f_sub = theme.make_font(11.0, QFont.Weight.Normal, tabular=tabular_sub)
