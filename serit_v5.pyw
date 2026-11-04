@@ -5735,6 +5735,21 @@ def render_preview(output_path_str: str) -> None:
         if exe and exe not in dock._icon_cache:
             dock._icon_cache[exe] = winapi.app_icon(exe, 64)
 
+    # v33: canlı bardaki gibi pil hapı ve ataş (raf) simgesi. İkisi de salt okunur:
+    # battery_info yalnız durum sorgular, ShelfStore yüklemede yazmaz (yalnız değişiklikte kaydeder).
+    try:
+        bat = power_net.battery_info()
+        if isinstance(bat, dict) and not bat.get("err"):
+            dock._bat_info = dict(bat)
+            dock._bat_known_absent = not bool(bat.get("present"))
+    except Exception as exc:
+        sources.log_err("preview_bat", exc)
+    try:
+        if shelf is not None and settings.get("shelf_enabled", True):
+            dock.shelf_store = shelf.ShelfStore()
+    except Exception as exc:
+        sources.log_err("preview_shelf", exc)
+
     # Read-only live volume and now-playing
     vol_data = media.get_volume()
     dock._vol_level = float(vol_data.get("level", 50.0))
