@@ -470,7 +470,7 @@ def draw_shelf_icon(p: QPainter, rect: QRectF, state: str, count: int, hover: bo
             p.setBrush(QColor(255, 255, 255, 8))
             p.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), 8.0, 8.0)
         glyph = QColor(255, 255, 255, 217 if (hover or pulse > 0.0) else 150)      # .59 (hover .85)
-    icon_sz = 26.0
+    icon_sz = 18.0
     pm = _svg_pixmap("clip", glyph, icon_sz, _device_dpr(p))
     p.drawPixmap(QPointF(box.center().x() - icon_sz / 2.0, box.center().y() - icon_sz / 2.0), pm)
 

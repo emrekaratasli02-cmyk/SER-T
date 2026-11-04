@@ -1429,8 +1429,9 @@ def draw_sys_card(
     size = SYS_RING_SIZE
     stroke = SYS_RING_STROKE
     r = (size - stroke) / 2.0
-    # Estetik: halka hafif yukarı (cy=21), alta minik CPU/RAM etiketi (8.5 px) sığsın
-    cy = rect.y() + 21.0
+    # Estetik: halka (34) + 2 px boşluk + etiket (10) grubu 52 px karta eşit payla sığsın.
+    # Toplam 46 -> üst/alt 3 px nefes payı; cy = üst + 17 = 20.
+    cy = rect.y() + 20.0
 
     pad_x = 10.0
     cx_cpu = rect.x() + pad_x + size / 2.0
@@ -1470,7 +1471,7 @@ def draw_sys_card(
         # 4. Alt etiket: CPU / RAM (8.5 px, halkaya ortalı, sönük gri)
         p.setFont(f_lbl)
         p.setPen(COLOR_TXT_MUTED)
-        lbl_rect = QRectF(cx - size / 2.0 - 2.0, rect.bottom() - 13.0, size + 4.0, 11.0)
+        lbl_rect = QRectF(cx - size / 2.0 - 2.0, rect.y() + 39.0, size + 4.0, 10.0)
         p.drawText(lbl_rect, Qt.AlignCenter, lbl)
 
     p.restore()
@@ -2192,37 +2193,26 @@ def draw_battery_pill(
     dpr = _device_ratio(p)
 
     if on_ac_full and not hovered and not active:
-        # v28: Hibrit Radyal Şarj & Güç Halkası (zümrüt yeşili yay + merkezde şimşek glifi)
-        ring_sz = 20.0
-        gap = 6.0
-        f = theme.make_font(12.0, QFont.Weight.Medium)
-        fm = _get_fm(f)
-        txt = "Prizde"
-        tot_w = ring_sz + gap + _text_width(fm, txt)
-        x = rect.center().x() - tot_w / 2.0
-        cy = rect.center().y()
+        # v33: Diğer dock halkalarıyla aynı çapta yeşil radyal güç halkası + merkezde şimşek.
         green = QColor(panel_style.OK)
+        cx = rect.center().x()
+        cy = rect.center().y()
+        stroke = RING_STROKE
+        r_ring = QRectF(cx - SYS_RING_SIZE / 2.0, cy - SYS_RING_SIZE / 2.0, SYS_RING_SIZE, SYS_RING_SIZE)
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        r_ring = QRectF(x, cy - ring_sz / 2.0, ring_sz, ring_sz)
         # Sönük arka iz + canlı yeşil yay
-        track_col = QColor(green)
-        track_col.setAlpha(45)
-        p.setPen(QPen(track_col, 2.0))
+        p.setPen(QPen(COLOR_RING_TRACK, stroke, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(r_ring)
         lvl = 100.0 if percent is None else max(0.0, min(100.0, float(percent)))
-        p.setPen(QPen(green, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.setPen(QPen(green, stroke, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         p.drawArc(r_ring, 90 * 16, -int(round((lvl / 100.0) * 360 * 16)))
-        # Merkezde keskin neon şimşek glifi
-        bolt = _get_bolt_path(r_ring.center().x(), r_ring.center().y(), 7.0, 11.0)
+        # Merkezde keskin yeşil şimşek glifi
+        bolt = _get_bolt_path(cx, cy, 10.0, 16.0)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(green)
         p.drawPath(bolt)
-        # Yanında sakin "Prizde" etiketi
-        p.setFont(f)
-        p.setPen(QColor(255, 255, 255, int(255 * 0.78)))
-        p.drawText(QPointF(x + ring_sz + gap, cy + fm.capHeight() / 2.0), txt)
         p.restore()
         return QRectF(rect)
 
