@@ -867,6 +867,7 @@ class SeritDock(QWidget):
             self.media_panel.mute_requested.connect(self._on_bat_mute_requested)
             self.media_panel.open_mixer_requested.connect(self._on_media_open_mixer)
             self.media_panel.open_app_requested.connect(self._on_media_open_app)
+            self.media_panel.device_switch_requested.connect(self._on_media_panel_device_switch)
         except Exception as exc:
             sources.log_err("media_panel_init", exc)
             self.media_panel = None
@@ -1840,6 +1841,21 @@ class SeritDock(QWidget):
                 self.vol_popover.show_for(anchor_global, self._vol_level, self._vol_muted, self._vol_device)
         except Exception as exc:
             sources.log_err("media_open_mixer", exc)
+
+    def _on_media_panel_device_switch(self, dev_id: str) -> None:
+        if self.preview_mode or not dev_id:
+            return
+        def _do_switch():
+            try:
+                import media_panel
+                media_panel.set_default_output_device(dev_id)
+            except Exception as exc:
+                sources.log_err("media_device_switch", exc)
+        self.submit_action(
+            "media_device_switch",
+            _do_switch,
+            on_done=lambda: QTimer.singleShot(250, lambda: self.submit_fetch("media")),
+        )
 
     def _on_media_open_app(self, exe_or_app: str) -> None:
         if self.preview_mode:
