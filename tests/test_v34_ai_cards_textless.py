@@ -206,10 +206,10 @@ def test_card_threshold_colors_preserved() -> None:
 
 
 def test_measure_claude_card_width_textless_vs_text() -> None:
-    # Textless mode: narrowed width (~50-60px, 56px)
+    # Textless mode: narrowed width (~48-56px, 52px)
     w_textless = dock_cards.measure_claude_card_width(show_text=False)
-    assert 50.0 <= w_textless <= 60.0, f"Expected 50-60px in textless, got {w_textless}"
-    assert w_textless == dock_cards.CLAUDE_CARD_TEXTLESS_WIDTH == 56.0
+    assert 48.0 <= w_textless <= 56.0, f"Expected 48-56px in textless, got {w_textless}"
+    assert w_textless == dock_cards.CLAUDE_CARD_TEXTLESS_WIDTH == 52.0
     # Full text mode: preserved old width (204px)
     w_full = dock_cards.measure_claude_card_width(show_text=True)
     assert w_full == dock_cards.CLAUDE_CARD_WIDTH == 204.0
@@ -217,10 +217,10 @@ def test_measure_claude_card_width_textless_vs_text() -> None:
 
 
 def test_measure_ag_card_width_textless_vs_text() -> None:
-    # Textless mode: narrowed width (~50-60px, 56px)
+    # Textless mode: narrowed width (~48-56px, 52px)
     w_textless = dock_cards.measure_ag_card_width(show_text=False)
-    assert 50.0 <= w_textless <= 60.0, f"Expected 50-60px in textless, got {w_textless}"
-    assert w_textless == dock_cards.AG_CARD_TEXTLESS_WIDTH == 56.0
+    assert 48.0 <= w_textless <= 56.0, f"Expected 48-56px in textless, got {w_textless}"
+    assert w_textless == dock_cards.AG_CARD_TEXTLESS_WIDTH == 52.0
     # Full text mode: preserved old width (204px)
     w_full = dock_cards.measure_ag_card_width(show_text=True)
     assert w_full == dock_cards.AG_CARD_WIDTH == 204.0
@@ -228,10 +228,10 @@ def test_measure_ag_card_width_textless_vs_text() -> None:
 
 
 def test_measure_opencode_card_width_textless_vs_text() -> None:
-    # Textless mode: narrowed width (~50-60px, 56px)
+    # Textless mode: narrowed width (~48-56px, 52px)
     w_textless = dock_cards.measure_opencode_card_width(show_text=False)
-    assert 50.0 <= w_textless <= 60.0, f"Expected 50-60px in textless, got {w_textless}"
-    assert w_textless == dock_cards.OC_CARD_TEXTLESS_WIDTH == 56.0
+    assert 48.0 <= w_textless <= 56.0, f"Expected 48-56px in textless, got {w_textless}"
+    assert w_textless == dock_cards.OC_CARD_TEXTLESS_WIDTH == 52.0
     # Full text mode: preserved old width (184px)
     w_full = dock_cards.measure_opencode_card_width(show_text=True)
     assert w_full == dock_cards.OC_CARD_WIDTH == 184.0

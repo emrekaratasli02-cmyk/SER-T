@@ -103,11 +103,11 @@ AG_CARD_WIDTH: float = 204.0
 OC_CARD_WIDTH: float = 184.0   # OpenCode kullanım kartı
 # Sol kanat sığmazsa Claude/Antigravity kartları bu genişliğe kadar daralır (sıfırlanma yazısı sığmazsa gizlenir)
 CONC_CARD_MIN_WIDTH: float = 132.0
-# Metinsiz mod (show_text=False): sadece halka + logo, dar kart (~96-110 px)
-CLAUDE_CARD_TEXTLESS_WIDTH: float = 56.0
-AG_CARD_TEXTLESS_WIDTH: float = 56.0
-OC_CARD_TEXTLESS_WIDTH: float = 56.0
-AI_CARD_TEXTLESS_WIDTH: float = 56.0
+# Metinsiz mod (show_text=False): sadece halka + logo, kompakt slot (52 px, slot tam ortalanır)
+CLAUDE_CARD_TEXTLESS_WIDTH: float = 52.0
+AG_CARD_TEXTLESS_WIDTH: float = 52.0
+OC_CARD_TEXTLESS_WIDTH: float = 52.0
+AI_CARD_TEXTLESS_WIDTH: float = 52.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
@@ -1477,8 +1477,9 @@ def draw_ag_card(
     if multi_accounts or active_account is not None:
         p.save()
         p.setRenderHint(QPainter.Antialiasing, True)
-        badge_d = 13.0
-        badge_r = QRectF(slot_rect.right() - 5.5, slot_rect.top() - 5.5, badge_d, badge_d)
+        badge_d = 12.0
+        # Halkanın sağ-üst omuzunda, dışa 3px öteleme ile halkanın kırmızı sınırına asla değmez
+        badge_r = QRectF(slot_rect.right() - 8.0, slot_rect.top() - 3.0, badge_d, badge_d)
         p.setPen(QPen(QColor(13, 15, 19), 2.0))
         badge_bg = COLOR_CLAUDE_CORAL if want_busra else COLOR_ACCENT_BLUE
         if has_err:

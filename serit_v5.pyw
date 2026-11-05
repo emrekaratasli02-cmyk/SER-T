@@ -204,7 +204,7 @@ DOCK_RADIUS: float = 20.0
 CARD_HEIGHT: float = 52.0
 CARD_RADIUS: float = 13.0
 CARD_Y: float = 6.0
-GAP_MODULE: float = 6.0  # v34: metinsiz kartlar arası nefes payı (6px)
+GAP_MODULE: float = 6.0  # v34: metinsiz kartlar arası sıkı nefes payı (6px)
 CLAUDE_CARD_WIDTH: float = 204.0  # v24: %100 + Oturum + '23 sa 59 dk' sığsın (metin alanı 135)
 MEDIA_CARD_WIDTH: float = 314.0
 MEDIA_CARD_WIDTH_COMPACT: float = 240.0
@@ -214,16 +214,16 @@ OC_CARD_MIN_WIDTH: float = 140.0  # sıkışınca küçülebileceği alt sınır
 LEFT_CARD_HARD_MIN_WIDTH: float = 112.0  # çok dar ekranda Claude/AG için okunur alt sınır (show_text=True)
 OC_CARD_TINY_MIN_WIDTH: float = 118.0   # çok dar ekranda OpenCode'un ince hali (show_text=True)
 LEFT_CARD_GUARD_MIN_WIDTH: float = 104.0  # son güvenlik ağı sınırı (ataç için; show_text=True)
-# Metinsiz mod (show_text=False) boyut ve alt sınırları
-CLAUDE_CARD_TEXTLESS_WIDTH: float = 56.0
-AG_CARD_TEXTLESS_WIDTH: float = 56.0
-OC_CARD_TEXTLESS_WIDTH: float = 56.0
-AI_CARD_TEXTLESS_WIDTH: float = 56.0
-OC_CARD_TEXTLESS_MIN_WIDTH: float = 50.0
-CONC_CARD_TEXTLESS_MIN_WIDTH: float = 50.0
-LEFT_CARD_TEXTLESS_HARD_MIN: float = 46.0
-OC_CARD_TEXTLESS_TINY_MIN: float = 46.0
-LEFT_CARD_TEXTLESS_GUARD_MIN: float = 44.0
+# Metinsiz mod (show_text=False) boyut ve alt sınırları (52px kompakt)
+CLAUDE_CARD_TEXTLESS_WIDTH: float = 52.0
+AG_CARD_TEXTLESS_WIDTH: float = 52.0
+OC_CARD_TEXTLESS_WIDTH: float = 52.0
+AI_CARD_TEXTLESS_WIDTH: float = 52.0
+OC_CARD_TEXTLESS_MIN_WIDTH: float = 46.0
+CONC_CARD_TEXTLESS_MIN_WIDTH: float = 46.0
+LEFT_CARD_TEXTLESS_HARD_MIN: float = 42.0
+OC_CARD_TEXTLESS_TINY_MIN: float = 42.0
+LEFT_CARD_TEXTLESS_GUARD_MIN: float = 40.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
@@ -2544,8 +2544,9 @@ class SeritDock(QWidget):
             p.end()
 
     # Kart içeriğinin kart kenarına uzaklığı (sol, sağ): ayraç iki yandaki içeriğin tam ortasına konur.
+    # Metinsiz modda AI kartları 52px slot merkezli olduğundan kenar payı 6px
     _CONTENT_INSET: Dict[str, Tuple[float, float]] = {
-        "claude": (10.0, 10.0), "ag": (10.0, 10.0), "oc": (10.0, 10.0), "mail": (10.0, 10.0), "sys": (10.0, 10.0),
+        "claude": (6.0, 6.0), "ag": (6.0, 6.0), "oc": (6.0, 6.0), "mail": (10.0, 10.0), "sys": (10.0, 10.0),
         "apps": (6.0, 6.0), "media": (6.0, 10.0), "cal": (10.0, 10.0),
         "bat": (6.0, 6.0),
     }
