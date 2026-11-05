@@ -369,15 +369,35 @@ def draw_concentric_text_rows(
 
     rx = text_rect.x()
     rw = text_rect.width()
+    # Sabit yüzde sütunu (%100 genişliği): tüm nokta etiketleri kartlarda aynı hizada dizilir
+    f_pct_probe = QFontMetricsF(f_pct)
+    col_w = f_pct_probe.horizontalAdvance("%100")
     row_step = 19.0  # iki satırın taban çizgileri arası
     cap = _get_fm(f_pct).capHeight()
     base1 = text_rect.center().y() - (row_step - cap) / 2.0  # görsel blok tam ortada
 
     fm_lbl = QFontMetricsF(f_lbl)
     fm_rst = QFontMetricsF(f_rst)
+    rows = ((row1, base1), (row2, base1 + row_step))
+
+    # Her iki satır sütun kuralına sığıyor mu? Sığmıyorsa ama flush (sola dayalı) sığıyorsa
+    # dar kart istisnası: yüzde flush çizilir — tam etiket kurtarılır, kırpmaktan iyidir.
+    _pre = []
+    for (pct_val, _bc, lbl_text, _rs), _by in rows:
+        if pct_val is not None:
+            _pct = f"%{int(round(float(pct_val)))}"
+        else:
+            _pct = "—"
+        _wl = fm_lbl.horizontalAdvance(lbl_text) if lbl_text else 0.0
+        _wp = f_pct_probe.horizontalAdvance(_pct)
+        _pre.append((_wl, _wp))
+    col_total = col_w + 6.0
+    fits_col = all(_wl == 0 or _wl <= rw - col_total for _wl, _wp in _pre)
+    fits_flush = all(_wl == 0 or _wl <= rw - _wp - 6.0 for _wl, _wp in _pre)
+    use_flush = (not fits_col) and fits_flush
 
     p.save()
-    for (pct_val, base_col, lbl_text, rst_text), base_y in ((row1, base1), (row2, base1 + row_step)):
+    for (pct_val, base_col, lbl_text, rst_text), base_y in rows:
         if pct_val is not None:
             pct_num = int(round(float(pct_val)))
             pct_str = f"%{pct_num}"
@@ -386,19 +406,23 @@ def draw_concentric_text_rows(
             pct_str = "—"
             pct_col = COLOR_TXT_MUTED
 
-        # 1. Percent (sets the row baseline)
+        # 1. Percent — sabit sütuna sağa hizalı; dar kartta istisna ile flush
         p.setFont(f_pct)
         fm_pct = p.fontMetrics()  # cihaz ölçüsü (1.25 ölçekte çizimle aynı)
         p.setPen(pct_col)
-        p.drawText(QPointF(rx, base_y), pct_str)
         wp = fm_pct.horizontalAdvance(pct_str)
-
+        if use_flush:
+            label_x = rx + wp + 6.0
+            p.drawText(QPointF(rx, base_y), pct_str)
+            space = rw - wp - 6.0
+        else:
+            label_x = rx + col_w + 6.0
+            p.drawText(QPointF(rx + col_w - wp, base_y), pct_str)
+            space = rw - (col_w + 6.0)
         # Yerleşim önceliği: tam etiket + saat sığıyorsa ikisi de; sığmıyorsa saat düşer,
         # etiket tam kalır; etiket de sığmıyorsa kırpılır. Hiçbir durumda üst üste binmez.
         wl = fm_lbl.horizontalAdvance(lbl_text) if lbl_text else 0.0
         wr = fm_rst.horizontalAdvance(rst_text) if rst_text else 0.0
-        lbl_x = rx + wp + 6.0
-        space = rw - wp - 6.0
         show_rst = bool(rst_text) and (space - wl) >= (wr + 6.0)
         if show_rst:
             label_w = wl
@@ -411,7 +435,7 @@ def draw_concentric_text_rows(
             if elided_lbl:
                 p.setFont(f_lbl)
                 p.setPen(COLOR_TXT_LABEL)
-                p.drawText(QPointF(lbl_x, base_y), elided_lbl)
+                p.drawText(QPointF(label_x, base_y), elided_lbl)
         if show_rst:
             p.setFont(f_rst)
             p.setPen(COLOR_TXT_FAINT)
@@ -1510,32 +1534,44 @@ def draw_opencode_card(
     pct_str = f"%{pct_num}"
     pct_col = usage_color(pct_num, COLOR_RING_OUTER)
 
+    # Claude/AG kartlarıyla aynı sabit yüzde sütunu (tutarsızlığı önler);
+    # dar kart istisnası: etiket sütunda sığmıyorsa ama flush sığıyorsa flush çiz
+    col_w = QFontMetricsF(f_pct1).horizontalAdvance("%100")
     p.setFont(f_pct1)
     fm_pct = p.fontMetrics()
-    p.setPen(pct_col)
-    p.drawText(QPointF(rx, base1), pct_str)
     wp1 = fm_pct.horizontalAdvance(pct_str)
+    wl1_tmp = fm_lbl1.horizontalAdvance(primary_model) if primary_model else 0.0
+    fits_col1 = (not wl1_tmp) or wl1_tmp <= rw - (col_w + 6.0)
+    fits_flush1 = (not wl1_tmp) or wl1_tmp <= rw - wp1 - 6.0
+    use_flush1 = (not fits_col1) and fits_flush1
+    if use_flush1:
+        label_x = rx + wp1 + 6.0
+        p.setPen(pct_col)
+        p.drawText(QPointF(rx, base1), pct_str)
+    else:
+        label_x = rx + col_w + 6.0
+        p.setPen(pct_col)
+        p.drawText(QPointF(rx + col_w - wp1, base1), pct_str)
 
     rst1 = format_token_count(tokens_io)
-    wl1 = fm_lbl1.horizontalAdvance(primary_model) if primary_model else 0.0
     wr1 = fm_meta.horizontalAdvance(rst1) if rst1 else 0.0
-    space1 = rw - wp1 - 6.0
-    show_rst1 = bool(rst1) and (space1 - wl1) >= (wr1 + 6.0)
-    label_w1 = wl1 if (show_rst1 or (wl1 and wl1 <= space1)) else max(0.0, space1)
+    space1 = (rw - wp1 - 6.0) if use_flush1 else (rw - (col_w + 6.0))
+    show_rst1 = bool(rst1) and (space1 - wl1_tmp) >= (wr1 + 6.0)
+    label_w1 = wl1_tmp if (show_rst1 or (wl1_tmp and wl1_tmp <= space1)) else max(0.0, space1)
 
     if primary_model and label_w1 >= 14.0:
         elided_m = _elided_text(fm_lbl1, primary_model, label_w1)
         if elided_m:
             p.setFont(f_lbl1)
             p.setPen(COLOR_TXT_LABEL)
-            p.drawText(QPointF(rx + wp1 + 6.0, base1), elided_m)
+            p.drawText(QPointF(label_x, base1), elided_m)
 
     if show_rst1:
         p.setFont(f_meta)
         p.setPen(COLOR_TXT_FAINT)
         p.drawText(QPointF(rx + rw - wr1, base1), rst1)
 
-    # 2. Satır: 3 Oturum [sağda: Ücretsiz ($0)]
+    # 2. Satır: 3 Oturum [sağda: Ücretsiz ($0)] — etiket sütununa hizalı
     sess_text = f"{sessions} Oturum"
     cost_info = "Ücretsiz" if cost_val == 0.0 else f"${cost_val:.2f}"
     wl2 = fm_lbl2.horizontalAdvance(sess_text)
@@ -1548,7 +1584,7 @@ def draw_opencode_card(
         if elided_sess:
             p.setFont(f_lbl2)
             p.setPen(COLOR_TXT_MUTED)
-            p.drawText(QPointF(rx, base2), elided_sess)
+            p.drawText(QPointF(label_x, base2), elided_sess)
 
     if show_rst2:
         p.setFont(f_meta)
