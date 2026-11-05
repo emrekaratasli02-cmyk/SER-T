@@ -215,10 +215,10 @@ LEFT_CARD_HARD_MIN_WIDTH: float = 112.0  # çok dar ekranda Claude/AG için okun
 OC_CARD_TINY_MIN_WIDTH: float = 118.0   # çok dar ekranda OpenCode'un ince hali (show_text=True)
 LEFT_CARD_GUARD_MIN_WIDTH: float = 104.0  # son güvenlik ağı sınırı (ataç için; show_text=True)
 # Metinsiz mod (show_text=False) boyut ve alt sınırları
-CLAUDE_CARD_TEXTLESS_WIDTH: float = 104.0
-AG_CARD_TEXTLESS_WIDTH: float = 104.0
-OC_CARD_TEXTLESS_WIDTH: float = 104.0
-AI_CARD_TEXTLESS_WIDTH: float = 104.0
+CLAUDE_CARD_TEXTLESS_WIDTH: float = 92.0
+AG_CARD_TEXTLESS_WIDTH: float = 92.0
+OC_CARD_TEXTLESS_WIDTH: float = 92.0
+AI_CARD_TEXTLESS_WIDTH: float = 92.0
 OC_CARD_TEXTLESS_MIN_WIDTH: float = 88.0
 CONC_CARD_TEXTLESS_MIN_WIDTH: float = 88.0
 LEFT_CARD_TEXTLESS_HARD_MIN: float = 72.0
