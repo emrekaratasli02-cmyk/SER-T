@@ -368,12 +368,15 @@ def draw_concentric_text_rows(
     text_rect: QRectF,
     row1: Tuple[Optional[float], QColor, str, str],
     row2: Tuple[Optional[float], QColor, str, str],
+    enabled: bool = True,
 ) -> None:
     """Draw two text rows for concentric card (v24):
 
     Each row: percentage 12 Bold tabular in ring colour, label 10.5 Medium, reset time 10 faint
     right-aligned (only when it fits). All three share one baseline per row.
     """
+    if not enabled:
+        return
     f_pct = theme.make_font(12.0, QFont.Weight.Bold, tabular=True, letter_spacing=-0.2)
     f_lbl = theme.make_font(FONT_SZ_LBL, QFont.Weight.Medium)
     f_rst = theme.make_font(10.0, QFont.Weight.Normal)
@@ -622,6 +625,7 @@ def draw_claude_card(
     claude_data: Dict[str, Any],
     hover: bool = False,
     press_scale: float = 1.0,
+    show_text: bool = False,
 ) -> None:
     """Renders 184x52 Claude card according to D4 'Konsantrik çift halka' spec."""
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
@@ -661,18 +665,23 @@ def draw_claude_card(
     p.save()
     if has_err:
         p.setRenderHint(QPainter.Antialiasing, True)
-        f_title = theme.make_font(FONT_SZ_LBL, QFont.Weight.Medium)
-        f_sub = theme.make_font(10.0, QFont.Weight.Normal)
-        fm_sub = QFontMetricsF(f_sub)
-        p.setFont(f_title)
-        p.setPen(COLOR_TXT_PRIMARY)
-        p.drawText(QRectF(bx, rect.y() + 9.0, bw - 10.0, 18.0), Qt.AlignLeft | Qt.AlignVCenter, "Claude")
-        p.setFont(f_sub)
-        p.setPen(COLOR_TXT_MUTED)
-        p.drawText(QRectF(bx, rect.y() + 27.0, bw, 16.0), Qt.AlignLeft | Qt.AlignVCenter, _elided_text(fm_sub, "Okunamadı", bw))
+        if show_text:
+            f_title = theme.make_font(FONT_SZ_LBL, QFont.Weight.Medium)
+            f_sub = theme.make_font(10.0, QFont.Weight.Normal)
+            fm_sub = QFontMetricsF(f_sub)
+            p.setFont(f_title)
+            p.setPen(COLOR_TXT_PRIMARY)
+            p.drawText(QRectF(bx, rect.y() + 9.0, bw - 10.0, 18.0), Qt.AlignLeft | Qt.AlignVCenter, "Claude")
+            p.setFont(f_sub)
+            p.setPen(COLOR_TXT_MUTED)
+            p.drawText(QRectF(bx, rect.y() + 27.0, bw, 16.0), Qt.AlignLeft | Qt.AlignVCenter, _elided_text(fm_sub, "Okunamadı", bw))
         p.setPen(Qt.NoPen)
         p.setBrush(COLOR_BAR_AMBER)
         p.drawEllipse(QPointF(rect.right() - 8.0, rect.top() + 8.0), 3.0, 3.0)
+        p.restore()
+        return
+
+    if not show_text:
         p.restore()
         return
 
@@ -1361,6 +1370,7 @@ def draw_ag_card(
     hover: bool = False,
     press_scale: float = 1.0,
     active_account: Optional[str] = None,
+    show_text: bool = False,
 ) -> None:
     """Renders 184x52 Antigravity quota card according to D4 'Konsantrik çift halka' spec."""
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
@@ -1452,27 +1462,32 @@ def draw_ag_card(
 
     p.save()
     if has_err:
-        f_err_title = theme.make_font(11.0, QFont.Weight.Medium)
-        f_err_sub = theme.make_font(10.0, QFont.Weight.Normal)
-        fm_title = QFontMetricsF(f_err_title)
+        if show_text:
+            f_err_title = theme.make_font(11.0, QFont.Weight.Medium)
+            f_err_sub = theme.make_font(10.0, QFont.Weight.Normal)
+            fm_title = QFontMetricsF(f_err_title)
 
-        if bw >= 80.0:
-            p.setFont(f_err_title)
-            p.setPen(COLOR_TXT_PRIMARY)
-            p.drawText(QRectF(bx, rect.y() + 9.0, bw - 14.0, 16.0), Qt.AlignLeft | Qt.AlignVCenter, "Antigravity")
-            p.setFont(f_err_sub)
-            p.setPen(COLOR_BAR_AMBER)
-            p.drawText(QRectF(bx, rect.y() + 27.0, bw - 14.0, 15.0), Qt.AlignLeft | Qt.AlignVCenter, "Okunamadı")
-        else:
-            p.setFont(f_err_title)
-            p.setPen(COLOR_TXT_MUTED)
-            txt = _elided_text(fm_title, "Okunamadı", bw - 12.0)
-            p.drawText(QRectF(bx, rect.y(), bw - 12.0, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, txt)
+            if bw >= 80.0:
+                p.setFont(f_err_title)
+                p.setPen(COLOR_TXT_PRIMARY)
+                p.drawText(QRectF(bx, rect.y() + 9.0, bw - 14.0, 16.0), Qt.AlignLeft | Qt.AlignVCenter, "Antigravity")
+                p.setFont(f_err_sub)
+                p.setPen(COLOR_BAR_AMBER)
+                p.drawText(QRectF(bx, rect.y() + 27.0, bw - 14.0, 15.0), Qt.AlignLeft | Qt.AlignVCenter, "Okunamadı")
+            else:
+                p.setFont(f_err_title)
+                p.setPen(COLOR_TXT_MUTED)
+                txt = _elided_text(fm_title, "Okunamadı", bw - 12.0)
+                p.drawText(QRectF(bx, rect.y(), bw - 12.0, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, txt)
 
         # Amber uyari noktasi
         p.setPen(Qt.NoPen)
         p.setBrush(COLOR_BAR_AMBER)
         p.drawEllipse(QPointF(rect.right() - 8.0, rect.top() + 8.0), 3.0, 3.0)
+        p.restore()
+        return
+
+    if not show_text:
         p.restore()
         return
 
@@ -1531,6 +1546,7 @@ def draw_opencode_card(
     oc_data: Dict[str, Any],
     hover: bool = False,
     press_scale: float = 1.0,
+    show_text: bool = False,
 ) -> None:
     """Renders OpenCode quota card according to D4 concentric card spec (same as Claude/AG)."""
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
@@ -1587,12 +1603,17 @@ def draw_opencode_card(
 
     p.save()
     if has_err:
-        p.setOpacity(0.65)
-        f_err = theme.make_font(11.0, QFont.Weight.Normal)
-        p.setFont(f_err)
-        p.setPen(COLOR_TXT_MUTED)
-        msg = "OpenCode veri yok" if not available else "OpenCode okunamadı"
-        p.drawText(QRectF(bx, rect.y(), bw, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, msg)
+        if show_text:
+            p.setOpacity(0.65)
+            f_err = theme.make_font(11.0, QFont.Weight.Normal)
+            p.setFont(f_err)
+            p.setPen(COLOR_TXT_MUTED)
+            msg = "OpenCode veri yok" if not available else "OpenCode okunamadı"
+            p.drawText(QRectF(bx, rect.y(), bw, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, msg)
+        p.restore()
+        return
+
+    if not show_text:
         p.restore()
         return
 
