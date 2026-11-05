@@ -530,14 +530,19 @@ def type_icon(path: str, is_dir: bool, dpr: float) -> QPixmap:
 
 
 # ============================================================================ ShelfPanel
-class ShelfPanel(QWidget):
+class ShelfPanel(ps.PopoverBase):
     """Dosya rafı paneli (352 px)."""
 
     WIDTH = int(ps.PANEL_W)
     changed = Signal()
 
     def __init__(self, store: ShelfStore, parent: Optional[QWidget] = None, clip_store: Optional[Any] = None) -> None:
-        super().__init__(parent)
+        super().__init__(
+            parent,
+            activate_on_show=True,
+            outside_click_close=False,
+            recently_closed_ms=250.0,
+        )
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.NoDropShadowWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -562,18 +567,12 @@ class ShelfPanel(QWidget):
         self._press_idx: Optional[int] = None
         self._press_pos = QPointF()
         self._dragging = False
-        self._closing = False
-        self._anchor_global: Optional[QRectF] = None
-        self._last_close_time = 0.0
         self._copy_note: Optional[str] = None
-        self._anchor_timer = QTimer(self)
-        self._anchor_timer.setSingleShot(True)
-        self._anchor_timer.timeout.connect(self._on_anchor_timeout)
+        # testler için: koruma yolunun çalıştığını gösteren izler
+        self.guard_log: List[str] = []
         self._note_timer = QTimer(self)
         self._note_timer.setSingleShot(True)
         self._note_timer.timeout.connect(self._clear_note)
-        # testler için: koruma yolunun çalıştığını gösteren izler
-        self.guard_log: List[str] = []
         self.refresh()
 
     @staticmethod
@@ -707,62 +706,50 @@ class ShelfPanel(QWidget):
             except Exception:
                 pass
 
+    def _target_pos(self) -> QPoint:
+        """Anchor'ın üzerinde ortalanmış, ekran sınırlarına sıkışmış hedef konum."""
+        if self._anchor_global is None:
+            return QPoint(100, 100)
+        tx = int(self._anchor_global.center().x() - self.width() / 2.0)
+        ty = int(self._anchor_global.top() - self.height() - ps.ANCHOR_GAP)
+        scr = QGuiApplication.screenAt(self._anchor_global.center().toPoint()) or QGuiApplication.primaryScreen()
+        if scr is not None:
+            g = scr.availableGeometry()
+            m = 8
+            tx = max(g.left() + m, min(g.right() - self.width() - m, tx))
+            if ty < g.top() + m:
+                ty = int(self._anchor_global.bottom() + ps.ANCHOR_GAP)
+            if ty + self.height() > g.bottom() - m:
+                ty = max(g.top() + m, g.bottom() - self.height() - m)
+        return QPoint(tx, ty)
+
     # ------------------------------------------------------------ açılır pencere API
-    def is_open(self) -> bool:
-        return self.isVisible() and not self._closing
-
-    def recently_closed(self, threshold_ms: float = 250.0) -> bool:
-        if self._last_close_time <= 0.0:
-            return False
-        return (time.monotonic() - self._last_close_time) * 1000.0 <= threshold_ms
-
     def show_for(self, anchor_global: Optional[QRectF], *args: Any, switch_from_x: Optional[int] = None, **kw: Any) -> None:
         self._anchor_global = QRectF(anchor_global) if anchor_global is not None else None
-        self._closing = False
         self._scroll = 0.0
         self.refresh()
-        tx, ty, dpr = 100, 100, 1.0
+        self.resize(self.WIDTH, self.compute_height())
+
+        dpr = 1.0
         if self._anchor_global is not None:
-            tx = int(self._anchor_global.center().x() - self.width() / 2.0)
-            ty = int(self._anchor_global.top() - self.height() - ps.ANCHOR_GAP)
-            scr = QGuiApplication.screenAt(self._anchor_global.center().toPoint()) or QGuiApplication.primaryScreen()
-            if scr is not None:
-                g = scr.availableGeometry()
-                dpr = scr.devicePixelRatio()
-                m = 8
-                tx = max(g.left() + m, min(g.right() - self.width() - m, tx))
-                if ty < g.top() + m:
-                    ty = int(self._anchor_global.bottom() + ps.ANCHOR_GAP)
-                if ty + self.height() > g.bottom() - m:
-                    ty = max(g.top() + m, g.bottom() - self.height() - m)
+            screen = QGuiApplication.screenAt(self._anchor_global.center().toPoint())
+            if screen is None:
+                screen = QGuiApplication.primaryScreen()
+            if screen is not None:
+                dpr = screen.devicePixelRatio()
+
         winid = int(self.winId())
         if winapi is not None and hasattr(winapi, "set_round_region"):
             try:
                 winapi.set_round_region(winid, self.width(), self.height(), int(ps.R_PANEL), dpr)
             except Exception:
                 pass
-        ps.animate_in(self, QPoint(tx, ty), switch_from_x=switch_from_x)
-        self.activateWindow()
-        self.setFocus()
 
-    def hide_animated(self) -> None:
-        if not self.isVisible() or self._closing:
+        self._animate_in(switch_from_x)
+
+    def switch_tab(self, tab: str) -> None:
+        if tab not in ("files", "clips") or tab == self._tab:
             return
-        self._closing = True
-        self._last_close_time = time.monotonic()
-
-        def _done() -> None:
-            self._closing = False
-
-        ps.animate_out(self, on_done=_done)
-
-    def hide_instant(self) -> None:
-        if self.isVisible():
-            self._last_close_time = time.monotonic()
-        self._closing = False
-        ps.animate_out(self, instant=True)
-
-    def panel_x(self) -> int:
         return int(self.x())
 
     def switch_tab(self, tab: str) -> None:
@@ -780,6 +767,9 @@ class ShelfPanel(QWidget):
                 self._apply_round()
         self._layout()
         self.update()
+
+    def panel_x(self) -> int:
+        return int(self.x())
 
     # ------------------------------------------------------------ olaylar
     def keyPressEvent(self, event) -> None:
@@ -817,25 +807,6 @@ class ShelfPanel(QWidget):
                 event.accept()
                 return
         super().keyPressEvent(event)
-
-    def changeEvent(self, event: QEvent) -> None:
-        if event.type() == QEvent.Type.ActivationChange:
-            if (not self.isActiveWindow() and self.isVisible() and not self._closing and not self._dragging):
-                if self._anchor_global is not None and self._anchor_global.contains(QPointF(QCursor.pos())):
-                    self._last_close_time = time.monotonic()
-                    self._anchor_timer.start(300)
-                else:
-                    self.hide_animated()
-        super().changeEvent(event)
-
-    def _on_anchor_timeout(self) -> None:
-        if self.isVisible() and not self.isActiveWindow() and not self._closing and not self._dragging:
-            self.hide_animated()
-
-    def hideEvent(self, event) -> None:
-        self._closing = False
-        self._last_close_time = time.monotonic()
-        super().hideEvent(event)
 
     def resizeEvent(self, event) -> None:
         self._layout()

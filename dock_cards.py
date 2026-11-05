@@ -60,6 +60,9 @@ COLOR_RING_OUTER: QColor = QColor(COLOR_ACCENT_BLUE)
 COLOR_RING_INNER: QColor = QColor("#A9C8FF")
 COLOR_CLAUDE_SKY: QColor = COLOR_RING_INNER
 COLOR_GEMINI_BLUE: QColor = COLOR_RING_INNER
+# OpenCode kartı: terminal/mavi ton (marka bağımsız, dock paletine uyumlu)
+COLOR_OC_TILE: QColor = QColor("#2F6FEB")
+COLOR_OC_GLYPH: QColor = QColor(255, 255, 255, 235)
 COLOR_RING_WARN: QColor = QColor("#FF9F0A")
 COLOR_RING_CRITICAL: QColor = QColor("#F87171")
 RING_WARN_AT: float = 75.0
@@ -1364,6 +1367,187 @@ def draw_ag_card(
     draw_concentric_text_rows(p, text_rect, row1, row2)
 
     p.restore()
+
+
+# ==============================================================================
+# 2b. OPENCODE CARD (LOCAL TOKEN/COST USAGE)
+# ==============================================================================
+
+def format_token_count(n: Any) -> str:
+    """Token sayısını kısa, okunur biçime çevirir: 999 / 12.3K / 1.5M."""
+    try:
+        val = int(n)
+    except (TypeError, ValueError):
+        return "—"
+    if val < 0:
+        return "—"
+    if val >= 1_000_000:
+        return f"{val / 1_000_000:.1f}M".replace(".", ",")
+    if val >= 1_000:
+        return f"{val / 1_000:.1f}K".replace(".", ",")
+    return str(val)
+
+
+def draw_opencode_glyph(p: QPainter, rect: QRectF) -> None:
+    """OpenCode terminal glifi (>_) halka göbeğinde zarif beyaz/açık renk."""
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing, True)
+    f_glyph = QFont("Consolas")
+    f_glyph.setPixelSize(12)
+    f_glyph.setWeight(QFont.Weight.Bold)
+    p.setFont(f_glyph)
+    p.setPen(COLOR_TXT_PRIMARY)
+    p.drawText(rect, Qt.AlignCenter, ">_")
+    p.restore()
+
+
+def draw_opencode_card(
+    p: QPainter,
+    rect: QRectF,
+    oc_data: Dict[str, Any],
+    hover: bool = False,
+    press_scale: float = 1.0,
+) -> None:
+    """Renders OpenCode quota card according to D4 concentric card spec (same as Claude/AG)."""
+    draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
+
+    # 40x40 Slot at left: padding 10px -> x = rect.x() + 10.0, y = rect.y() + 6.0
+    slot_rect = QRectF(rect.x() + 10.0, rect.y() + 6.0, 40.0, 40.0)
+
+    available = bool(oc_data.get("available"))
+    has_err = bool(oc_data.get("err")) or not available
+
+    if "recent_tokens" in oc_data:
+        tokens_io = _as_nonneg(oc_data.get("recent_input")) + _as_nonneg(oc_data.get("recent_output"))
+        cost_val = _as_cost(oc_data.get("recent_cost"))
+        sessions = _as_nonneg(oc_data.get("recent_sessions"))
+        by_model = oc_data.get("recent_by_model") or {}
+    else:
+        tokens_io = _as_nonneg(oc_data.get("today_input")) + _as_nonneg(oc_data.get("today_output"))
+        cost_val = _as_cost(oc_data.get("today_cost"))
+        sessions = _as_nonneg(oc_data.get("today_sessions"))
+        by_model = oc_data.get("today_by_model") or {}
+
+    primary_model = "OpenCode"
+    if by_model and isinstance(by_model, dict):
+        top_k = sorted(by_model.items(), key=lambda kv: kv[1], reverse=True)
+        if top_k:
+            raw_m = str(top_k[0][0]).lower()
+            if "deepseek" in raw_m:
+                primary_model = "DeepSeek"
+            elif "claude" in raw_m:
+                primary_model = "Claude"
+            elif "gpt" in raw_m:
+                primary_model = "GPT"
+            elif "gemini" in raw_m:
+                primary_model = "Gemini"
+
+    pct = min(100.0, max(0.0, (tokens_io / 1_000_000.0) * 100.0)) if not has_err else None
+    sess_pct = min(100.0, (sessions / 10.0) * 100.0) if (not has_err and sessions > 0) else None
+
+    # Sol Slot: Konsantrik çift halka (Dış: Token kotası, İç: Oturum, Merkez: >_)
+    draw_concentric_rings_slot(
+        p,
+        slot_rect,
+        outer_pct=pct if not has_err else None,
+        outer_color=COLOR_RING_OUTER,
+        inner_pct=sess_pct if not has_err else None,
+        inner_color=COLOR_RING_INNER,
+        logo_pixmap=None,
+        fallback_icon_fn=draw_opencode_glyph,
+    )
+
+    # Sağ taraf metin alanı: gap 9px -> bx = rect.x() + 59.0
+    bx = rect.x() + 59.0
+    bw = max(20.0, rect.right() - 10.0 - bx)
+
+    p.save()
+    if has_err:
+        p.setOpacity(0.65)
+        f_err = theme.make_font(11.0, QFont.Weight.Normal)
+        p.setFont(f_err)
+        p.setPen(COLOR_TXT_MUTED)
+        msg = "OpenCode veri yok" if not available else "OpenCode okunamadı"
+        p.drawText(QRectF(bx, rect.y(), bw, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, msg)
+        p.restore()
+        return
+
+    # Claude ve Antigravity ile birebir aynı çift satır hizalama ve fontlar
+    f_pct = theme.make_font(12.0, QFont.Weight.DemiBold, tabular=True)
+    f_lbl = theme.make_font(11.0, QFont.Weight.Normal)
+    f_rst = theme.make_font(10.0, QFont.Weight.Normal)
+
+    rx = bx
+    rw = bw
+    row_step = 19.0
+    cap = _get_fm(f_pct).capHeight()
+    base1 = (rect.y() + 8.0 + 18.0) - (row_step - cap) / 2.0
+    base2 = base1 + row_step
+
+    # 1. Satır: %34 DeepSeek [sağda: 339K]
+    pct_num = int(round(pct)) if pct is not None else 0
+    pct_str = f"%{pct_num}"
+    pct_col = usage_color(pct_num, COLOR_RING_OUTER)
+
+    p.setFont(f_pct)
+    fm_pct = p.fontMetrics()
+    p.setPen(pct_col)
+    p.drawText(QPointF(rx, base1), pct_str)
+    wp1 = fm_pct.horizontalAdvance(pct_str)
+
+    p.setFont(f_lbl)
+    fm_lbl = p.fontMetrics()
+    p.setPen(COLOR_TXT_MUTED)
+    p.drawText(QPointF(rx + wp1 + 4.0, base1), primary_model)
+    wl1 = fm_lbl.horizontalAdvance(primary_model)
+
+    rst1 = format_token_count(tokens_io)
+    p.setFont(f_rst)
+    fm_rst = p.fontMetrics()
+    wr1 = fm_rst.horizontalAdvance(rst1)
+    if wp1 + 4.0 + wl1 + 5.0 + wr1 <= rw:
+        p.setPen(COLOR_TXT_FAINT)
+        p.drawText(QPointF(rx + rw - wr1, base1), rst1)
+
+    # 2. Satır: 3 Oturum [sağda: Ücretsiz ($0)]
+    sess_num_str = str(sessions)
+    p.setFont(f_pct)
+    p.setPen(COLOR_RING_INNER)
+    p.drawText(QPointF(rx, base2), sess_num_str)
+    wp2 = fm_pct.horizontalAdvance(sess_num_str)
+
+    p.setFont(f_lbl)
+    p.setPen(COLOR_TXT_MUTED)
+    lbl2 = "Oturum"
+    p.drawText(QPointF(rx + wp2 + 4.0, base2), lbl2)
+    wl2 = fm_lbl.horizontalAdvance(lbl2)
+
+    cost_info = "Ücretsiz" if cost_val == 0.0 else f"${cost_val:.2f}"
+    wr2 = fm_rst.horizontalAdvance(cost_info)
+    if wp2 + 4.0 + wl2 + 5.0 + wr2 <= rw:
+        p.setFont(f_rst)
+        p.setPen(COLOR_TXT_FAINT)
+        p.drawText(QPointF(rx + rw - wr2, base2), cost_info)
+
+    p.restore()
+
+
+def _as_nonneg(val: Any) -> int:
+    try:
+        v = int(val)
+    except (TypeError, ValueError):
+        return 0
+    return v if v > 0 else 0
+
+
+def _as_cost(val: Any) -> float:
+    try:
+        f = float(val or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if f != f or f in (float("inf"), float("-inf")):
+        return 0.0
+    return f if f > 0.0 else 0.0
 
 
 # ==============================================================================

@@ -117,6 +117,16 @@ try:
 except Exception:
     window_flash = None
 
+# v34: OpenCode yerel kullanım istatistikleri (token/maliyet; salt okunur SQLite)
+try:
+    import opencode_usage
+except Exception:
+    opencode_usage = None
+try:
+    import opencode_panel
+except Exception:
+    opencode_panel = None
+
 
 class LRUCache(collections.OrderedDict):
     """Bounded LRU cache backed by OrderedDict."""
@@ -181,6 +191,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "cal": True,
         "mail": True,
         "ag": True,
+        "oc": True,
         "sys": True,
     },
 }
@@ -196,6 +207,8 @@ CLAUDE_CARD_WIDTH: float = 204.0  # v24: %100 + Oturum + '23 sa 59 dk' sığsın
 MEDIA_CARD_WIDTH: float = 314.0
 MEDIA_CARD_WIDTH_COMPACT: float = 240.0
 AG_CARD_WIDTH: float = 204.0
+OC_CARD_WIDTH: float = 184.0   # OpenCode kullanım kartı (%34 DeepSeek / 3 Oturum Ücretsiz)
+OC_CARD_MIN_WIDTH: float = 140.0  # sıkışınca küçülebileceği alt sınır
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
@@ -256,7 +269,7 @@ def load_settings() -> dict:
         except Exception as exc:
             sources.log_err("load_settings_bak_corrupt", exc)
     if isinstance(cfg.get("cards"), dict):
-        merged_cards = {"cal": True, "mail": True, "ag": True, "sys": True}
+        merged_cards = {"cal": True, "mail": True, "ag": True, "oc": True, "sys": True}
         merged_cards.update(cfg["cards"])
         cfg["cards"] = merged_cards
     return cfg
@@ -769,6 +782,17 @@ class SeritDock(QWidget):
                     self.quota_panel.account_selected.connect(self._on_ag_account_selected)
         except Exception as exc:
             sources.log_err("info_panels_init", exc)
+
+        # v34: OpenCode kullanım paneli (bilgi kartı; yoksa kart yalnız veri gösterir)
+        self.opencode_panel = None
+        try:
+            if opencode_panel is not None and hasattr(opencode_panel, "OpencodePanel"):
+                self.opencode_panel = opencode_panel.OpencodePanel()
+                if hasattr(self.opencode_panel, "refresh_requested"):
+                    self.opencode_panel.refresh_requested.connect(lambda: self.submit_fetch("oc"))
+        except Exception as exc:
+            sources.log_err("opencode_panel_init", exc)
+            self.opencode_panel = None
 
         # Action Menu & Tray Actions contract
         self.action_menu = None
@@ -1518,6 +1542,14 @@ class SeritDock(QWidget):
         self.ag_timer.start()
         self.submit_fetch("ag")
 
+        # OpenCode kullanım tazeleme (60 s; salt okunur yerel SQLite, hafif sorgu)
+        if opencode_usage is not None:
+            self.oc_timer = QTimer(self)
+            self.oc_timer.setInterval(60000)
+            self.oc_timer.timeout.connect(lambda: self.submit_fetch("oc"))
+            self.oc_timer.start()
+            self.submit_fetch("oc")
+
         # v25: indirilenler izleyici (1 sn + dosya sistemi anlık bildirim) ve mikrofon/kamera kullanımı (3 sn)
         if self._dl_watcher is not None:
             self.shelfdl_timer = QTimer(self)
@@ -1919,6 +1951,7 @@ class SeritDock(QWidget):
             "battop": self._read_top_load,
             "mail": getattr(work_sources, "fetch_mail_waiting", None),
             "ag": getattr(work_sources, "fetch_antigravity", None),
+            "oc": getattr(opencode_usage, "read_usage", None),
             "shelfdl": (self._dl_watcher.poll if self._dl_watcher is not None else None),
             "shelfshot": (self._shot_watcher.poll if self._shot_watcher is not None else None),
             "presence": getattr(presence, "read_capability_usage", None),
@@ -2001,6 +2034,21 @@ class SeritDock(QWidget):
             r_ag = self._get_card_rect("ag")
             if r_ag is not None:
                 self.update(r_ag.toRect().adjusted(-2, -2, 2, 2))
+            else:
+                self.update()
+            return
+
+        if key == "oc":
+            if _is_same_data(old_val, res):
+                return
+            if self.opencode_panel is not None and hasattr(self.opencode_panel, "set_data"):
+                try:
+                    self.opencode_panel.set_data(res if isinstance(res, dict) else {})
+                except Exception as exc:
+                    sources.log_err("opencode_panel_set_data", exc)
+            r_oc = self._get_card_rect("oc")
+            if r_oc is not None:
+                self.update(r_oc.toRect().adjusted(-2, -2, 2, 2))
             else:
                 self.update()
             return
@@ -2284,17 +2332,19 @@ class SeritDock(QWidget):
         cards_cfg = dict(self.settings.get("cards") or {})
         focus_prof = str(self.settings.get("focus_profile") or "work")
         if focus_prof == "cinema":
-            show_claude = show_mail = show_ag = show_sys = show_cal = False
+            show_claude = show_mail = show_ag = show_oc = show_sys = show_cal = False
         elif focus_prof == "coding":
             show_claude = cards_cfg.get("claude", True)
             show_mail = False
             show_ag = cards_cfg.get("ag", True)
+            show_oc = cards_cfg.get("oc", False)
             show_sys = cards_cfg.get("sys", True)
             show_cal = cards_cfg.get("cal", True)
         else:
             show_claude = cards_cfg.get("claude", True)
             show_mail = cards_cfg.get("mail", True)
             show_ag = cards_cfg.get("ag", True)
+            show_oc = cards_cfg.get("oc", False)
             show_sys = cards_cfg.get("sys", True)
             show_cal = cards_cfg.get("cal", True)
 
@@ -2331,6 +2381,8 @@ class SeritDock(QWidget):
                 lw_items.append(w_mail)
             if show_ag:
                 lw_items.append(w_ag)
+            if show_oc:
+                lw_items.append(OC_CARD_WIDTH)
             if show_sys:
                 lw_items.append(SYS_CARD_WIDTH)
             if self._has_battery():
@@ -2365,6 +2417,8 @@ class SeritDock(QWidget):
             items.append(w_mail)
         if show_ag:
             items.append(w_ag)
+        if show_oc:
+            items.append(OC_CARD_WIDTH)
         if show_sys:
             items.append(SYS_CARD_WIDTH)
         if w_apps > 0:
@@ -3473,15 +3527,16 @@ class SeritDock(QWidget):
             p.fillRect(QRectF(round(div_x), round(div_cy - dock_cards.CARD_DIVIDER_H / 2.0), 1.0, dock_cards.CARD_DIVIDER_H), QColor(255, 255, 255, 60))
             p.restore()
 
-    def _left_open_sig(self) -> Tuple[bool, bool, bool, bool]:
-        """Sol kanat kartlarının paneli açık mı: (Claude, Mail, Antigravity, Sistem)."""
+    def _left_open_sig(self) -> Tuple[bool, bool, bool, bool, bool]:
+        """Sol kanat kartlarının paneli açık mı: (Claude, Mail, Antigravity, OpenCode, Sistem)."""
         try:
             return (bool(self.popover.is_open("claude")),
                     bool(self.mail_panel is not None and self.mail_panel.is_open()),
                     bool(self.quota_panel is not None and self.quota_panel.is_open()),
+                    bool(self.opencode_panel is not None and self.opencode_panel.is_open()),
                     bool(self.popover.is_open("sys")))
         except Exception:
-            return (False, False, False, False)
+            return (False, False, False, False, False)
 
     def _paint_content(self, p: QPainter, exposed_rect: Optional[Any] = None) -> None:
         p.setRenderHint(QPainter.Antialiasing)
@@ -3502,17 +3557,19 @@ class SeritDock(QWidget):
         cards_cfg = dict(self.settings.get("cards") or {})
         focus_prof = str(self.settings.get("focus_profile") or "work")
         if focus_prof == "cinema":
-            show_claude = show_mail = show_ag = show_sys = show_cal = False
+            show_claude = show_mail = show_ag = show_oc = show_sys = show_cal = False
         elif focus_prof == "coding":
             show_claude = cards_cfg.get("claude", True)
             show_mail = False
             show_ag = cards_cfg.get("ag", True)
+            show_oc = cards_cfg.get("oc", False)
             show_sys = cards_cfg.get("sys", True)
             show_cal = cards_cfg.get("cal", True)
         else:
             show_claude = cards_cfg.get("claude", True)
             show_mail = cards_cfg.get("mail", True)
             show_ag = cards_cfg.get("ag", True)
+            show_oc = cards_cfg.get("oc", False)
             show_sys = cards_cfg.get("sys", True)
             show_cal = cards_cfg.get("cal", True)
 
@@ -3520,11 +3577,13 @@ class SeritDock(QWidget):
 
         mail_data = self.store.get("mail") or {}
         ag_data = self.store.get("ag") or {}
+        oc_data = self.store.get("oc") or {}
         cal_data = self.store.get("cal") or {}
         claude_entry = self.store.get("claude") or {}
 
         w_mail = dock_cards.measure_mail_card_width(mail_data) if show_mail else 0.0
         w_ag = AG_CARD_WIDTH if show_ag else 0.0
+        w_oc = OC_CARD_WIDTH if show_oc else 0.0
         w_claude = CLAUDE_CARD_WIDTH if show_claude else 0.0
         natural_cal_w = dock_cards.measure_calendar_card_width(cal_data) if show_cal else 0.0
 
@@ -3566,12 +3625,17 @@ class SeritDock(QWidget):
             eff_mail_w = w_mail
             eff_claude_w = w_claude
             eff_ag_w = w_ag
+            eff_oc_w = w_oc
             show_bat = self._has_battery()
-            n_lw = int(show_claude) + int(show_mail) + int(show_ag) + int(show_sys) + int(show_bat)
+            n_lw = (
+                int(show_claude) + int(show_mail) + int(show_ag) + int(show_oc)
+                + int(show_sys) + int(show_bat)
+            )
             needed_space = (
                 (w_claude if show_claude else 0.0)
                 + (eff_mail_w if show_mail else 0.0)
-                + (w_ag if show_ag else 0.0)
+                + (eff_ag_w if show_ag else 0.0)
+                + (eff_oc_w if show_oc else 0.0)
                 + (SYS_CARD_WIDTH if show_sys else 0.0)
                 + (BAT_CARD_WIDTH if show_bat else 0.0)
                 + max(0, n_lw - 1) * GAP_MODULE
@@ -3582,6 +3646,11 @@ class SeritDock(QWidget):
                 can_shrink = max(0.0, eff_mail_w - dock_cards.MAIL_CARD_MIN_WIDTH)
                 cut = min(overflow, can_shrink)
                 eff_mail_w -= cut
+                overflow -= cut
+            if overflow > 0 and show_oc:
+                can_shrink = max(0.0, eff_oc_w - OC_CARD_MIN_WIDTH)
+                cut = min(overflow, can_shrink)
+                eff_oc_w -= cut
                 overflow -= cut
             n_pair = int(show_claude) + int(show_ag)
             if overflow > 0 and n_pair:
@@ -3598,6 +3667,8 @@ class SeritDock(QWidget):
                 lw_cards.append(("mail", eff_mail_w))
             if show_ag:
                 lw_cards.append(("ag", eff_ag_w))
+            if show_oc:
+                lw_cards.append(("oc", eff_oc_w))
             if show_sys:
                 lw_cards.append(("sys", SYS_CARD_WIDTH))
             if show_bat:
@@ -3670,7 +3741,10 @@ class SeritDock(QWidget):
                 cur_lw_x = final_apps_x - (GAP_MODULE if (lw_w > 0 and w_apps > 0) else 0.0) - lw_w
 
             # Left Wing panellerinin açık/kapalı durumu (açık kart altına zemin A)
-            open_claude, open_mail, open_ag, open_sys = self._left_open_sig()
+            _sig = self._left_open_sig()
+            open_claude, open_mail, open_ag, open_oc, open_sys = (
+                (_sig + (False, False, False, False, False))[:5]
+            )
 
             _lw_end = (cur_lw_x + lw_w) if lw_w > 0 else DESKTOP_STRIP_W
             div_cy = card_y + card_h / 2.0
@@ -3690,7 +3764,8 @@ class SeritDock(QWidget):
                     card_open = (bat_open if card_key == "bat" else
                                  (open_claude if card_key == "claude" else
                                   (open_mail if card_key == "mail" else
-                                   (open_ag if card_key == "ag" else open_sys))))
+                                   (open_ag if card_key == "ag" else
+                                    (open_oc if card_key == "oc" else open_sys)))))
 
                     if card_open and not is_hover:  # açık panel kartı: kalıcı hafif zemin (A)
                         p.save()
@@ -3705,6 +3780,8 @@ class SeritDock(QWidget):
                     elif card_key == "ag":
                         ag_acc = str(self.settings.get("ag_active_account", "emre"))
                         dock_cards.draw_ag_card(p, r_card, ag_data, hover=is_hover, press_scale=press_scale, active_account=ag_acc)
+                    elif card_key == "oc":
+                        dock_cards.draw_opencode_card(p, r_card, oc_data, hover=is_hover, press_scale=press_scale)
                     elif card_key == "sys":
                         sys_entry = self.store.get("sys") or {}
                         c_disp = None if self.preview_mode else self.anim_cpu.value
@@ -3921,6 +3998,16 @@ class SeritDock(QWidget):
                     ag_acc = str(self.settings.get("ag_active_account", "emre"))
                     dock_cards.draw_ag_card(p, r_ag, ag_data, hover=ag_hover, press_scale=ag_press, active_account=ag_acc)
                 x += w_ag + GAP_MODULE
+
+            if show_oc:
+                r_oc = QRectF(x, card_y, w_oc, card_h)
+                if is_full:
+                    self.hit_boxes.append((r_oc, "oc", None))
+                if intersects(r_oc):
+                    oc_hover = (self._hover_key == "oc")
+                    oc_press = self.press_tween.scale if (self._pressed_key == "oc") else 1.0
+                    dock_cards.draw_opencode_card(p, r_oc, oc_data, hover=oc_hover, press_scale=oc_press)
+                x += w_oc + GAP_MODULE
 
             if show_sys:
                 r_sys = QRectF(x, card_y, SYS_CARD_WIDTH, card_h)
@@ -4533,6 +4620,32 @@ class SeritDock(QWidget):
                         self.quota_panel.show_for(anchor_global, ag_data)
                     except Exception as exc:
                         sources.log_err("quota_panel_show", exc)
+        elif key == "oc":
+            # OpenCode kartı: detay panelini aç/kapat (diğer bilgi kartları gibi)
+            if self.opencode_panel is not None and hasattr(self.opencode_panel, "show_for"):
+                is_open = getattr(self.opencode_panel, "is_open", None)
+                recently_closed = getattr(self.opencode_panel, "recently_closed", None)
+                hide_animated = getattr(self.opencode_panel, "hide_animated", None)
+                if is_open and is_open():
+                    if hide_animated:
+                        hide_animated()
+                    else:
+                        self.opencode_panel.hide()
+                elif recently_closed and recently_closed():
+                    pass
+                else:
+                    anchor_global = QRectF(
+                        self.mapToGlobal(QPoint(int(rect.x()), int(rect.y()))),
+                        rect.size(),
+                    )
+                    oc_data = dict(self.store.get("oc") or {})
+                    try:
+                        self.opencode_panel.show_for(anchor_global, oc_data)
+                    except Exception as exc:
+                        sources.log_err("opencode_panel_show", exc)
+                    self.submit_fetch("oc")
+            else:
+                self.submit_fetch("oc")
 
     def _on_ag_account_selected(self, account: str) -> None:
         norm = "busra" if ("bus" in str(account or "").lower() or "büş" in str(account or "").lower()) else "emre"
@@ -5220,6 +5333,28 @@ class SeritDock(QWidget):
                 rst = g.get("reset_tr") or "—"
                 lines.append(f"{lbl}: {used_str} · yenilenme {rst}")
             return "\n".join(lines)
+        elif key == "oc":
+            oc = self.store.get("oc") or {}
+            if not oc.get("available"):
+                return "OpenCode: yerel kullanım verisi yok"
+            r_in = int(oc.get("recent_input") or 0)
+            r_out = int(oc.get("recent_output") or 0)
+            r_cache = int(oc.get("recent_cache_read") or 0)
+            r_cost = safe_float(oc.get("recent_cost"), 0.0) or 0.0
+            r_sess = int(oc.get("recent_sessions") or 0)
+            t_in = int(oc.get("today_input") or 0)
+            t_out = int(oc.get("today_output") or 0)
+            upd = str(oc.get("updated") or now_dt.strftime("%H:%M"))
+            return (
+                f"OpenCode · son 24 sa: {dock_cards.format_token_count(r_in)} giriş + "
+                f"{dock_cards.format_token_count(r_out)} çıkış\n"
+                f"Önbellek okuma: {dock_cards.format_token_count(r_cache)} · "
+                f"Maliyet: ${r_cost:.2f} · {r_sess} oturum\n"
+                f"Bugün: {dock_cards.format_token_count(t_in)} + "
+                f"{dock_cards.format_token_count(t_out)} token · "
+                f"Toplam: {dock_cards.format_token_count(oc.get('total_tokens'))} · "
+                f"güncelleme {upd}"
+            )
         elif key == "sys":
             s = self.store.get("sys") or {}
             c_val = safe_float(s.get("cpu"), None)
@@ -5754,6 +5889,14 @@ def render_preview(output_path_str: str) -> None:
             dock.shelf_store = shelf.ShelfStore()
     except Exception as exc:
         sources.log_err("preview_shelf", exc)
+    # v34: OpenCode kartı canlı dock ile aynı görünsün (salt okunur yerel SQLite)
+    try:
+        if opencode_usage is not None:
+            oc = opencode_usage.read_usage()
+            if isinstance(oc, dict):
+                dock.store.update("oc", oc)
+    except Exception as exc:
+        sources.log_err("preview_opencode", exc)
 
     # Read-only live volume and now-playing
     vol_data = media.get_volume()

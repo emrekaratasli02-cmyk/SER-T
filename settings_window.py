@@ -54,6 +54,7 @@ CARD_DEFS: List[Tuple[str, str, str]] = [
     ("claude", "Claude", "Kullanım ve kota bilgisi"),
     ("mail", "Mail", "Cevap bekleyen mailler"),
     ("ag", "Antigravity", "Model kotaları ve durum"),
+    ("oc", "OpenCode", "Bugünün token ve maliyet kullanımı"),
     ("sys", "Sistem halkaları", "İşlemci ve bellek kullanımı"),
     ("cal", "Takvim", "Günün etkinlikleri ve saat"),
     ("media", "Müzik", "Şu an çalan medya ve kontroller"),
@@ -360,6 +361,23 @@ class SettingsWindow(QWidget):
         self._stats_timer.timeout.connect(self._on_stats_tick)
 
     # ------------------------------------------------------------------ API
+    def _ensure_layout(self) -> None:
+        """Hit kutularını çizimden bağımsız olarak hesapla.
+
+        _paint_all _content_hit_boxes'u boyama sırasında doldurur; fare olayı ilk
+        boyamadan önce gelirse kutular boş olur ve tıklama boşa çıkar. Bu yöntem
+        gösterimden önce bir defa dönerek kutuları hazırlar.
+        """
+        if self._content_hit_boxes:
+            return
+        img = QImage(max(1, int(self.width())), max(1, int(self.height())),
+                     QImage.Format.Format_ARGB32_Premultiplied)
+        p = QPainter(img)
+        try:
+            self._paint_all(p)
+        finally:
+            p.end()
+
     def switch_section(self, section_id: str) -> None:
         valid_ids = [s[0] for s in SECTIONS]
         if section_id not in valid_ids or self.current_section == section_id:
@@ -396,6 +414,7 @@ class SettingsWindow(QWidget):
         self._last_close_time = 0.0
         if self.current_section == "performance":
             self._load_stats()
+        self._ensure_layout()
         ps.animate_in(self, target, switch_from_x=switch_from_x)
         self.activateWindow()
         self.setFocus()
@@ -537,6 +556,7 @@ class SettingsWindow(QWidget):
             super().mousePressEvent(event)
             return
 
+        self._ensure_layout()
         pos = QPointF(event.position())
 
         if self._close_rect.isNull():
@@ -595,6 +615,7 @@ class SettingsWindow(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        self._ensure_layout()
         pos = QPointF(event.position())
 
         prev_hover_sec = self._hover_section

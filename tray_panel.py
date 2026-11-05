@@ -226,7 +226,7 @@ def draw_generic_app_glyph(p: QPainter, rect: QRectF) -> None:
 # TrayPanel Widget — v22 kompakt simge ızgarası
 # ---------------------------------------------------------------------------
 
-class TrayPanel(QWidget):
+class TrayPanel(ps.PopoverBase):
     """Windows sistem tepsisi simge ızgarası paneli (Windows 11 gizli simge flyout'u)."""
 
     WIDTH: int = 260            # tam ızgara genişliği (>= 5 öğe); daha az öğede daralır
@@ -253,8 +253,12 @@ class TrayPanel(QWidget):
     refresh_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-
+        super().__init__(
+            parent,
+            activate_on_show=True,
+            outside_click_close=False,
+            recently_closed_ms=250.0,
+        )
         self.setWindowFlags(
             Qt.WindowType.Window
             | Qt.WindowType.FramelessWindowHint
@@ -268,7 +272,6 @@ class TrayPanel(QWidget):
         self._items: List[Dict[str, Any]] = []
         self._icons: Dict[str, Any] = {}
         self._scaled_icons: Dict[Tuple[str, float], QPixmap] = {}
-        self._anchor_global: Optional[QRectF] = None
 
         # Etkileşim durumu
         self._hover_idx: int = -1
@@ -280,13 +283,6 @@ class TrayPanel(QWidget):
         self._grid_rect: QRectF = QRectF()
         self._label_rect: QRectF = QRectF()
         self._cell_rects: Dict[int, QRectF] = {}
-
-        # Yaşam döngüsü
-        self._is_closing: bool = False
-        self._last_close_time: float = 0.0
-        self._anchor_timer = QTimer(self)
-        self._anchor_timer.setSingleShot(True)
-        self._anchor_timer.timeout.connect(self._on_anchor_timeout)
 
         self._f_label = ps.f_small()
         self._f_empty = ps.f_body()
@@ -366,14 +362,30 @@ class TrayPanel(QWidget):
         for idx in range(len(self._items)):
             self._cell_rects[idx] = self._cell_rect(idx)
 
-    # ------------------------------------------------------------------ API
-    def is_open(self) -> bool:
-        return self.isVisible() and not self._is_closing
+    def _target_pos(self) -> QPoint:
+        """Tepsinin SAĞ kenarına hizalı, yukarı açılan hedef konum."""
+        if self._anchor_global is None:
+            return QPoint(100, 100)
+        tx = int(self._anchor_global.right() - self.width())
+        ty = int(self._anchor_global.top() - self.height() - ps.ANCHOR_GAP)
 
-    def recently_closed(self, threshold_ms: float = 250.0) -> bool:
-        if self._last_close_time <= 0.0:
-            return False
-        return (time.monotonic() - self._last_close_time) * 1000.0 <= threshold_ms
+        screen = QGuiApplication.screenAt(self._anchor_global.center().toPoint())
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            geom = screen.availableGeometry()
+            m = 8
+            min_x = geom.left() + m
+            max_x = geom.right() - self.width() - m
+            tx = max(min_x, min(max_x, tx)) if max_x >= min_x else min_x
+            min_y = geom.top() + m
+            max_y = geom.bottom() - self.height() - m
+            if ty < min_y:
+                below_y = int(self._anchor_global.bottom() + ps.ANCHOR_GAP)
+                ty = below_y if below_y + self.height() <= geom.bottom() - m else min_y
+            elif ty > max_y:
+                ty = max_y
+        return QPoint(tx, ty)
 
     def chip_text(self) -> str:
         """Etiket rozeti: simge sayısı ('N simge')."""
@@ -427,35 +439,16 @@ class TrayPanel(QWidget):
             else:
                 self._anchor_global = None
 
-            self._is_closing = False
             self.resize(self.compute_width(), self.compute_height())
             self._layout()
 
             dpr = 1.0
-            target = QPoint(100, 100)
             if self._anchor_global is not None:
-                # Eski davranış korunur: tepsinin SAĞ kenarına hizalı
-                tx = int(self._anchor_global.right() - self.width())
-                ty = int(self._anchor_global.top() - self.height() - ps.ANCHOR_GAP)
-
                 screen = QGuiApplication.screenAt(self._anchor_global.center().toPoint())
                 if screen is None:
                     screen = QGuiApplication.primaryScreen()
                 if screen is not None:
-                    geom = screen.availableGeometry()
                     dpr = screen.devicePixelRatio()
-                    m = 8
-                    min_x = geom.left() + m
-                    max_x = geom.right() - self.width() - m
-                    tx = max(min_x, min(max_x, tx)) if max_x >= min_x else min_x
-                    min_y = geom.top() + m
-                    max_y = geom.bottom() - self.height() - m
-                    if ty < min_y:
-                        below_y = int(self._anchor_global.bottom() + ps.ANCHOR_GAP)
-                        ty = below_y if below_y + self.height() <= geom.bottom() - m else min_y
-                    elif ty > max_y:
-                        ty = max_y
-                target = QPoint(tx, ty)
 
             hwnd = int(self.winId())
             if winapi is not None and hasattr(winapi, "set_round_region"):
@@ -464,29 +457,9 @@ class TrayPanel(QWidget):
                 except Exception as exc:
                     _log_err("TrayPanel.winapi", exc)
 
-            ps.animate_in(self, target, switch_from_x=switch_from_x)
-            self.activateWindow()
-            self.setFocus()
+            self._animate_in(switch_from_x)
         except Exception as exc:
             _log_err("TrayPanel.show_for", exc)
-
-    def hide_animated(self) -> None:
-        if not self.isVisible() or self._is_closing:
-            return
-        self._is_closing = True
-        self._last_close_time = time.monotonic()
-
-        def _done() -> None:
-            self._is_closing = False
-
-        ps.animate_out(self, on_done=_done)
-
-    def hide_instant(self) -> None:
-        """Animasyonsuz kapatma (kapsül bölüm değişimi vb.)."""
-        if self.isVisible():
-            self._last_close_time = time.monotonic()
-        self._is_closing = False
-        ps.animate_out(self, instant=True)
 
     def render_to_image(self, dpr: float = 2.0) -> QImage:
         """Paneli çevrimdışı yüksek DPI görüntüye çizer (ARGB32)."""
@@ -618,27 +591,6 @@ class TrayPanel(QWidget):
             _log_err("TrayPanel.keyPressEvent", exc)
 
         super().keyPressEvent(event)
-
-    def changeEvent(self, event: QEvent) -> None:
-        if event.type() == QEvent.Type.ActivationChange:
-            if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
-                cursor_pos = QCursor.pos()
-                if self._anchor_global is not None and self._anchor_global.contains(QPointF(cursor_pos)):
-                    # Kapsül kendi tıklamasında kapatacak; düğme bırakılana kadar bekle
-                    self._last_close_time = time.monotonic()
-                    self._anchor_timer.start(300)
-                else:
-                    self.hide_animated()
-        super().changeEvent(event)
-
-    def _on_anchor_timeout(self) -> None:
-        if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
-            self.hide_animated()
-
-    def hideEvent(self, event) -> None:
-        self._is_closing = False
-        self._last_close_time = time.monotonic()
-        super().hideEvent(event)
 
     def mousePressEvent(self, event) -> None:
         try:

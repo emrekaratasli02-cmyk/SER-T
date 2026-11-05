@@ -372,7 +372,7 @@ def _sanitize_session(raw: Any, idx: int) -> Dict[str, Any]:
     }
 
 
-class VolumePopover(QWidget):
+class VolumePopover(panel_style.PopoverBase):
     """'Ses' mikser paneli — panel_style v2 ortak kit (352 px)."""
 
     WIDTH: int = int(panel_style.WIDTH["vol"])
@@ -385,10 +385,15 @@ class VolumePopover(QWidget):
         on_volume_change: Optional[Callable[[float, bool], None]] = None,
     ) -> None:
         super().__init__(
-            None,
+            parent,
+            activate_on_show=True,
+            outside_click_close=False,
+            recently_closed_ms=250.0,
+        )
+        self.setWindowFlags(
             Qt.WindowType.Window
             | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.NoDropShadowWindowHint,
+            | Qt.WindowType.NoDropShadowWindowHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -407,7 +412,6 @@ class VolumePopover(QWidget):
         self._sessions: List[Dict[str, Any]] = []
 
         # Interactive state
-        self._anchor_global: Optional[QRectF] = None
         self._dragging: Optional[str] = None  # "master" or "app:<key>"
         self._scroll_y: float = 0.0
         self._max_scroll_y: float = 0.0
@@ -440,29 +444,37 @@ class VolumePopover(QWidget):
         # Signal connections
         self.sessions_loaded.connect(self._on_sessions_loaded)
 
-        # Focus / bounce tracking
-        self._last_close_time: float = 0.0
-        self._is_closing: bool = False
-        self._anchor_timer = QTimer(self)
-        self._anchor_timer.setSingleShot(True)
-        self._anchor_timer.timeout.connect(self._on_anchor_timeout)
-
         self.resize(self.WIDTH, self.compute_height())
 
     # -----------------------------------------------------------------------
     # Public API
     # -----------------------------------------------------------------------
 
-    def is_open(self) -> bool:
-        """Return True if popover is visible and not in close transition."""
-        return self.isVisible() and not self._is_closing
+    def _target_pos(self) -> QPoint:
+        """Anchor'ın üzerinde ortalanmış, ekran sınırlarına sıkışmış hedef konum."""
+        if self._anchor_global is None:
+            return QPoint(int(self.x()), int(self.y()))
+        anchor_cx = self._anchor_global.center().x()
+        target_x = int(anchor_cx - self.width() / 2.0)
+        target_y = int(self._anchor_global.top() - self.height() - panel_style.ANCHOR_GAP)
 
-    def recently_closed(self, threshold_ms: float = 250.0) -> bool:
-        """Check if popover closed recently to prevent toggle reopen bounce."""
-        if self._last_close_time <= 0.0:
-            return False
-        elapsed_ms = (time.monotonic() - self._last_close_time) * 1000.0
-        return elapsed_ms <= threshold_ms
+        screen = QGuiApplication.screenAt(self._anchor_global.center().toPoint())
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            geom = screen.availableGeometry()
+            margin = 8
+            min_x = geom.left() + margin
+            max_x = geom.right() + 1 - self.width() - margin
+            target_x = max(min_x, min(max_x, target_x)) if max_x >= min_x else min_x
+            min_y = geom.top() + margin
+            max_y = geom.bottom() + 1 - self.height() - margin
+            if target_y < min_y:
+                below_y = int(round(self._anchor_global.bottom() + panel_style.ANCHOR_GAP))
+                target_y = below_y if below_y + self.height() <= geom.bottom() - margin else min_y
+            elif target_y > max_y:
+                target_y = max_y
+        return QPoint(target_x, target_y)
 
     def _apps_rows_height(self) -> float:
         n = len(self._sessions)
@@ -497,35 +509,17 @@ class VolumePopover(QWidget):
         self._stamp = time.strftime("%H:%M")
         self._dragging = None
         self._scroll_y = 0.0
-        self._is_closing = False
 
         self.resize(self.WIDTH, self.compute_height())
 
         dpr = 1.0
-        target = self.pos()
         if self._anchor_global is not None:
-            anchor_cx = self._anchor_global.center().x()
-            target_x = int(anchor_cx - self.width() / 2.0)
-            target_y = int(self._anchor_global.top() - self.height() - panel_style.ANCHOR_GAP)
-
             screen = QGuiApplication.screenAt(self._anchor_global.center().toPoint())
             if screen is None:
                 screen = QGuiApplication.primaryScreen()
             if screen is not None:
                 geom = screen.availableGeometry()
                 dpr = screen.devicePixelRatio()
-                margin = 8
-                min_x = geom.left() + margin
-                max_x = geom.right() + 1 - self.width() - margin
-                target_x = max(min_x, min(max_x, target_x)) if max_x >= min_x else min_x
-                min_y = geom.top() + margin
-                max_y = geom.bottom() + 1 - self.height() - margin
-                if target_y < min_y:
-                    below_y = int(round(self._anchor_global.bottom() + panel_style.ANCHOR_GAP))
-                    target_y = below_y if below_y + self.height() <= geom.bottom() - margin else min_y
-                elif target_y > max_y:
-                    target_y = max_y
-            target = QPoint(target_x, target_y)
 
         hwnd = int(self.winId())
         if winapi and hasattr(winapi, "set_round_region"):
@@ -534,12 +528,12 @@ class VolumePopover(QWidget):
             except Exception:
                 pass
 
-        panel_style.animate_in(self, target, switch_from_x=switch_from_x)
-        self.activateWindow()
-
         # Start periodic 2s polling and fetch immediately
         self._poll_timer.start(2000)
         self.refresh_sessions()
+
+        self._animate_in(switch_from_x)
+        self.update()
         self.update()
 
     def update_volume(self, level: Optional[float], muted: bool, device: Optional[str] = None) -> None:
@@ -595,28 +589,19 @@ class VolumePopover(QWidget):
         self._last_close_time = time.monotonic()
         super().hide()
 
-    def hide_animated(self) -> None:
-        """Close with the shared animate_out motion."""
-        if not self.isVisible() or self._is_closing:
-            self._is_closing = False
-            return
-        self._is_closing = True
-        self._last_close_time = time.monotonic()
+    def hide_animated(self, on_done: Optional[Callable[[], None]] = None) -> None:
+        """Close with the shared animate_out motion; durdurulabilir kaynakları önce serbest bırak."""
         self._poll_timer.stop()
+        self._master_coalescer.stop()
+        self._app_coalescer.stop()
         self._dragging = None
-        panel_style.animate_out(self, on_done=self._on_closed)
+        super().hide_animated(on_done=on_done)
 
     def hide_instant(self) -> None:
         """Close without animation (e.g. switching to another capsule panel)."""
         self._poll_timer.stop()
         self._dragging = None
-        if self.isVisible():
-            self._last_close_time = time.monotonic()
-        self._is_closing = False
-        panel_style.animate_out(self, on_done=self._on_closed, instant=True)
-
-    def _on_closed(self) -> None:
-        self._is_closing = False
+        super().hide_instant()
 
     # -----------------------------------------------------------------------
     # Internal Helpers & Thread-Safe Slots
@@ -1190,10 +1175,6 @@ class VolumePopover(QWidget):
 
         super().wheelEvent(event)
 
-    def _on_anchor_timeout(self) -> None:
-        if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
-            self.hide_animated()
-
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self.hide_animated()
@@ -1201,25 +1182,11 @@ class VolumePopover(QWidget):
             return
         super().keyPressEvent(event)
 
-    def changeEvent(self, event: QEvent) -> None:
-        if event.type() == QEvent.Type.ActivationChange:
-            if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
-                cursor_pos = QCursor.pos()
-                if self._anchor_global is not None and self._anchor_global.contains(QPointF(cursor_pos)):
-                    self._last_close_time = time.monotonic()
-                    self._anchor_timer.start(300)
-                    super().changeEvent(event)
-                    return
-                self.hide_animated()
-        super().changeEvent(event)
-
     def hideEvent(self, event) -> None:
         self._poll_timer.stop()
         self._master_coalescer.stop()
         self._app_coalescer.stop()
         self._dragging = None
-        self._last_close_time = time.monotonic()
-        self._is_closing = False
         super().hideEvent(event)
 
 

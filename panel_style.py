@@ -9,19 +9,23 @@ Eksik değerler (None) her zaman boş iz veya '—' olarak çizilir; uydurma say
 """
 from __future__ import annotations
 
+import time
 from collections import OrderedDict
-from typing import Callable
-from PySide6.QtCore import QPointF, QRectF, Qt
+from typing import Callable, Optional
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QTimer, Qt
 from PySide6.QtGui import (
     QColor,
+    QCursor,
     QFont,
     QFontMetricsF,
+    QGuiApplication,
     QPainter,
     QPainterPath,
     QPen,
     QPixmap,
     QRadialGradient,
 )
+from PySide6.QtWidgets import QWidget
 
 # --- Yüzeyler -------------------------------------------------------------------------------
 PANEL_BG = QColor(0x13, 0x14, 0x17)            # #131417 derin, net opak
@@ -217,6 +221,174 @@ def animate_out(w, on_done=None, instant: bool = False) -> None:
     g.finished.connect(_finish)
     w._ps_anim = g
     g.start()
+
+
+class PopoverBase(QWidget):
+    """Ortak popover/popunder-panel yaşam döngüsü taban sınıfı.
+
+    Kapsüllenmişler:
+      - is_open() / recently_closed() — görünüm ve kapanış eşiği
+      - _animate_in(switch_from_x) — bayrak sıfırlama, isteğe bağlı odak,
+        dış-tıklama-kapama eventFilter'i, sonra panel_style.animate_in
+      - hide_animated(on_done) / hide_instant() — panel_style.animate_out,
+        eventFilter temizliği, _on_closed kanca
+      - changeEvent() / hideEvent() / _on_anchor_timeout() — aktivasyon-kayıp
+        kapanışı ve 300 ms 'anchor üzerindeyken bekleme' önlemi
+      - eventFilter() — panel dışına tıklandığında kapatma (opt-in)
+
+    Alt sınıf sözleşmesi:
+      - super().__init__(parent, activate_on_show=..., outside_click_close=...,
+        recently_closed_ms=...) çağır (genelde kendi __init__'inin başında)
+      - Kendi setWindowFlags() / focus policy'ını ayarla (base buna müdahale etmez)
+      - _target_pos() -> QPoint uygula (panel'e özgü konumlandırma)
+      - show_for() içinde kendi veri kurulumunu yap, ardından self._animate_in(switch_from_x) çağır
+      - _on_closed() kancasını geçersiz kılarsa temizlik işi yapar
+      - self._outside_click_close = True ise panel dışına tıkınca kapanır
+      - self._activate_on_show = False ise açılışta odak çalınmaz
+    """
+
+    RECENTLY_CLOSED_DEFAULT_MS = 250.0
+    ANCHOR_TIMER_MS = 300
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        activate_on_show: bool = True,
+        outside_click_close: bool = False,
+        recently_closed_ms: Optional[float] = None,
+    ) -> None:
+        super().__init__(parent)
+
+        self._is_closing: bool = False
+        self._last_close_time: float = 0.0
+        self._anchor_global: Optional[QRectF] = None
+        self._activate_on_show: bool = activate_on_show
+        self._outside_click_close: bool = outside_click_close
+        self._recently_closed_ms: float = (
+            recently_closed_ms
+            if recently_closed_ms is not None
+            else self.RECENTLY_CLOSED_DEFAULT_MS
+        )
+
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setMouseTracking(True)
+
+        self._anchor_timer = QTimer(self)
+        self._anchor_timer.setSingleShot(True)
+        self._anchor_timer.timeout.connect(self._on_anchor_timeout)
+
+    # ------------------------------------------------------------------ durum
+    def is_open(self) -> bool:
+        """Panel görünür ve kanimasyon içinde değilse True."""
+        return bool(self.isVisible() and not self._is_closing)
+
+    def recently_closed(self, threshold_ms: Optional[float] = None) -> bool:
+        """Son threshold_ms içinde kapanıldıysa True (yeniden açılış bounce'ını engeller)."""
+        if threshold_ms is None:
+            threshold_ms = self._recently_closed_ms
+        if self._last_close_time <= 0.0:
+            return False
+        return (time.monotonic() - self._last_close_time) * 1000.0 <= threshold_ms
+
+    # ------------------------------------------------------------------ giriş / çıkış
+    def _animate_in(self, switch_from_x: Optional[int] = None) -> None:
+        """Ortak giriş animasyonu: alt sınıf önce konumu/veriyi hazırlar, sonra bunu çağırır."""
+        self._is_closing = False
+        if self._activate_on_show:
+            self.activateWindow()
+            self.setFocus()
+        if self._outside_click_close:
+            app = QGuiApplication.instance()
+            if app is not None:
+                app.installEventFilter(self)
+        animate_in(self, self._target_pos(), switch_from_x=switch_from_x)
+
+    def hide_animated(self, on_done: Optional[Callable[[], None]] = None) -> None:
+        """Kapanış animasyonu; biterse _on_closed() çağırır."""
+        self._remove_outside_click_filter()
+        if not self.isVisible() or self._is_closing:
+            return
+        self._is_closing = True
+        self._last_close_time = time.monotonic()
+
+        def _done() -> None:
+            self._is_closing = False
+            if callable(on_done):
+                on_done()
+            self._on_closed()
+
+        animate_out(self, on_done=_done)
+
+    def hide_instant(self) -> None:
+        """Anında gizle (kapsülde başka bölüme geçiş gibi)."""
+        self._remove_outside_click_filter()
+        if self.isVisible():
+            self._last_close_time = time.monotonic()
+        self._is_closing = False
+        animate_out(self, instant=True)
+        self._on_closed()
+
+    # ------------------------------------------------------------------ olaylar
+    def changeEvent(self, event: QEvent) -> None:
+        """Aktivasyon kayıbında: imleç anchor üzerindeyse 300 ms bekle, yoksa kapan."""
+        if event.type() == QEvent.Type.ActivationChange:
+            if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
+                if (
+                    self._anchor_global is not None
+                    and self._anchor_global.contains(QPointF(QCursor.pos()))
+                ):
+                    self._last_close_time = time.monotonic()
+                    self._anchor_timer.start(self.ANCHOR_TIMER_MS)
+                else:
+                    self.hide_animated()
+        super().changeEvent(event)
+
+    def hideEvent(self, event) -> None:
+        self._is_closing = False
+        self._last_close_time = time.monotonic()
+        self._remove_outside_click_filter()
+        super().hideEvent(event)
+
+    def _on_anchor_timeout(self) -> None:
+        """Anchor üstündeki imleç beklemesi sonu: hala aktif değilse kapan."""
+        if self.isVisible() and not self.isActiveWindow() and not self._is_closing:
+            self.hide_animated()
+
+    def eventFilter(self, obj, event) -> bool:
+        """Panel dışına tıklandığında kapat (sadece _outside_click_close=True iken)."""
+        if (
+            self._outside_click_close
+            and event.type() == QEvent.Type.MouseButtonPress
+            and self.isVisible()
+            and not self._is_closing
+        ):
+            pos = (
+                event.globalPosition().toPoint()
+                if hasattr(event, "globalPosition")
+                else event.globalPos()
+            )
+            if not self.geometry().contains(pos):
+                self.hide_animated()
+        return super().eventFilter(obj, event)
+
+    def _remove_outside_click_filter(self) -> None:
+        app = QGuiApplication.instance()
+        if app is not None:
+            try:
+                app.removeEventFilter(self)
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------ alt sınıf kancaları
+    def _target_pos(self) -> QPoint:
+        """Alt sınıf uygular: panele özgü hedef konum (QPoint)."""
+        raise NotImplementedError("subclass must implement _target_pos()")
+
+    def _on_closed(self) -> None:
+        """Kapanış animasyonu bittikten sonra çalıştırılacak alt sınıf temizliği."""
+        pass
+
 
 _TR_UPPER_MAP = str.maketrans({
     "i": "İ",

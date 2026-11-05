@@ -59,7 +59,7 @@ def _log_err(scope: str, exc: Exception) -> None:
         print(f"[today_panel:{scope}] {exc}", file=sys.stderr)
 
 
-class TodayPanel(QWidget):
+class TodayPanel(panel_style.PopoverBase):
     """v31 Birleşik Günün Özeti (Hava Durumu + Takvim) Paneli."""
 
     refresh_requested = Signal()
@@ -69,7 +69,12 @@ class TodayPanel(QWidget):
     RADIUS: float = panel_style.R_PANEL
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
+        super().__init__(
+            parent,
+            activate_on_show=True,
+            outside_click_close=False,
+            recently_closed_ms=350.0,
+        )
         self.setWindowFlags(
             Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
@@ -80,7 +85,6 @@ class TodayPanel(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        self._anchor_global: Optional[QRectF] = None
         self._anchor_rect_global: Optional[QRectF] = None
         self._weather_data: Dict[str, Any] = {}
         self._month_data: Dict[str, Any] = {}
@@ -134,30 +138,33 @@ class TodayPanel(QWidget):
         local_tz = getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))
         return dt.datetime.now(local_tz)
 
-    def is_open(self) -> bool:
-        return self.isVisible() and not self._is_closing
-
-    def recently_closed(self, threshold_ms: float = 350.0) -> bool:
-        if self._last_close_time <= 0.0:
-            return False
-        return (time.monotonic() - self._last_close_time) * 1000.0 <= threshold_ms
-
-    def hide_instant(self) -> None:
-        self._is_closing = True
-        self._last_close_time = time.monotonic()
-        self.hide()
-
-    def hideEvent(self, event) -> None:
-        self._is_closing = False
-        self._last_close_time = time.monotonic()
-        super().hideEvent(event)
-
-    def hide_animated(self) -> None:
-        if self._is_closing or not self.isVisible():
-            return
-        self._is_closing = True
-        self._last_close_time = time.monotonic()
-        panel_style.animate_out(self)
+    def _target_pos(self) -> QPoint:
+        a = self._anchor_global
+        if a is None:
+            return QPoint(int(self.x()), int(self.y()))
+        w, h = self.width(), self.height()
+        tx = int(round(a.center().x() - w / 2.0))
+        ty = int(round(a.top() - h - panel_style.ANCHOR_GAP))
+        center_pt = a.center().toPoint()
+        screen = QGuiApplication.screenAt(center_pt) or QGuiApplication.primaryScreen()
+        if screen is not None:
+            geom = screen.availableGeometry()
+            dpr = screen.devicePixelRatio()
+            margin = 8
+            min_x = geom.left() + margin
+            max_x = geom.right() - self.width() - margin
+            tx = max(min_x, min(max_x, tx)) if max_x >= min_x else min_x
+            min_y = geom.top() + margin
+            max_y = geom.bottom() - self.height() - margin
+            if ty < min_y:
+                below_y = int(a.bottom() + panel_style.ANCHOR_GAP)
+                if below_y + self.height() <= geom.bottom() - margin:
+                    ty = below_y
+                else:
+                    ty = min_y
+            elif ty > max_y:
+                ty = max_y
+        return QPoint(int(tx), int(ty))
 
     def show_for(
         self,
@@ -222,10 +229,7 @@ class TodayPanel(QWidget):
                 except Exception:
                     pass
 
-            self._is_closing = False
-            panel_style.animate_in(self, target, switch_from_x=switch_from_x)
-            self.activateWindow()
-            self.setFocus()
+            self._animate_in(switch_from_x)
         except Exception as exc:
             _log_err("today_show_for", exc)
 
@@ -670,24 +674,7 @@ class TodayPanel(QWidget):
                 p.drawEllipse(QPointF(cx, rect.top() + 56), 2.0, 2.0)
 
     def _nav_rects_helper(self, month_rect: QRectF) -> Tuple[QRectF, QRectF, QRectF]:
-        f = panel_style.font(10.5, QFont.Weight.DemiBold)
-        fm = QFontMetricsF(f)
-        over_top = month_rect.top() + panel_style.CARD_PAD
-        right = month_rect.right() - panel_style.CARD_PAD
-        nav = "‹  Bugün  ›"
-        x = right - fm.horizontalAdvance(nav)
-        w_prev = fm.horizontalAdvance("‹")
-        w_today = fm.horizontalAdvance("Bugün")
-        x_prev = x
-        x_today = x + fm.horizontalAdvance("‹  ")
-        x_next = x + fm.horizontalAdvance("‹  Bugün  ")
-        h = 15.0
-        pad_y = 5.0
-        return (
-            QRectF(x_prev - 3.0, over_top - pad_y, w_prev + 6.0, h + 2 * pad_y),
-            QRectF(x_today - 4.0, over_top - pad_y, w_today + 8.0, h + 2 * pad_y),
-            QRectF(x_next - 3.0, over_top - pad_y, fm.horizontalAdvance("›") + 6.0, h + 2 * pad_y),
-        )
+        return calendar_panel.nav_rects(month_rect)
 
     def _match_events_for_date(
         self,
@@ -695,33 +682,9 @@ class TodayPanel(QWidget):
         events: List[Dict[str, Any]],
         claude_markers: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        out = []
-        for ev in events:
-            st = ev.get("start")
-            en = ev.get("end")
-            all_day = bool(ev.get("all_day", False))
-            if isinstance(st, dt.datetime):
-                local_tz = getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))
-                st_loc = calendar_panel._event_start_local(st, local_tz)
-                if st_loc and st_loc.date() == d:
-                    out.append(ev)
-            elif isinstance(st, dt.date):
-                if all_day and isinstance(en, dt.date):
-                    if st <= d < en:
-                        out.append(ev)
-                elif st == d:
-                    out.append(ev)
-        for cm in claude_markers:
-            if cm.get("date") == d:
-                out.append({
-                    "title": cm.get("title", "Claude sıfırlama"),
-                    "start": d,
-                    "all_day": True,
-                    "category": calendar_panel.CAT_CLAUDE,
-                })
-        for hol_ev in calendar_panel.get_holiday_events_for_date(d):
-            out.append(hol_ev)
-        return out
+        return calendar_panel.match_events_for_date(
+            d, events, claude_markers, synthetic_claude=True
+        )
 
     def _paint_month_grid(self, p: QPainter, rect: QRectF) -> None:
         ps = panel_style

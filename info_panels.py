@@ -213,7 +213,7 @@ def quota_identity_color(label: Any) -> QColor:
 # ---------------------------------------------------------------------------
 # Base popover (shared dock flyout architecture)
 # ---------------------------------------------------------------------------
-class _BasePopover(QWidget):
+class _BasePopover(ps.PopoverBase):
     """Opaque panel shell with the shared 352 px chrome, hit rects and motion."""
 
     WIDTH: int = int(ps.WIDTH["mail"])
@@ -223,8 +223,12 @@ class _BasePopover(QWidget):
     refresh_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-
+        super().__init__(
+            parent,
+            activate_on_show=True,
+            outside_click_close=False,
+            recently_closed_ms=250.0,
+        )
         self.setWindowFlags(
             Qt.WindowType.Window
             | Qt.WindowType.FramelessWindowHint
@@ -234,9 +238,6 @@ class _BasePopover(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
 
-        self._anchor_global: Optional[QRectF] = None
-        self._last_close_time: float = 0.0
-        self._is_closing: bool = False
         self._scroll_y: float = 0.0
 
         self._rects: Dict[str, QRectF] = {}
@@ -246,20 +247,31 @@ class _BasePopover(QWidget):
         self._refresh_hovered: bool = False
         self._refresh_pressed: bool = False
 
-        self._anchor_timer = QTimer(self)
-        self._anchor_timer.setSingleShot(True)
-        self._anchor_timer.timeout.connect(self._on_anchor_timeout)
-
         self.resize(self.WIDTH, 200)
 
-    # ------------------------------------------------------------------ API
-    def is_open(self) -> bool:
-        return self.isVisible() and not self._is_closing
-
-    def recently_closed(self, threshold_ms: float = 250.0) -> bool:
-        if self._last_close_time <= 0.0:
-            return False
-        return (time.monotonic() - self._last_close_time) * 1000.0 <= threshold_ms
+    def _target_pos(self) -> QPoint:
+        """Anchor'ın üzerinde ortalanmış, ekran sınırlarına sıkışmış hedef konum."""
+        if self._anchor_global is None:
+            return QPoint(100, 100)
+        tx = int(self._anchor_global.center().x() - self.width() / 2.0)
+        ty = int(self._anchor_global.top() - self.height() - ps.ANCHOR_GAP)
+        screen = QGuiApplication.screenAt(self._anchor_global.center().toPoint())
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            geom = screen.availableGeometry()
+            margin = 8
+            min_x = geom.left() + margin
+            max_x = geom.right() - self.width() - margin
+            tx = max(min_x, min(max_x, tx)) if max_x >= min_x else min_x
+            min_y = geom.top() + margin
+            max_y = geom.bottom() - self.height() - margin
+            if ty < min_y:
+                below_y = int(self._anchor_global.bottom() + ps.ANCHOR_GAP)
+                ty = below_y if below_y + self.height() <= geom.bottom() - margin else min_y
+            elif ty > max_y:
+                ty = max_y
+        return QPoint(tx, ty)
 
     def set_data(self, d: Any) -> None:
         raise NotImplementedError
@@ -292,29 +304,13 @@ class _BasePopover(QWidget):
             self._anchor_global = QRectF(anchor_global) if anchor_global is not None else None
             self.resize(self.WIDTH, self.compute_height())
 
-            target = QPoint(100, 100)
             dpr = 1.0
             if self._anchor_global is not None:
-                tx = int(self._anchor_global.center().x() - self.width() / 2.0)
-                ty = int(self._anchor_global.top() - self.height() - ps.ANCHOR_GAP)
                 screen = QGuiApplication.screenAt(self._anchor_global.center().toPoint())
                 if screen is None:
                     screen = QGuiApplication.primaryScreen()
                 if screen is not None:
-                    geom = screen.availableGeometry()
                     dpr = screen.devicePixelRatio()
-                    margin = 8
-                    min_x = geom.left() + margin
-                    max_x = geom.right() - self.width() - margin
-                    tx = max(min_x, min(max_x, tx)) if max_x >= min_x else min_x
-                    min_y = geom.top() + margin
-                    max_y = geom.bottom() - self.height() - margin
-                    if ty < min_y:
-                        below_y = int(self._anchor_global.bottom() + ps.ANCHOR_GAP)
-                        ty = below_y if below_y + self.height() <= geom.bottom() - margin else min_y
-                    elif ty > max_y:
-                        ty = max_y
-                target = QPoint(tx, ty)
 
             hwnd = int(self.winId())
             if winapi and hasattr(winapi, "set_round_region"):
@@ -324,30 +320,9 @@ class _BasePopover(QWidget):
                 except Exception as exc:
                     _log_err("_BasePopover.winapi", exc)
 
-            self._is_closing = False
-            ps.animate_in(self, target, switch_from_x=switch_from_x)
-            self.activateWindow()
-            self.setFocus()
+            self._animate_in(switch_from_x)
         except Exception as exc:
             _log_err("_BasePopover.show_for", exc)
-
-    def hide_animated(self) -> None:
-        if not self.isVisible() or self._is_closing:
-            return
-        self._is_closing = True
-        self._last_close_time = time.monotonic()
-
-        def _done() -> None:
-            self._is_closing = False
-
-        ps.animate_out(self, on_done=_done)
-
-    def hide_instant(self) -> None:
-        """Close without animation (e.g. capsule section switch)."""
-        if self.isVisible():
-            self._last_close_time = time.monotonic()
-        self._is_closing = False
-        ps.animate_out(self, instant=True)
 
     def render_to_image(self, dpr: float = 2.0) -> QImage:
         img = QImage(max(1, int(self.width() * dpr)), max(1, int(self.height() * dpr)),
@@ -365,31 +340,12 @@ class _BasePopover(QWidget):
         return img
 
     # --------------------------------------------------------------- events
-    def _on_anchor_timeout(self) -> None:
-        if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
-            self.hide_animated()
-
     def keyPressEvent(self, event: Any) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self.hide_animated()
             event.accept()
             return
         super().keyPressEvent(event)
-
-    def changeEvent(self, event: QEvent) -> None:
-        if event.type() == QEvent.Type.ActivationChange:
-            if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
-                if self._anchor_global is not None and self._anchor_global.contains(QPointF(QCursor.pos())):
-                    self._last_close_time = time.monotonic()
-                    self._anchor_timer.start(300)
-                else:
-                    self.hide_animated()
-        super().changeEvent(event)
-
-    def hideEvent(self, event: Any) -> None:
-        self._is_closing = False
-        self._last_close_time = time.monotonic()
-        super().hideEvent(event)
 
     def leaveEvent(self, event: Any) -> None:
         self._close_hovered = False
@@ -1057,42 +1013,13 @@ class QuotaPanel(_BasePopover):
             return [{"overline": "Model kotaları", "rows": []}]
 
         account_rows: Dict[str, List[Dict[str, Any]]] = {}
-        standalone_argon: Optional[Dict[str, Any]] = None
         for r in self._rows:
             acc = r.get("account")
             if acc:
                 account_rows.setdefault(acc, []).append(r)
-            elif "argon" in str(r.get("label", "")).lower():
-                standalone_argon = r
 
         if not account_rows:
             return [{"overline": "Model kotaları", "rows": self._rows}]
-
-        # Emre ve Büşra kartları: her iki karta da Argon ekle
-        for acc, r_list in account_rows.items():
-            has_argon = any("argon" in str(x.get("display_label", "")).lower() for x in r_list)
-            if not has_argon:
-                if "emre" in acc.lower() and standalone_argon:
-                    emre_argon = dict(standalone_argon)
-                    emre_argon["display_label"] = "Argon"
-                    emre_argon["account"] = acc
-                    r_list.append(emre_argon)
-                else:
-                    busra_argon = {
-                        "label": f"{acc} · Argon",
-                        "display_label": "Argon",
-                        "account": acc,
-                        "used": 0.0,
-                        "reset_text": "—",
-                        "identity": ps.ACCENT,
-                        "color": ps.ACCENT,
-                        "pct_text": "%0",
-                        "pct_color": ps.ACCENT,
-                        "badge": None,
-                        "rect": QRectF(),
-                        "bar_rect": QRectF(),
-                    }
-                    r_list.append(busra_argon)
 
         sections = []
         for acc, r_list in account_rows.items():

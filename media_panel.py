@@ -18,7 +18,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -68,7 +68,7 @@ def fmt_mmss(seconds: Any) -> str:
     return f"{m:02d}:{sec:02d}"
 
 
-class MediaPanel(QWidget):
+class MediaPanel(ps.PopoverBase):
     """Medya kartına tıklandığında açılan zengin kontrol ve ses paneli (352 px)."""
 
     WIDTH: int = int(ps.PANEL_W)
@@ -83,6 +83,11 @@ class MediaPanel(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(
             parent,
+            activate_on_show=True,
+            outside_click_close=False,
+            recently_closed_ms=250.0,
+        )
+        self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.Tool
             | Qt.WindowType.WindowStaysOnTopHint,
@@ -96,18 +101,17 @@ class MediaPanel(QWidget):
         self._vol_muted: bool = False
         self._vol_device: str = ""
 
-        self._anchor_global: Optional[QRectF] = None
-        self._closing: bool = False
-        self._last_close_time: float = 0.0
         self._hover: Optional[str] = None
         self._dragging: Optional[str] = None      # 'seek' | 'vol'
         self._drag_seek_frac: Optional[float] = None
 
-        self._rects: Dict[str, QRectF] = {}
+        # Volume wheel coalescer: send pending level after ~150ms idle
+        self._vol_pending_level: Optional[float] = None
+        self._vol_coalescer_timer = QTimer(self)
+        self._vol_coalescer_timer.setSingleShot(True)
+        self._vol_coalescer_timer.timeout.connect(self._flush_vol_coalescer)
 
-        self._anchor_timer = QTimer(self)
-        self._anchor_timer.setSingleShot(True)
-        self._anchor_timer.timeout.connect(self._on_anchor_timeout)
+        self._rects: Dict[str, QRectF] = {}
 
         # Panel açıkken ilerleme çubuğunu saniyede 2 kez akıcı güncelle
         self._live_timer = QTimer(self)
@@ -117,7 +121,25 @@ class MediaPanel(QWidget):
         self.resize(self.WIDTH, self.compute_height())
         self._layout()
 
-    # ------------------------------------------------------------ durum & veri
+    def _target_pos(self) -> QPoint:
+        """Anchor'ın üzerinde ortalanmış, ekran sınırlarına sıkışmış hedef konum."""
+        if self._anchor_global is None:
+            return QPoint(100, 100)
+        tx = int(self._anchor_global.center().x() - self.width() / 2.0)
+        ty = int(self._anchor_global.top() - self.height() - ps.ANCHOR_GAP)
+        scr = QGuiApplication.screenAt(self._anchor_global.center().toPoint()) or QGuiApplication.primaryScreen()
+        if scr is not None:
+            geo = scr.availableGeometry()
+            dpr = scr.devicePixelRatio()
+            m = 8
+            tx = max(geo.left() + m, min(geo.right() - self.width() - m, tx))
+            if ty < geo.top() + m:
+                ty = int(self._anchor_global.bottom() + ps.ANCHOR_GAP)
+            if ty + self.height() > geo.bottom() - m:
+                ty = max(geo.top() + m, geo.bottom() - self.height() - m)
+        return QPoint(tx, ty)
+
+    # ------------------------------------------------------------ görünürlük API
     def set_media(self, info: Optional[Dict[str, Any]]) -> None:
         self._media = dict(info) if isinstance(info, dict) else {}
         if self._dragging != "seek":
@@ -236,13 +258,22 @@ class MediaPanel(QWidget):
         self._rects = r
 
     # ------------------------------------------------------------ görünürlük API
-    def is_open(self) -> bool:
-        return self.isVisible() and not self._closing
-
-    def recently_closed(self, threshold_ms: float = 250.0) -> bool:
-        if self._last_close_time <= 0.0:
-            return False
-        return (time.monotonic() - self._last_close_time) * 1000.0 <= threshold_ms
+    def _target_pos(self) -> QPoint:
+        """Anchor'ın üzerinde ortalanmış, ekran sınırlarına sıkışmış hedef konum."""
+        if self._anchor_global is None:
+            return QPoint(100, 100)
+        tx = int(self._anchor_global.center().x() - self.width() / 2.0)
+        ty = int(self._anchor_global.top() - self.height() - ps.ANCHOR_GAP)
+        scr = QGuiApplication.screenAt(self._anchor_global.center().toPoint()) or QGuiApplication.primaryScreen()
+        if scr is not None:
+            geo = scr.availableGeometry()
+            m = 8
+            tx = max(geo.left() + m, min(geo.right() - self.width() - m, tx))
+            if ty < geo.top() + m:
+                ty = int(self._anchor_global.bottom() + ps.ANCHOR_GAP)
+            if ty + self.height() > geo.bottom() - m:
+                ty = max(geo.top() + m, geo.bottom() - self.height() - m)
+        return QPoint(tx, ty)
 
     def show_for(
         self,
@@ -255,7 +286,6 @@ class MediaPanel(QWidget):
         switch_from_x: Optional[int] = None,
     ) -> None:
         self._anchor_global = QRectF(anchor_global) if anchor_global is not None else None
-        self._closing = False
         if media_info is not None:
             self._media = dict(media_info)
         if vol_level is not None:
@@ -263,20 +293,13 @@ class MediaPanel(QWidget):
         self.resize(self.WIDTH, self.compute_height())
         self._layout()
 
-        tx, ty, dpr = 100, 100, 1.0
+        dpr = 1.0
         if self._anchor_global is not None:
-            tx = int(self._anchor_global.center().x() - self.width() / 2.0)
-            ty = int(self._anchor_global.top() - self.height() - ps.ANCHOR_GAP)
-            scr = QGuiApplication.screenAt(self._anchor_global.center().toPoint()) or QGuiApplication.primaryScreen()
-            if scr is not None:
-                geo = scr.availableGeometry()
-                dpr = scr.devicePixelRatio()
-                m = 8
-                tx = max(geo.left() + m, min(geo.right() - self.width() - m, tx))
-                if ty < geo.top() + m:
-                    ty = int(self._anchor_global.bottom() + ps.ANCHOR_GAP)
-                if ty + self.height() > geo.bottom() - m:
-                    ty = max(geo.top() + m, geo.bottom() - self.height() - m)
+            screen = QGuiApplication.screenAt(self._anchor_global.center().toPoint())
+            if screen is None:
+                screen = QGuiApplication.primaryScreen()
+            if screen is not None:
+                dpr = screen.devicePixelRatio()
 
         if winapi is not None and hasattr(winapi, "set_round_region"):
             try:
@@ -285,28 +308,22 @@ class MediaPanel(QWidget):
                 pass
 
         self._live_timer.start()
-        ps.animate_in(self, QPoint(tx, ty), switch_from_x=switch_from_x)
-        self.activateWindow()
-        self.setFocus()
+        self._animate_in(switch_from_x)
 
-    def hide_animated(self) -> None:
-        if not self.isVisible() or self._closing:
+
+    def hide_animated(self, on_done: Optional[Callable[[], None]] = None) -> None:
+        if not self.isVisible() or self._is_closing:
             return
         self._live_timer.stop()
-        self._closing = True
-        self._last_close_time = time.monotonic()
-
-        def _done() -> None:
-            self._closing = False
-
-        ps.animate_out(self, on_done=_done)
+        self._vol_coalescer_timer.stop()
+        self._vol_pending_level = None
+        super().hide_animated(on_done=on_done)
 
     def hide_instant(self) -> None:
         self._live_timer.stop()
-        if self.isVisible():
-            self._last_close_time = time.monotonic()
-        self._closing = False
-        ps.animate_out(self, instant=True)
+        self._vol_coalescer_timer.stop()
+        self._vol_pending_level = None
+        super().hide_instant()
 
     # ------------------------------------------------------------ etkileşim
     def keyPressEvent(self, event) -> None:
@@ -319,20 +336,6 @@ class MediaPanel(QWidget):
             event.accept()
             return
         super().keyPressEvent(event)
-
-    def changeEvent(self, event: QEvent) -> None:
-        if event.type() == QEvent.Type.ActivationChange:
-            if not self.isActiveWindow() and self.isVisible() and not self._closing:
-                if self._anchor_global is not None and self._anchor_global.contains(QPointF(QCursor.pos())):
-                    self._last_close_time = time.monotonic()
-                    self._anchor_timer.start(300)
-                else:
-                    self.hide_animated()
-        super().changeEvent(event)
-
-    def _on_anchor_timeout(self) -> None:
-        if self.isVisible() and not self.isActiveWindow() and not self._closing:
-            self.hide_animated()
 
     def _hit(self, pos: QPointF) -> Optional[str]:
         for key in (
@@ -429,9 +432,17 @@ class MediaPanel(QWidget):
         diff = 2.0 if event.angleDelta().y() > 0 else -2.0
         val = max(0.0, min(100.0, self._vol_level + diff))
         self._vol_level = val
-        self.volume_requested.emit(val)
+        self._vol_pending_level = val
         self.update()
+        # Send pending level after 150ms idle to avoid flood on fast wheel
+        self._vol_coalescer_timer.start(150)
         event.accept()
+
+    def _flush_vol_coalescer(self) -> None:
+        """Emit the pending volume level once."""
+        if self._vol_pending_level is not None:
+            self.volume_requested.emit(self._vol_pending_level)
+            self._vol_pending_level = None
 
     def activate(self, key: Optional[str]) -> None:
         if not key:

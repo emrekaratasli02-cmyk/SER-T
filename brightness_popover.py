@@ -282,7 +282,7 @@ def _draggable(m: Dict[str, Any]) -> bool:
     return bool(m.get("ok")) and m.get("level") is not None
 
 
-class BrightnessPopover(QWidget):
+class BrightnessPopover(panel_style.PopoverBase):
     """Parlaklık paneli: yatay hap kaydırıcılar (ekran başına bir tane) + önayarlar + Eşitle."""
 
     WIDTH: int = int(panel_style.WIDTH["bright"])
@@ -291,8 +291,12 @@ class BrightnessPopover(QWidget):
     level_requested = Signal(str, int)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-
+        super().__init__(
+            parent,
+            activate_on_show=True,
+            outside_click_close=False,
+            recently_closed_ms=250.0,
+        )
         self.setWindowFlags(
             Qt.WindowType.Window
             | Qt.WindowType.FramelessWindowHint
@@ -303,7 +307,6 @@ class BrightnessPopover(QWidget):
         self.setMouseTracking(True)
 
         self._monitors: List[Dict[str, Any]] = []
-        self._anchor_global: Optional[QRectF] = None
         self._dragging_id: Optional[str] = None
         self._active_preset: Optional[int] = None
 
@@ -321,25 +324,37 @@ class BrightnessPopover(QWidget):
         self._coalescer = BrightnessCoalescer(self, interval_ms=60)
         self._coalescer.level_requested.connect(self.level_requested.emit)
 
-        self._last_close_time: float = 0.0
-        self._is_closing: bool = False
-        self._anchor_timer = QTimer(self)
-        self._anchor_timer.setSingleShot(True)
-        self._anchor_timer.timeout.connect(self._on_anchor_timeout)
-
         self.resize(self.WIDTH, self.compute_height())
 
     # -----------------------------------------------------------------------
     # Public API
     # -----------------------------------------------------------------------
 
-    def is_open(self) -> bool:
-        return self.isVisible() and not self._is_closing
+    def _target_pos(self) -> QPoint:
+        """Anchor'ın üzerinde ortalanmış, ekran sınırlarına sıkışmış hedef konum."""
+        if self._anchor_global is None:
+            return QPoint(int(self.x()), int(self.y()))
+        anchor_cx = self._anchor_global.center().x()
+        target_x = int(anchor_cx - self.width() / 2.0)
+        target_y = int(self._anchor_global.top() - self.height() - panel_style.ANCHOR_GAP)
 
-    def recently_closed(self, threshold_ms: float = 250.0) -> bool:
-        if self._last_close_time <= 0.0:
-            return False
-        return (time.monotonic() - self._last_close_time) * 1000.0 <= threshold_ms
+        screen = QGuiApplication.screenAt(self._anchor_global.center().toPoint())
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            geom = screen.availableGeometry()
+            margin = 8
+            min_x = geom.left() + margin
+            max_x = geom.right() - self.width() - margin
+            target_x = max(min_x, min(max_x, target_x)) if max_x >= min_x else min_x
+            min_y = geom.top() + margin
+            max_y = geom.bottom() - self.height() - margin
+            if target_y < min_y:
+                below_y = int(self._anchor_global.bottom() + panel_style.ANCHOR_GAP)
+                target_y = below_y if below_y + self.height() <= geom.bottom() - margin else min_y
+            elif target_y > max_y:
+                target_y = max_y
+        return QPoint(target_x, target_y)
 
     def _rows_height(self) -> float:
         n = len(self._monitors)
@@ -370,30 +385,13 @@ class BrightnessPopover(QWidget):
         self.resize(self.WIDTH, self.compute_height())
 
         dpr = 1.0
-        target = self.pos()
         if self._anchor_global is not None:
-            anchor_cx = self._anchor_global.center().x()
-            target_x = int(anchor_cx - self.width() / 2.0)
-            target_y = int(self._anchor_global.top() - self.height() - panel_style.ANCHOR_GAP)
-
             screen = QGuiApplication.screenAt(self._anchor_global.center().toPoint())
             if screen is None:
                 screen = QGuiApplication.primaryScreen()
             if screen is not None:
                 geom = screen.availableGeometry()
                 dpr = screen.devicePixelRatio()
-                margin = 8
-                min_x = geom.left() + margin
-                max_x = geom.right() - self.width() - margin
-                target_x = max(min_x, min(max_x, target_x)) if max_x >= min_x else min_x
-                min_y = geom.top() + margin
-                max_y = geom.bottom() - self.height() - margin
-                if target_y < min_y:
-                    below_y = int(self._anchor_global.bottom() + panel_style.ANCHOR_GAP)
-                    target_y = below_y if below_y + self.height() <= geom.bottom() - margin else min_y
-                elif target_y > max_y:
-                    target_y = max_y
-            target = QPoint(target_x, target_y)
 
         hwnd = int(self.winId())
         if winapi and hasattr(winapi, "set_round_region"):
@@ -402,9 +400,7 @@ class BrightnessPopover(QWidget):
             except Exception:
                 pass
 
-        self._is_closing = False
-        panel_style.animate_in(self, target, switch_from_x=switch_from_x)
-        self.activateWindow()
+        self._animate_in(switch_from_x)
 
     def update_levels(self, monitors: Union[List[Any], Dict[str, Any]]) -> None:
         """Update monitor levels without repositioning or restarting entry animation."""
@@ -446,25 +442,6 @@ class BrightnessPopover(QWidget):
             self.resize(self.WIDTH, new_h)
         self.update()
 
-    def hide_animated(self) -> None:
-        if not self.isVisible() or self._is_closing:
-            return
-        self._is_closing = True
-        self._last_close_time = time.monotonic()
-        panel_style.animate_out(self, on_done=self._on_closed)
-
-    def hide_instant(self) -> None:
-        """Close without animation (e.g. switching to another capsule panel)."""
-        if not self.isVisible():
-            self._is_closing = False
-            return
-        self._is_closing = True
-        self._last_close_time = time.monotonic()
-        panel_style.animate_out(self, on_done=self._on_closed, instant=True)
-
-    def _on_closed(self) -> None:
-        self._is_closing = False
-
     def render_to_image(self, dpr: float = 2.0) -> QImage:
         w_phys = max(1, int(self.width() * dpr))
         h_phys = max(1, int(self.height() * dpr))
@@ -482,33 +459,12 @@ class BrightnessPopover(QWidget):
     # Events
     # -----------------------------------------------------------------------
 
-    def _on_anchor_timeout(self) -> None:
-        if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
-            self.hide_animated()
-
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self.hide_animated()
             event.accept()
             return
         super().keyPressEvent(event)
-
-    def changeEvent(self, event: QEvent) -> None:
-        if event.type() == QEvent.Type.ActivationChange:
-            if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
-                cursor_pos = QCursor.pos()
-                if self._anchor_global is not None and self._anchor_global.contains(QPointF(cursor_pos)):
-                    self._last_close_time = time.monotonic()
-                    self._anchor_timer.start(300)
-                    super().changeEvent(event)
-                    return
-                self.hide_animated()
-        super().changeEvent(event)
-
-    def hideEvent(self, event) -> None:
-        self._is_closing = False
-        self._last_close_time = time.monotonic()
-        super().hideEvent(event)
 
     def _apply_level(self, m: Dict[str, Any], lvl: int, force: bool) -> None:
         m["level"] = lvl

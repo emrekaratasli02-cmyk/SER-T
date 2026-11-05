@@ -111,7 +111,7 @@ def test_layout_a_survives_many_apps() -> None:
 
 def test_open_panel_card_gets_soft_fill() -> None:
     d = _dock()
-    d._left_open_sig = lambda: (True, False, False, False)  # Claude paneli açık (örnek)
+    d._left_open_sig = lambda: (True, False, False, False, False)  # Claude paneli açık (örnek)
     img = _render(d)
     r = _boxes(d)["claude"]
     c = QColor(img.pixel(int((r.x() + 4) * DPR), int((r.y() + 26) * DPR)))

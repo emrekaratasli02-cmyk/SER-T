@@ -402,7 +402,7 @@ class _TaskEdit(QLineEdit):
         self.focus_changed.emit()
 
 
-class PomodoroPanel(QWidget):
+class PomodoroPanel(ps.PopoverBase):
     """Pomodoro paneli, 352 px geniş (mockup s4)."""
 
     WIDTH = int(ps.PANEL_W)
@@ -411,23 +411,21 @@ class PomodoroPanel(QWidget):
     durations_changed = Signal(int, int, int)
 
     def __init__(self, timer: PomodoroTimer, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
+        super().__init__(
+            parent,
+            activate_on_show=True,
+            outside_click_close=False,
+            recently_closed_ms=250.0,
+        )
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.NoDropShadowWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self._timer = timer
-        self._anchor_global: Optional[QRectF] = None
-        self._last_close_time = 0.0
-        self._closing = False
         self._hover: Optional[str] = None
         self._rects: Dict[str, QRectF] = {}
         self._last_task = timer.task
-        self._anchor_timer = QTimer(self)
-        self._anchor_timer.setSingleShot(True)
-        self._anchor_timer.timeout.connect(self._on_anchor_timeout)
-
         self._edit = _TaskEdit(self)
         self._edit.setPlaceholderText("Ne üzerinde çalışıyorsun?")
         self._edit.setMaxLength(TASK_MAX)
@@ -536,14 +534,22 @@ class PomodoroPanel(QWidget):
         r["footer"] = fr
         self._rects = r
 
-    # ------------------------------------------------------------ genel API
-    def is_open(self) -> bool:
-        return self.isVisible() and not self._closing
-
-    def recently_closed(self, threshold_ms: float = 250.0) -> bool:
-        if self._last_close_time <= 0.0:
-            return False
-        return (time.monotonic() - self._last_close_time) * 1000.0 <= threshold_ms
+    def _target_pos(self) -> QPoint:
+        """Anchor'ın üzerinde ortalanmış, ekran sınırlarına sıkışmış hedef konum."""
+        if self._anchor_global is None:
+            return QPoint(100, 100)
+        tx = int(self._anchor_global.center().x() - self.width() / 2.0)
+        ty = int(self._anchor_global.top() - self.height() - ps.ANCHOR_GAP)
+        scr = QGuiApplication.screenAt(self._anchor_global.center().toPoint()) or QGuiApplication.primaryScreen()
+        if scr is not None:
+            geo = scr.availableGeometry()
+            m = 8
+            tx = max(geo.left() + m, min(geo.right() - self.width() - m, tx))
+            if ty < geo.top() + m:
+                ty = int(self._anchor_global.bottom() + ps.ANCHOR_GAP)
+            if ty + self.height() > geo.bottom() - m:
+                ty = max(geo.top() + m, geo.bottom() - self.height() - m)
+        return QPoint(tx, ty)
 
     def refresh(self) -> None:
         if not self._edit.hasFocus() and self._edit.text() != self._timer.task:
@@ -555,51 +561,28 @@ class PomodoroPanel(QWidget):
     def show_for(self, anchor_global: Optional[QRectF], *args: Any, switch_from_x: Optional[int] = None,
                  **kw: Any) -> None:
         self._anchor_global = QRectF(anchor_global) if anchor_global is not None else None
-        self._closing = False
         self.refresh()
         self.resize(self.WIDTH, self.compute_height())
-        tx, ty, dpr = 100, 100, 1.0
-        if self._anchor_global is not None:
-            tx = int(self._anchor_global.center().x() - self.width() / 2.0)
-            ty = int(self._anchor_global.top() - self.height() - ps.ANCHOR_GAP)
-            scr = QGuiApplication.screenAt(self._anchor_global.center().toPoint()) or QGuiApplication.primaryScreen()
-            if scr is not None:
-                geo = scr.availableGeometry()
-                dpr = scr.devicePixelRatio()
-                m = 8
-                tx = max(geo.left() + m, min(geo.right() - self.width() - m, tx))
-                if ty < geo.top() + m:
-                    ty = int(self._anchor_global.bottom() + ps.ANCHOR_GAP)
-                if ty + self.height() > geo.bottom() - m:
-                    ty = max(geo.top() + m, geo.bottom() - self.height() - m)
+
         winid = int(self.winId())
         if winapi is not None and hasattr(winapi, "set_round_region"):
             try:
-                winapi.set_round_region(winid, self.width(), self.height(), int(ps.R_PANEL), dpr)
+                winapi.set_round_region(winid, self.width(), self.height(), int(ps.R_PANEL), 1.0)
             except Exception:
                 pass
-        ps.animate_in(self, QPointF(tx, ty).toPoint(), switch_from_x=switch_from_x)
-        self.activateWindow()   # görev alanına yazılabilsin
-        self.setFocus()
 
-    def hide_animated(self) -> None:
-        if not self.isVisible() or self._closing:
+        self._animate_in(switch_from_x)
+
+    def hide_animated(self, on_done: Optional[Callable[[], None]] = None) -> None:
+        if not self.isVisible() or self._is_closing:
             return
         self._commit_task()
-        self._closing = True
-        self._last_close_time = time.monotonic()
-
-        def _done() -> None:
-            self._closing = False
-
-        ps.animate_out(self, on_done=_done)
+        super().hide_animated(on_done=on_done)
 
     def hide_instant(self) -> None:
         if self.isVisible():
             self._commit_task()
-            self._last_close_time = time.monotonic()
-        self._closing = False
-        ps.animate_out(self, instant=True)
+        super().hide_instant()
 
     # ---------------------------------------------------------------- olaylar
     def _on_timer_changed(self) -> None:
@@ -621,23 +604,7 @@ class PomodoroPanel(QWidget):
             return
         super().keyPressEvent(event)
 
-    def changeEvent(self, event: QEvent) -> None:
-        if event.type() == QEvent.Type.ActivationChange:
-            if not self.isActiveWindow() and self.isVisible() and not self._closing:
-                if self._anchor_global is not None and self._anchor_global.contains(QPointF(QCursor.pos())):
-                    self._last_close_time = time.monotonic()
-                    self._anchor_timer.start(300)
-                else:
-                    self.hide_animated()
-        super().changeEvent(event)
-
-    def _on_anchor_timeout(self) -> None:
-        if self.isVisible() and not self.isActiveWindow() and not self._closing:
-            self.hide_animated()
-
     def hideEvent(self, event) -> None:
-        self._closing = False
-        self._last_close_time = time.monotonic()
         self._commit_task()
         super().hideEvent(event)
 

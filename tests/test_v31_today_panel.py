@@ -34,10 +34,17 @@ def test_today_panel_basic():
             {"time": "17:00", "temp": 17, "icon": "sun"},
         ]
     }
+    _tz = getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))
+    _now = dt.datetime.now(_tz)
+    # Gece yarısına 20 dk kala +20 dk sonraki gün olurdu; o durumda 5 dk öncesini kullan
+    # (hem aynı gün kalır hem "yakında/Katıl" penceresinde kalır).
+    _start = _now + dt.timedelta(minutes=20)
+    if _start.date() != _now.date():
+        _start = _now - dt.timedelta(minutes=5)
     events = [
         {
             "title": "Haftalık IAS Operasyon Senkronu",
-            "start": dt.datetime.now(getattr(sources, "LOCAL_TZ", dt.timezone(dt.timedelta(hours=3)))) + dt.timedelta(minutes=20),
+            "start": _start,
             "meeting": "https://meet.google.com/abc-defg-hij",
             "category": "Google Takvim",
         }

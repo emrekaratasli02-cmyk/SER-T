@@ -354,6 +354,98 @@ def _event_start_local(st: Any, local_tz: dt.tzinfo) -> Optional[dt.datetime]:
     return None
 
 
+def match_events_for_date(
+    d: dt.date,
+    events: List[Dict[str, Any]],
+    claude_markers: List[Dict[str, Any]],
+    synthetic_claude: bool = False,
+    holidays: bool = True,
+) -> List[Dict[str, Any]]:
+    """Belirli bir güne denk gelen tüm etkinlikleri döndürür.
+
+    Takvim ve Günün Özeti panelleri bu tek uygulamayı paylaşır; böylece
+    çok günlük etkinlik, tatil ve Claude işaretçisi davranışı iki yerde
+    ayrı ayrı bakım gerektirmez.
+
+    Argümanlar:
+        synthetic_claude: True ise Claude işaretçileri yalnızca başlık/tarih/
+            kategori içeren sentetik tüm-gün satırına indirgenir (Günün Özeti
+            bunu kullanır); False ise işaretçi olduğu gibi döner (Takvim).
+        holidays: False ise tatil etkinlikleri eklenmez.
+    """
+    matched: List[Dict[str, Any]] = []
+
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        st = ev.get("start")
+        en = ev.get("end")
+        is_all_day = bool(ev.get("all_day", False))
+
+        st_date = st.date() if isinstance(st, dt.datetime) else st if isinstance(st, dt.date) else None
+        en_date = en.date() if isinstance(en, dt.datetime) else en if isinstance(en, dt.date) else st_date
+
+        if st_date is None:
+            continue
+
+        if is_all_day:
+            if en_date and en_date > st_date:
+                if st_date <= d < en_date:
+                    matched.append(ev)
+            elif d == st_date:
+                matched.append(ev)
+        else:
+            if en_date and en_date > st_date:
+                if st_date <= d <= en_date:
+                    matched.append(ev)
+            elif d == st_date:
+                matched.append(ev)
+
+    if holidays:
+        matched.extend(get_holiday_events_for_date(d))
+
+    for cm in claude_markers:
+        if not isinstance(cm, dict):
+            continue
+        c_st = cm.get("start")
+        c_date = c_st.date() if isinstance(c_st, dt.datetime) else c_st if isinstance(c_st, dt.date) else None
+        if c_date != d:
+            continue
+        if synthetic_claude:
+            matched.append({
+                "title": cm.get("title", "Claude sıfırlama"),
+                "start": d,
+                "all_day": True,
+                "category": CAT_CLAUDE,
+            })
+        else:
+            matched.append(cm)
+
+    return matched
+
+
+def nav_rects(month_rect: QRectF) -> Tuple[QRectF, QRectF, QRectF]:
+    """Ay başlığındaki '‹  Bugün  ›' gezinme düğmelerinin hit dikdörtgenleri."""
+    f = panel_style.font(10.5, QFont.Weight.DemiBold)
+    fm = QFontMetricsF(f)
+    over_top = month_rect.top() + panel_style.CARD_PAD
+    right = month_rect.right() - panel_style.CARD_PAD
+    nav = "‹  Bugün  ›"
+    x = right - fm.horizontalAdvance(nav)
+    w_prev = fm.horizontalAdvance("‹")
+    w_today = fm.horizontalAdvance("Bugün")
+    x_prev = x
+    x_today = x + fm.horizontalAdvance("‹  ")
+    x_next = x + fm.horizontalAdvance("‹  Bugün  ")
+    h = 15.0
+    pad_y = 5.0
+    return (
+        QRectF(x_prev - 3.0, over_top - pad_y, w_prev + 6.0, h + 2 * pad_y),
+        QRectF(x_today - 4.0, over_top - pad_y, w_today + 8.0, h + 2 * pad_y),
+        QRectF(x_next - 3.0, over_top - pad_y, fm.horizontalAdvance("›") + 6.0, h + 2 * pad_y),
+    )
+
+
 def _write_clipboard(text: str) -> bool:
     """Write to the real clipboard. Under tests this is a no-op (owner's clipboard safe)."""
     if _under_test():
@@ -366,7 +458,7 @@ def _write_clipboard(text: str) -> bool:
         return False
 
 
-class CalendarPanel(QWidget):
+class CalendarPanel(panel_style.PopoverBase):
     """Takvim paneli: 440 px geniş, çok sütunlu ay ızgarası + gündem + vergi kopyalama çipi."""
 
     WIDTH: int = int(panel_style.WIDTH["cal"])
@@ -377,8 +469,12 @@ class CalendarPanel(QWidget):
     join_requested = Signal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-
+        super().__init__(
+            parent,
+            activate_on_show=False,
+            outside_click_close=True,
+            recently_closed_ms=250.0,
+        )
         self.setWindowFlags(
             Qt.WindowType.Window
             | Qt.WindowType.FramelessWindowHint
@@ -392,7 +488,6 @@ class CalendarPanel(QWidget):
         self.setMouseTracking(True)
 
         # Internal state
-        self._anchor_global: Optional[QRectF] = None
         self._anchor_rect_global: Optional[QRectF] = None
         self._month_data: Dict[str, Any] = {}
         self._claude_data: Dict[str, Any] = {}
@@ -404,13 +499,6 @@ class CalendarPanel(QWidget):
         self.selected_date: dt.date = self.today
         self.view_year: int = self.today.year
         self.view_month: int = self.today.month
-
-        # Focus / close tracking
-        self._last_close_time: float = 0.0
-        self._is_closing: bool = False
-        self._anchor_timer = QTimer(self)
-        self._anchor_timer.setSingleShot(True)
-        self._anchor_timer.timeout.connect(self._on_anchor_timeout)
 
         # Hover states
         self._hover_close: bool = False
@@ -455,16 +543,31 @@ class CalendarPanel(QWidget):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def is_open(self) -> bool:
-        """Return True if panel is visible and not in close transition."""
-        return bool(self.isVisible() and not self._is_closing)
+    def _target_pos(self) -> QPoint:
+        """Anchorının ünstinde ortalanmış, ekran sınırlarına sıkışmış hedef konum."""
+        if self._anchor_global is None:
+            return QPoint(int(self.x()), int(self.y()))
+        anchor_cx = self._anchor_global.center().x()
+        target_x = int(anchor_cx - self.width() / 2.0)
+        target_y = int(self._anchor_global.top() - self.height() - panel_style.ANCHOR_GAP)
 
-    def recently_closed(self, threshold_ms: float = 250.0) -> bool:
-        """Check if panel closed within threshold_ms to prevent reopen bounce."""
-        if self._last_close_time <= 0.0:
-            return False
-        elapsed_ms = (time.monotonic() - self._last_close_time) * 1000.0
-        return elapsed_ms <= threshold_ms
+        center_pt = self._anchor_global.center().toPoint()
+        screen = QGuiApplication.screenAt(center_pt) or QGuiApplication.primaryScreen()
+        if screen is not None:
+            geom = screen.availableGeometry()
+            dpr = screen.devicePixelRatio()
+            margin = 8
+            min_x = geom.left() + margin
+            max_x = geom.right() - self.width() - margin
+            target_x = max(min_x, min(max_x, target_x)) if max_x >= min_x else min_x
+            min_y = geom.top() + margin
+            max_y = geom.bottom() - self.height() - margin
+            if target_y < min_y:
+                below_y = int(self._anchor_global.bottom() + panel_style.ANCHOR_GAP)
+                target_y = below_y if below_y + self.height() <= geom.bottom() - margin else min_y
+            elif target_y > max_y:
+                target_y = max_y
+        return QPoint(int(target_x), int(target_y))
 
     def show_for(
         self,
@@ -523,36 +626,17 @@ class CalendarPanel(QWidget):
                 except Exception:
                     pass
 
-            self._is_closing = False
-            panel_style.animate_in(self, target, switch_from_x=switch_from_x)
-            # Odak çalınmasın: hover/tıklama ile açılan panel yazı flow'unu kesmez.
-            # Dışarıya tıklama kapatma eventFilter üzerinden handled.
-            app = QGuiApplication.instance()
-            if app is not None:
-                app.installEventFilter(self)
+            self._animate_in(switch_from_x)
         except Exception as exc:
             _log_err("calendar_show_for", exc)
 
-    def hide_animated(self) -> None:
+    def hide_animated(self, on_done: Optional[Callable[[], None]] = None) -> None:
         """Trigger the shared close animation, then hide."""
-        self._remove_outside_click_filter()
-        if not self.isVisible() or self._is_closing:
-            return
-        self._is_closing = True
-        self._last_close_time = time.monotonic()
-        panel_style.animate_out(self, on_done=self._on_closed)
+        super().hide_animated(on_done=on_done)
 
     def hide_instant(self) -> None:
         """Close without animation (e.g. switching to another capsule panel)."""
-        self._remove_outside_click_filter()
-        if self.isVisible():
-            self._last_close_time = time.monotonic()
-        self._is_closing = False
-        panel_style.animate_out(self, instant=True)
-
-    def _on_closed(self) -> None:
-        self._is_closing = False
-        self._remove_outside_click_filter()
+        super().hide_instant()
 
     def select_date(self, target_date: dt.date) -> None:
         """Change selected date and synchronize visible month if needed."""
@@ -637,10 +721,6 @@ class CalendarPanel(QWidget):
     # ------------------------------------------------------------------
     # Events
     # ------------------------------------------------------------------
-    def _on_anchor_timeout(self) -> None:
-        if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
-            self.hide_animated()
-
     def wheelEvent(self, event) -> None:
         """Tekerlek: yukarı = önceki ay, aşağı = sonraki ay. Dokunmatik yüzeyde küçük adımlar
         biriktirilir; bir çentik (120) dolunca tek ay ilerler, tek harekette en fazla 1 ay."""
@@ -693,23 +773,6 @@ class CalendarPanel(QWidget):
             event.accept()
             return
         super().keyPressEvent(event)
-
-    def changeEvent(self, event: QEvent) -> None:
-        if event.type() == QEvent.Type.ActivationChange:
-            if not self.isActiveWindow() and self.isVisible() and not self._is_closing:
-                cursor_pos = QCursor.pos()
-                if self._anchor_global is not None and self._anchor_global.contains(QPointF(cursor_pos)):
-                    self._last_close_time = time.monotonic()
-                    self._anchor_timer.start(300)
-                    super().changeEvent(event)
-                    return
-                self.hide_animated()
-        super().changeEvent(event)
-
-    def hideEvent(self, event) -> None:
-        self._is_closing = False
-        self._last_close_time = time.monotonic()
-        super().hideEvent(event)
 
     def _hit(self, pos: QPointF) -> Optional[str]:
         if self._rect_close.contains(pos):
@@ -1088,24 +1151,7 @@ class CalendarPanel(QWidget):
         return layout
 
     def _nav_rects(self, month_rect: QRectF) -> Tuple[QRectF, QRectF, QRectF]:
-        f = panel_style.font(10.5, QFont.Weight.DemiBold)
-        fm = QFontMetricsF(f)
-        over_top = month_rect.top() + panel_style.CARD_PAD
-        right = month_rect.right() - panel_style.CARD_PAD
-        nav = "‹  Bugün  ›"
-        x = right - fm.horizontalAdvance(nav)
-        w_prev = fm.horizontalAdvance("‹")
-        w_today = fm.horizontalAdvance("Bugün")
-        x_prev = x
-        x_today = x + fm.horizontalAdvance("‹  ")
-        x_next = x + fm.horizontalAdvance("‹  Bugün  ")
-        h = 15.0
-        pad_y = 5.0
-        return (
-            QRectF(x_prev - 3.0, over_top - pad_y, w_prev + 6.0, h + 2 * pad_y),
-            QRectF(x_today - 4.0, over_top - pad_y, w_today + 8.0, h + 2 * pad_y),
-            QRectF(x_next - 3.0, over_top - pad_y, fm.horizontalAdvance("›") + 6.0, h + 2 * pad_y),
-        )
+        return nav_rects(month_rect)
 
     def _footer_button_rect(self, footer_rect: QRectF) -> QRectF:
         f = panel_style.font(11.5, QFont.Weight.Medium)
@@ -1261,44 +1307,8 @@ class CalendarPanel(QWidget):
         events: List[Dict[str, Any]],
         claude_markers: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """Return all events covering target date d."""
-        matched: List[Dict[str, Any]] = []
-
-        for ev in events:
-            if not isinstance(ev, dict):
-                continue
-            st = ev.get("start")
-            en = ev.get("end")
-            is_all_day = bool(ev.get("all_day", False))
-
-            st_date = st.date() if isinstance(st, dt.datetime) else st if isinstance(st, dt.date) else None
-            en_date = en.date() if isinstance(en, dt.datetime) else en if isinstance(en, dt.date) else st_date
-
-            if st_date is None:
-                continue
-
-            if is_all_day:
-                if en_date and en_date > st_date:
-                    if st_date <= d < en_date:
-                        matched.append(ev)
-                elif d == st_date:
-                    matched.append(ev)
-            else:
-                if en_date and en_date > st_date:
-                    if st_date <= d <= en_date:
-                        matched.append(ev)
-                elif d == st_date:
-                    matched.append(ev)
-
-        matched.extend(get_holiday_events_for_date(d))
-
-        for cm in claude_markers:
-            c_st = cm.get("start")
-            c_date = c_st.date() if isinstance(c_st, dt.datetime) else c_st if isinstance(c_st, dt.date) else None
-            if c_date == d:
-                matched.append(cm)
-
-        return matched
+        """Belirli bir güne denk gelen tüm etkinlikleri döndürür (ortak yardımcı)."""
+        return match_events_for_date(d, events, claude_markers)
 
     # ------------------------------------------------------------------
     # Painting

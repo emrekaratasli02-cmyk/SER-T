@@ -734,13 +734,8 @@ def fetch_antigravity(
                 "reset_tr": reset_tr_str,
             })
 
-        if local_argon is None:
-            try:
-                import logpath
-                local_argon = not logpath.is_running_under_test()
-            except Exception:
-                local_argon = False
-        if local_argon and not any("argon" in str(g.get("label", "")).lower() for g in groups):
+        # v24: Argon yalnız testlerde veya açıkça local_argon=True istendiğinde eklenir (hesapta yoksa zorla eklenmez)
+        if local_argon is True and not any("argon" in str(g.get("label", "")).lower() for g in groups):
             argon = _argon_group()
             if argon:
                 groups.append(argon)
