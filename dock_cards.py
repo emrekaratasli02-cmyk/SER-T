@@ -570,33 +570,27 @@ def get_claude_symbol_pixmap(target_size: float = 29.0, dpr: float = 1.0) -> Opt
         return None
 
 
-def draw_claude_star_glyph(p: QPainter, rect: QRectF, size: float = 16.0) -> None:
-    """Draw 6-spoke rounded star glyph (#D97757) centered inside slot."""
+def draw_claude_star_glyph(p: QPainter, rect: QRectF, size: float = 18.0) -> None:
+    """Draw crisp Claude star glyph (#D97757) centered inside slot."""
     p.save()
-    p.setRenderHint(QPainter.Antialiasing)
-    star_lines = [
-        (3.50, 12.00, 20.50, 12.00),
-        (4.64, 7.75, 19.36, 16.25),
-        (7.75, 4.64, 16.25, 19.36),
-        (12.00, 3.50, 12.00, 20.50),
-        (16.25, 4.64, 7.75, 19.36),
-        (19.36, 7.75, 4.64, 16.25),
-    ]
-    scale = size / 24.0
-    sx = rect.x() + (rect.width() - size) / 2.0
-    sy = rect.y() + (rect.height() - size) / 2.0
-    p.translate(sx, sy)
-    p.scale(scale, scale)
-    pen = QPen(COLOR_CLAUDE_CORAL, 2.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    cx = rect.center().x()
+    cy = rect.center().y()
+    stroke_w = 2.1
+    r = (size - stroke_w) / 2.0
+    d = r * 0.7071
+    pen = QPen(COLOR_CLAUDE_CORAL, stroke_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen)
-    for x1, y1, x2, y2 in star_lines:
-        p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+    p.drawLine(QPointF(cx - r, cy), QPointF(cx + r, cy))
+    p.drawLine(QPointF(cx, cy - r), QPointF(cx, cy + r))
+    p.drawLine(QPointF(cx - d, cy - d), QPointF(cx + d, cy + d))
+    p.drawLine(QPointF(cx - d, cy + d), QPointF(cx + d, cy - d))
     p.restore()
 
 
 def draw_claude_tile_star(p: QPainter, rect: QRectF) -> None:
-    """Draw 6-spoke rounded star glyph fallback."""
-    draw_claude_star_glyph(p, rect, size=16.0)
+    """Draw Claude star glyph fallback."""
+    draw_claude_star_glyph(p, rect, size=18.0)
 
 
 def draw_claude_card(
@@ -613,7 +607,7 @@ def draw_claude_card(
     slot_rect = QRectF(rect.x() + 10.0, rect.y() + 6.0, 40.0, 40.0)
     dev = p.device()
     dpr = dev.devicePixelRatioF() if dev is not None else 1.0
-    claude_pm = get_claude_symbol_pixmap(16.0, dpr)
+    claude_pm = get_claude_symbol_pixmap(18.0, dpr)
 
     # Data
     s_pct = claude_data.get("session")
@@ -637,18 +631,22 @@ def draw_claude_card(
         fallback_icon_fn=draw_claude_tile_star,
     )
 
-    # Right side text area: gap 9px -> x = 10 + 40 + 9 = rect.x() + 59.0
-    bx = rect.x() + 59.0
-    bw = max(20.0, rect.right() - 10.0 - bx)
+    # Right side text area: gap 7px -> x = 10 + 40 + 7 = rect.x() + 57.0, right pad 8px
+    bx = rect.x() + 57.0
+    bw = max(20.0, rect.right() - 8.0 - bx)
 
     p.save()
     if has_err:
-        p.setOpacity(0.65)
-        f_err = theme.make_font(11.0, QFont.Weight.Normal)
-        p.setFont(f_err)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        f_title = theme.make_font(FONT_SZ_LBL, QFont.Weight.Medium)
+        f_sub = theme.make_font(10.0, QFont.Weight.Normal)
+        fm_sub = QFontMetricsF(f_sub)
+        p.setFont(f_title)
+        p.setPen(COLOR_TXT_PRIMARY)
+        p.drawText(QRectF(bx, rect.y() + 9.0, bw - 10.0, 18.0), Qt.AlignLeft | Qt.AlignVCenter, "Claude")
+        p.setFont(f_sub)
         p.setPen(COLOR_TXT_MUTED)
-        p.drawText(QRectF(bx, rect.y(), bw, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, "Claude okunamadı")
-        p.setOpacity(1.0)
+        p.drawText(QRectF(bx, rect.y() + 27.0, bw, 16.0), Qt.AlignLeft | Qt.AlignVCenter, _elided_text(fm_sub, "Okunamadı", bw))
         p.setPen(Qt.NoPen)
         p.setBrush(COLOR_BAR_AMBER)
         p.drawEllipse(QPointF(rect.right() - 8.0, rect.top() + 8.0), 3.0, 3.0)
