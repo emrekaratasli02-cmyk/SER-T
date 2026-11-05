@@ -481,8 +481,8 @@ def draw_tile(
         txt_w = fm_b.horizontalAdvance(badge_str)
         bw = max(14.0, txt_w + 6.0)
         bh = 14.0
-        bx = icon_rect.right() - bw + 4.0
-        by = icon_rect.top() - 3.0
+        bx = icon_rect.right() - bw + 5.5
+        by = icon_rect.top() - 4.5
         badge_box = QRectF(bx, by, bw, bh)
         b_path = theme.rounded_path(badge_box, bh / 2.0)
         # İndirme ise canlı mavi, okunmamış mesaj ise kırmızı-mercan rozet
