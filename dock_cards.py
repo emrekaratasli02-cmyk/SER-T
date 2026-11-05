@@ -721,9 +721,9 @@ def draw_equalizer_tile(
     phase: Optional[float] = None,
     art_img: Optional[QImage] = None,
     accent_color: Optional[QColor] = None,
-    corner_radius: float = 3.0,
+    corner_radius: float = 6.0,
 ) -> None:
-    """40x40 recessed well tile with cover art (if available) and 5 symmetric Dynamic Edge equalizer bars."""
+    """Recessed well tile with cover art (if available) and 5 symmetric Dynamic Edge equalizer bars."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
     tile_path = theme.rounded_path(rect, corner_radius)
@@ -737,36 +737,45 @@ def draw_equalizer_tile(
         sz = min(iw, ih)
         src = QRectF((iw - sz) / 2.0, (ih - sz) / 2.0, float(sz), float(sz))
         p.drawImage(rect, art_img, src)
-        # Ekolayzır barlarının net okunması için hafif koyu scrim
-        p.fillRect(rect, QColor(8, 10, 14, 115 if playing else 145))
+        # Yumuşak dikey scrim: kapağın üstü aydınlık, barlar alt-orta kısımda net okunur
+        scrim = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        if playing:
+            scrim.setColorAt(0.0, QColor(8, 10, 14, 45))
+            scrim.setColorAt(0.55, QColor(8, 10, 14, 95))
+            scrim.setColorAt(1.0, QColor(8, 10, 14, 135))
+        else:
+            scrim.setColorAt(0.0, QColor(8, 10, 14, 75))
+            scrim.setColorAt(1.0, QColor(8, 10, 14, 140))
+        p.fillRect(rect, scrim)
         p.restore()
     else:
         grad = _get_equalizer_grad(rect)
         p.fillPath(tile_path, QBrush(grad))
 
-    # Gömme yuva (Recessed Well) ince iç kenarlık (kapak rengi varsa hafif renkli kenar)
-    rim_col = QColor(accent_color) if accent_color is not None else QColor(255, 255, 255, 24)
-    if accent_color is not None:
-        rim_col.setAlpha(90)
+    # İnce iç kenarlık (vurgu rengi varsa hafif renkli)
+    rim_col = QColor(accent_color) if accent_color is not None else QColor(255, 255, 255, 28)
+    rim_col.setAlpha(90 if accent_color is not None else 28)
     p.setPen(QPen(rim_col, 1.0))
     p.setBrush(Qt.NoBrush)
     p.drawPath(theme.rounded_path(rect.adjusted(0.5, 0.5, -0.5, -0.5), max(1.0, corner_radius - 0.5)))
 
     # 5 symmetric equalizer bars: Dynamic Edge style [25%, 65%, 100%, 65%, 25%]
-    bar_w = 3.0
-    bar_gap = 2.4
+    scale = min(rect.width(), rect.height()) / 40.0
+    bar_w = 2.6 * scale
+    bar_gap = 2.2 * scale
+    bar_r = 1.3 * scale
     if not playing:
-        heights = (3.5, 3.5, 3.5, 3.5, 3.5)
-        bar_col = QColor(255, 255, 255, 130)
+        heights = (3.2 * scale, 3.2 * scale, 3.2 * scale, 3.2 * scale, 3.2 * scale)
+        bar_col = QColor(255, 255, 255, 115)
     else:
         t = time.monotonic() if phase is None else float(phase)
         # Simetrik canlı salınım (merkez bar en yüksek, yanlar simetrik eşlenik)
         w0 = 0.5 + 0.5 * math.sin(t * 3.2)
         w1 = 0.5 + 0.5 * math.sin(t * 4.1 + 1.1)
         w2 = 0.5 + 0.5 * math.sin(t * 5.0 + 2.2)
-        h_outer = 6.0 + 4.5 * w0
-        h_mid = 12.0 + 6.5 * w1
-        h_center = 16.0 + 6.0 * w2
+        h_outer = (6.0 + 4.5 * w0) * scale
+        h_mid = (11.5 + 6.0 * w1) * scale
+        h_center = (16.0 + 6.0 * w2) * scale
         heights = (h_outer, h_mid, h_center, h_mid, h_outer)
         bar_col = QColor(255, 255, 255, 245)
 
@@ -775,11 +784,19 @@ def draw_equalizer_tile(
     cy = rect.center().y()
 
     p.setPen(Qt.NoPen)
+    # Kapak resmi varsa barların arkasına hafif gölge, kontrastı kusursuzlaştırır
+    if art_img is not None and not art_img.isNull() and playing:
+        p.setBrush(QColor(0, 0, 0, 80))
+        for i, bh in enumerate(heights):
+            bx = start_x + i * (bar_w + bar_gap)
+            by = cy - bh / 2.0 + 1.0 * scale
+            p.drawRoundedRect(QRectF(bx, by, bar_w, bh), bar_r, bar_r)
+
     p.setBrush(bar_col)
     for i, bh in enumerate(heights):
         bx = start_x + i * (bar_w + bar_gap)
         by = cy - bh / 2.0
-        p.drawRoundedRect(QRectF(bx, by, bar_w, bh), 1.5, 1.5)
+        p.drawRoundedRect(QRectF(bx, by, bar_w, bh), bar_r, bar_r)
 
     p.restore()
 
@@ -1010,11 +1027,12 @@ def draw_media_card(
         p.drawText(QRectF(bx, by, bw, 18.0), Qt.AlignLeft | Qt.AlignVCenter, _elided_text(fm_l, title, bw))
 
     p.setFont(f_sub)
-    p.setPen(COLOR_TXT_MUTED)
+    sub_col = QColor(255, 255, 255, 205) if tabular_sub else COLOR_TXT_MUTED
+    p.setPen(sub_col)
     p.drawText(QRectF(bx, by + 18.0, bw, 16.0), Qt.AlignLeft | Qt.AlignVCenter, elided_sub)
     p.restore()
 
-    # Controls: prev (glyph), play/pause with B3 track progress ring (32x32), next (glyph)
+    # Controls: prev (glyph), play/pause hero button (32x32), next (glyph)
     cy = rect.center().y()
 
     # Hit targets: prev (24x28), play (32x32), next (24x28)
@@ -1022,56 +1040,57 @@ def draw_media_card(
     r_play = QRectF(ctrl_x + 24.0 + 4.0, cy - 16.0, 32.0, 32.0)
     r_next = QRectF(ctrl_x + 24.0 + 4.0 + 32.0 + 4.0, cy - 14.0, 24.0, 28.0)
 
-    # 1. Prev button (plain glyph without circle)
+    # 1. Prev button (ikincil kontrol: rölantide sakin, üzerine gelince yumuşak çip)
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
-    prev_col = QColor(255, 255, 255) if hovered_control == "prev" else QColor(255, 255, 255, int(255 * 0.55))
-    if hovered_control == "prev":
+    prev_hover = (hovered_control == "prev")
+    if prev_hover:
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
-        p.drawRoundedRect(r_prev, 6.0, 6.0)
+        p.setBrush(QColor(255, 255, 255, 22))
+        p.drawRoundedRect(r_prev.adjusted(1.0, 2.0, -1.0, -2.0), 6.0, 6.0)
 
     p.translate(r_prev.center().x(), r_prev.center().y())
-    p.scale(14.0 / 20.0, 14.0 / 20.0)
+    p.scale(13.0 / 20.0, 13.0 / 20.0)
     p.translate(-10.0, -10.0)
     p.setPen(Qt.NoPen)
-    p.setBrush(prev_col)
+    p.setBrush(QColor(255, 255, 255, 235 if prev_hover else 125))
     p.drawPath(_PATH_MEDIA_PREV)
     p.restore()
 
-    # 2. Play/Pause button with B3 progress ring
+    # 2. Play/Pause button (birincil kahraman kontrol: dairesel gövde + sakin ince ilerleme halkası)
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
 
     pcx = r_play.center().x()
     pcy = r_play.center().y()
-    ring_radius = 13.0
+    play_hover = (hovered_control == "playpause")
+    disc_r = 14.0
+    disc_rect = QRectF(pcx - disc_r, pcy - disc_r, disc_r * 2.0, disc_r * 2.0)
 
-    # Hover background under ring
-    if hovered_control == "playpause":
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
-        p.drawEllipse(r_play)
+    # Birincil dairesel buton gövdesi (rölantide varlığını hissettirir, hover'da aydınlanır)
+    disc_bg = QColor(255, 255, 255, 48 if play_hover else 22)
+    p.setPen(Qt.NoPen)
+    p.setBrush(disc_bg)
+    p.drawEllipse(disc_rect)
 
-    # Ring Track
-    p.setPen(_PEN_BAR_TRACK_2)
+    # İnce, sakin halka izi (1.5px)
+    p.setPen(QPen(QColor(255, 255, 255, 18), 1.5))
     p.setBrush(Qt.NoBrush)
-    ring_rect = QRectF(pcx - ring_radius, pcy - ring_radius, ring_radius * 2.0, ring_radius * 2.0)
-    p.drawEllipse(ring_rect)
+    p.drawEllipse(disc_rect)
 
     arc_col = QColor(art_accent) if art_accent is not None else QColor(COLOR_ACCENT_BLUE)
-    arc_col.setAlpha(int(255 * 0.65))
-    arc_pen = QPen(arc_col, 2.0, Qt.SolidLine, Qt.RoundCap)
+    arc_col.setAlpha(180)
     if progress_frac is not None and progress_frac > 0.0:
+        arc_pen = QPen(arc_col, 1.5, Qt.SolidLine, Qt.RoundCap)
         p.setPen(arc_pen)
         start_angle = 90 * 16
         span_angle = -int(round(progress_frac * 360.0 * 16.0))
-        p.drawArc(ring_rect, start_angle, span_angle)
+        p.drawArc(disc_rect, start_angle, span_angle)
 
     # Center Play / Pause Icon
     p.save()
     p.translate(pcx, pcy)
-    p.scale(16.0 / 20.0, 16.0 / 20.0)
+    p.scale(15.0 / 20.0, 15.0 / 20.0)
     p.translate(-10.0, -10.0)
     p.setPen(Qt.NoPen)
     p.setBrush(Qt.white)
@@ -1079,34 +1098,36 @@ def draw_media_card(
     p.restore()
     p.restore()
 
-    # 3. Next button (plain glyph without circle)
+    # 3. Next button (ikincil kontrol: rölantide sakin, üzerine gelince yumuşak çip)
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
-    next_col = QColor(255, 255, 255) if hovered_control == "next" else QColor(255, 255, 255, int(255 * 0.55))
-    if hovered_control == "next":
+    next_hover = (hovered_control == "next")
+    if next_hover:
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
-        p.drawRoundedRect(r_next, 6.0, 6.0)
+        p.setBrush(QColor(255, 255, 255, 22))
+        p.drawRoundedRect(r_next.adjusted(1.0, 2.0, -1.0, -2.0), 6.0, 6.0)
 
     p.translate(r_next.center().x(), r_next.center().y())
-    p.scale(14.0 / 20.0, 14.0 / 20.0)
+    p.scale(13.0 / 20.0, 13.0 / 20.0)
     p.translate(-10.0, -10.0)
     p.setPen(Qt.NoPen)
-    p.setBrush(next_col)
+    p.setBrush(QColor(255, 255, 255, 235 if next_hover else 125))
     p.drawPath(_PATH_MEDIA_NEXT)
     p.restore()
 
-    # 4. Canlı ilerleme çizgisi: artık tüm kartı kesmez; metin sütununun altına oturur (bx .. ctrl_x - 4).
+    # 4. Canlı ilerleme çizgisi: metin sütununun altında ince, sakin gösterge (bx .. ctrl_x - 4)
     if progress_frac is not None:
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         lx1 = bx
         lx2 = max(bx + 20.0, ctrl_x - 4.0)
         ly = rect.bottom() - 4.0
-        p.setPen(_PEN_BAR_TRACK_2)
+        p.setPen(QPen(QColor(255, 255, 255, 16), 1.5, Qt.SolidLine, Qt.RoundCap))
         p.drawLine(QPointF(lx1, ly), QPointF(lx2, ly))
         if progress_frac > 0.0:
-            p.setPen(arc_pen)
+            fill_col = QColor(art_accent) if art_accent is not None else QColor(COLOR_ACCENT_BLUE)
+            fill_col.setAlpha(180)
+            p.setPen(QPen(fill_col, 1.5, Qt.SolidLine, Qt.RoundCap))
             fill_x2 = lx1 + (lx2 - lx1) * progress_frac
             p.drawLine(QPointF(lx1, ly), QPointF(fill_x2, ly))
         p.restore()
@@ -1144,14 +1165,13 @@ def draw_media_icon_button(
         p.setRenderHint(QPainter.Antialiasing)
         lx1 = tile_rect.left() + 4.0
         lx2 = tile_rect.right() - 4.0
-        ly = rect.bottom() - 3.0
-        p.setPen(_PEN_BAR_TRACK_2)
+        ly = rect.bottom() - 3.5
+        p.setPen(QPen(QColor(255, 255, 255, 16), 1.5, Qt.SolidLine, Qt.RoundCap))
         p.drawLine(QPointF(lx1, ly), QPointF(lx2, ly))
         if progress_frac > 0.0:
-            arc_col = QColor(art_accent) if art_accent is not None else QColor(COLOR_ACCENT_BLUE)
-            arc_col.setAlpha(int(255 * 0.65))
-            arc_pen = QPen(arc_col, 2.0, Qt.SolidLine, Qt.RoundCap)
-            p.setPen(arc_pen)
+            fill_col = QColor(art_accent) if art_accent is not None else QColor(COLOR_ACCENT_BLUE)
+            fill_col.setAlpha(180)
+            p.setPen(QPen(fill_col, 1.5, Qt.SolidLine, Qt.RoundCap))
             fill_x2 = lx1 + (lx2 - lx1) * progress_frac
             p.drawLine(QPointF(lx1, ly), QPointF(fill_x2, ly))
         p.restore()
