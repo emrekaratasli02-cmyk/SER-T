@@ -86,6 +86,7 @@ SETTING_DEFAULTS: Dict[str, bool] = {
     "app_usage_ctrl": True,
     "presence_enabled": True,
     "hide_on_fullscreen": True,
+    "intelli_hide": False,
     "hover_preview": True,
     "window_flash_enabled": True,
     "app_badges_enabled": True,
@@ -975,9 +976,9 @@ class SettingsWindow(QWidget):
         )
 
         y += card_h + ps.GAP
-        rows2 = [48.0, 48.0]
+        rows2 = [48.0, 48.0, 48.0]
         card2_h = self._card_height(rows2)
-        inner2 = ps.draw_card(p, QRectF(x, y, w, card2_h), "Görev çubuğu")
+        inner2 = ps.draw_card(p, QRectF(x, y, w, card2_h), "Görev çubuğu ve Gizleme")
         hide_tb = bool(self.working_settings.get("hide_taskbar", False))
         r3 = QRectF(inner2.left(), inner2.top(), inner2.width(), rows2[0])
         self._draw_row(
@@ -990,6 +991,13 @@ class SettingsWindow(QWidget):
         self._draw_row(
             p, r4, "Ekran alanını ayır", "Pencereler şeridin altına girmesin",
             checked=reserve_sp, kind="toggle_setting", extra="reserve_space",
+        )
+        self._paint_separator(p, inner2.left(), r4.bottom(), inner2.width())
+        intelli_h = bool(self.working_settings.get("intelli_hide", False))
+        r5 = QRectF(inner2.left(), r4.bottom() + 1.0, inner2.width(), rows2[2])
+        self._draw_row(
+            p, r5, "Intelli-Hide (akıllı gizleme)", "Pencere çakıştığında dock'u aşağı kaydır",
+            checked=intelli_h, kind="toggle_setting", extra="intelli_hide",
         )
 
         y += card2_h + ps.GAP
