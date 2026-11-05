@@ -104,10 +104,10 @@ OC_CARD_WIDTH: float = 184.0   # OpenCode kullanım kartı
 # Sol kanat sığmazsa Claude/Antigravity kartları bu genişliğe kadar daralır (sıfırlanma yazısı sığmazsa gizlenir)
 CONC_CARD_MIN_WIDTH: float = 132.0
 # Metinsiz mod (show_text=False): sadece halka + logo, dar kart (~96-110 px)
-CLAUDE_CARD_TEXTLESS_WIDTH: float = 92.0
-AG_CARD_TEXTLESS_WIDTH: float = 92.0
-OC_CARD_TEXTLESS_WIDTH: float = 92.0
-AI_CARD_TEXTLESS_WIDTH: float = 92.0
+CLAUDE_CARD_TEXTLESS_WIDTH: float = 88.0
+AG_CARD_TEXTLESS_WIDTH: float = 88.0
+OC_CARD_TEXTLESS_WIDTH: float = 88.0
+AI_CARD_TEXTLESS_WIDTH: float = 88.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0

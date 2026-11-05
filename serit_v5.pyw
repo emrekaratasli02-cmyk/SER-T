@@ -204,7 +204,7 @@ DOCK_RADIUS: float = 20.0
 CARD_HEIGHT: float = 52.0
 CARD_RADIUS: float = 13.0
 CARD_Y: float = 6.0
-GAP_MODULE: float = 8.0  # v34: metinsiz kartlar arası nefes payı (8px)
+GAP_MODULE: float = 6.0  # v34: metinsiz kartlar arası nefes payı (6px)
 CLAUDE_CARD_WIDTH: float = 204.0  # v24: %100 + Oturum + '23 sa 59 dk' sığsın (metin alanı 135)
 MEDIA_CARD_WIDTH: float = 314.0
 MEDIA_CARD_WIDTH_COMPACT: float = 240.0
@@ -215,12 +215,12 @@ LEFT_CARD_HARD_MIN_WIDTH: float = 112.0  # çok dar ekranda Claude/AG için okun
 OC_CARD_TINY_MIN_WIDTH: float = 118.0   # çok dar ekranda OpenCode'un ince hali (show_text=True)
 LEFT_CARD_GUARD_MIN_WIDTH: float = 104.0  # son güvenlik ağı sınırı (ataç için; show_text=True)
 # Metinsiz mod (show_text=False) boyut ve alt sınırları
-CLAUDE_CARD_TEXTLESS_WIDTH: float = 92.0
-AG_CARD_TEXTLESS_WIDTH: float = 92.0
-OC_CARD_TEXTLESS_WIDTH: float = 92.0
-AI_CARD_TEXTLESS_WIDTH: float = 92.0
-OC_CARD_TEXTLESS_MIN_WIDTH: float = 88.0
-CONC_CARD_TEXTLESS_MIN_WIDTH: float = 88.0
+CLAUDE_CARD_TEXTLESS_WIDTH: float = 88.0
+AG_CARD_TEXTLESS_WIDTH: float = 88.0
+OC_CARD_TEXTLESS_WIDTH: float = 88.0
+AI_CARD_TEXTLESS_WIDTH: float = 88.0
+OC_CARD_TEXTLESS_MIN_WIDTH: float = 80.0
+CONC_CARD_TEXTLESS_MIN_WIDTH: float = 80.0
 LEFT_CARD_TEXTLESS_HARD_MIN: float = 72.0
 OC_CARD_TEXTLESS_TINY_MIN: float = 72.0
 LEFT_CARD_TEXTLESS_GUARD_MIN: float = 64.0
