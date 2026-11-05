@@ -901,6 +901,7 @@ class QuotaPanel(_BasePopover):
     account_selected = Signal(str)
 
     WIDTH: int = int(ps.WIDTH["ag"])
+    BODY_MAX_HEIGHT: float = 650.0
 
     LINE_H: float = 20.0
     BAR_GAP: float = 5.0
