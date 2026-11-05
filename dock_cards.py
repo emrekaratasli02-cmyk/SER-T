@@ -721,11 +721,12 @@ def draw_equalizer_tile(
     phase: Optional[float] = None,
     art_img: Optional[QImage] = None,
     accent_color: Optional[QColor] = None,
+    corner_radius: float = 3.0,
 ) -> None:
     """40x40 recessed well tile with cover art (if available) and 5 symmetric Dynamic Edge equalizer bars."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
-    tile_path = theme.rounded_path(rect, 10.0)
+    tile_path = theme.rounded_path(rect, corner_radius)
 
     if art_img is not None and not art_img.isNull():
         p.save()
@@ -749,7 +750,7 @@ def draw_equalizer_tile(
         rim_col.setAlpha(90)
     p.setPen(QPen(rim_col, 1.0))
     p.setBrush(Qt.NoBrush)
-    p.drawPath(theme.rounded_path(rect.adjusted(0.5, 0.5, -0.5, -0.5), 9.5))
+    p.drawPath(theme.rounded_path(rect.adjusted(0.5, 0.5, -0.5, -0.5), max(1.0, corner_radius - 0.5)))
 
     # 5 symmetric equalizer bars: Dynamic Edge style [25%, 65%, 100%, 65%, 25%]
     bar_w = 3.0
@@ -1058,7 +1059,9 @@ def draw_media_card(
     ring_rect = QRectF(pcx - ring_radius, pcy - ring_radius, ring_radius * 2.0, ring_radius * 2.0)
     p.drawEllipse(ring_rect)
 
-    arc_pen = QPen(art_accent, 2.0, Qt.SolidLine, Qt.RoundCap) if art_accent is not None else _PEN_ARC_ACCENT
+    arc_col = QColor(art_accent) if art_accent is not None else QColor(COLOR_ACCENT_BLUE)
+    arc_col.setAlpha(int(255 * 0.65))
+    arc_pen = QPen(arc_col, 2.0, Qt.SolidLine, Qt.RoundCap)
     if progress_frac is not None and progress_frac > 0.0:
         p.setPen(arc_pen)
         start_angle = 90 * 16
@@ -1145,7 +1148,9 @@ def draw_media_icon_button(
         p.setPen(_PEN_BAR_TRACK_2)
         p.drawLine(QPointF(lx1, ly), QPointF(lx2, ly))
         if progress_frac > 0.0:
-            arc_pen = QPen(art_accent, 2.0, Qt.SolidLine, Qt.RoundCap) if art_accent is not None else _PEN_ARC_ACCENT
+            arc_col = QColor(art_accent) if art_accent is not None else QColor(COLOR_ACCENT_BLUE)
+            arc_col.setAlpha(int(255 * 0.65))
+            arc_pen = QPen(arc_col, 2.0, Qt.SolidLine, Qt.RoundCap)
             p.setPen(arc_pen)
             fill_x2 = lx1 + (lx2 - lx1) * progress_frac
             p.drawLine(QPointF(lx1, ly), QPointF(fill_x2, ly))
@@ -2005,6 +2010,9 @@ def format_clock_v1_date(d: dt.date) -> str:
     return f"{weekday}, {d.day} {month_name}"
 
 
+CLOCK_DATE_FONT_SIZE: float = 10.5
+
+
 def measure_clock_v1_width(
     now: Optional[dt.datetime] = None,
     temp_str: Optional[str] = None,
@@ -2016,8 +2024,8 @@ def measure_clock_v1_width(
     time_str = now.strftime("%H:%M")
     date_str = format_clock_v1_date(now.date())
 
-    f_time = theme.make_font(20.0, QFont.Weight.DemiBold, tabular=True, letter_spacing=-0.3)
-    f_date = theme.make_font(11.0, QFont.Weight.Medium)
+    f_time = theme.make_font(13.5, QFont.Weight.DemiBold, tabular=True, letter_spacing=-0.2)
+    f_date = theme.make_font(CLOCK_DATE_FONT_SIZE, QFont.Weight.Normal)
 
     fm_time = _get_fm(f_time)
     fm_date = _get_fm(f_date)
@@ -2027,7 +2035,7 @@ def measure_clock_v1_width(
 
     w = 10.0 + w_left  # 10px left padding
     if has_weather and temp_str:
-        f_temp = theme.make_font(13.0, QFont.Weight.DemiBold)
+        f_temp = theme.make_font(12.0, QFont.Weight.DemiBold)
         fm_temp = _get_fm(f_temp)
         w_temp = _text_width(fm_temp, temp_str)
         # 10px gap + 1px separator + 10px gap + 14px icon + 5px gap + temp_w (v24: ayraç iki yana eşit)
@@ -2048,10 +2056,10 @@ def draw_clock_v1(
 ) -> Tuple[QRectF, Optional[QRectF]]:
     """Renders Clock V1 'Sade' without box or background.
 
-    Left (if weather available): 14px weather icon + 5px + temp '16°' 13px/600, 8px gap,
-      1px separator rgba(255,255,255,.10) 24px high, 12px gap.
-    Right (at the band's right edge): time 'HH:MM' 20px/600 tabular, 3px gap,
-      date 'Sal, 27 Ekim' 11px/500 rgba(235,238,245,.58); both right-aligned.
+    Left (if weather available): 14px weather icon + 5px + temp '16°' 12px/600 on same baseline,
+      1px separator rgba(255,255,255,52) 24px high.
+    Right: time 'HH:MM' 13.5px/600 tabular, 2px gap,
+      date 'Sal, 27 Ekim' 10.5px Regular; both aligned to exact same left x.
 
     Hover: rounded rect rgba(255,255,255,.07) radius 11 behind whole clock.
     Returns (r_clock, r_wx).
@@ -2077,8 +2085,8 @@ def draw_clock_v1(
     time_str = now.strftime("%H:%M")
     date_str = format_clock_v1_date(now.date())
 
-    f_time = theme.make_font(20.0, QFont.Weight.DemiBold, tabular=True, letter_spacing=-0.3)
-    f_date = theme.make_font(11.0, QFont.Weight.Medium)
+    f_time = theme.make_font(13.5, QFont.Weight.DemiBold, tabular=True, letter_spacing=-0.2)
+    f_date = theme.make_font(CLOCK_DATE_FONT_SIZE, QFont.Weight.Normal)
 
     fm_time = _get_fm(f_time)
     fm_date = _get_fm(f_date)
@@ -2090,22 +2098,24 @@ def draw_clock_v1(
     r_wx: Optional[QRectF] = None
     cy = rect.center().y()
 
-    # Hava durumu SOLDA, saat en sağ kenarda (27 Eki 2026, Emre: "saat en sağda olsun")
+    # Hava durumu SOLDA, saat sağda (27 Eki 2026, Emre: "saat en sağda olsun")
     if has_weather and temp_str:
         wx_left = rect.x()
-        icon_y = cy - 7.0 + _weather_icon_dy(wx_icon or "cloud")
+        f_temp = theme.make_font(12.0, QFont.Weight.DemiBold)
+        fm_temp = _get_fm(f_temp)
+        w_temp = _text_width(fm_temp, temp_str)
+        temp_base = cy + fm_temp.capHeight() / 2.0
+        # İkon ile sıcaklık yazısı aynı baseline'da, aralarında 5px (4-6px)
+        icon_y = temp_base - 14.0 + _weather_icon_dy(wx_icon or "cloud")
         r_icon = QRectF(cur_x, icon_y, 14.0, 14.0)
         p.save()
         p.setOpacity(0.85)
         theme.draw_weather_icon(p, r_icon, icon=wx_icon or "cloud")
         p.restore()
         cur_x += 14.0 + 5.0
-        f_temp = theme.make_font(13.0, QFont.Weight.DemiBold)
-        fm_temp = _get_fm(f_temp)
-        w_temp = _text_width(fm_temp, temp_str)
         p.setFont(f_temp)
         p.setPen(COLOR_TXT_PRIMARY)
-        p.drawText(QPointF(cur_x, cy + fm_temp.capHeight() / 2.0), temp_str)  # rakamlar tam ortada
+        p.drawText(QPointF(cur_x, temp_base), temp_str)
         cur_x += w_temp + 10.0
         sep_x = cur_x
         draw_card_divider(p, sep_x, cy, 24.0)
@@ -2113,21 +2123,23 @@ def draw_clock_v1(
         # Hava durumu tıklama alanı: sol kenardan ayırıcıya kadar
         r_wx = QRectF(wx_left, rect.y(), max(0.0, sep_x + 1.0 - wx_left), rect.height())
 
-    # Saat + tarih (sağa yaslı sütun). Görsel blok = saat rakamlarının üstü .. tarihin taban çizgisi;
-    # kutu yüksekliğine göre ortalamak bloğu 1,5 px aşağıda bırakıyordu (v24 ölçümü).
-    gap_td = 9.5  # saat tabanı -> tarih büyük harf üstü
-    cap_t, cap_d = fm_time.capHeight(), fm_date.capHeight()
-    time_base = cy - (cap_t + gap_td + cap_d) / 2.0 + cap_t
+    # Saat üst satır Semibold/13-14px, Tarih alt satır Regular 10.5px
+    # aralarını 2px nefesli hizala; iki footer satırının sol kenarları BİREBİR AYNI x'te olacak.
+    gap_td = 2.0
+    cap_t = fm_time.capHeight()
+    cap_d = fm_date.capHeight()
+    total_h = cap_t + gap_td + cap_d
+    time_base = cy - total_h / 2.0 + cap_t
     date_base = time_base + gap_td + cap_d
-    right_x = cur_x + w_left
+    text_x = cur_x
 
     p.setFont(f_time)
     p.setPen(Qt.white)
-    p.drawText(QPointF(right_x - p.fontMetrics().horizontalAdvance(time_str), time_base), time_str)
+    p.drawText(QPointF(text_x, time_base), time_str)
 
     p.setFont(f_date)
-    p.setPen(QColor(235, 238, 245, int(255 * 0.58)))
-    p.drawText(QPointF(right_x - p.fontMetrics().horizontalAdvance(date_str), date_base), date_str)
+    p.setPen(QColor(235, 238, 245, int(255 * 0.70)))
+    p.drawText(QPointF(text_x, date_base), date_str)
 
     p.restore()
     return rect, r_wx
@@ -2541,19 +2553,19 @@ def draw_quick_settings_pill(
             p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
             p.drawRoundedRect(_inner(r, first, last), 6.0, 6.0)
 
-    # ayırıcılar (1 x 16)
+    # ayırıcılar (1 x 16, alfa 52 tek stil)
     div_y = rect.center().y() - 8.0
-    p.setPen(QColor(255, 255, 255, int(255 * 0.14)))
+    p.setPen(QPen(CARD_DIVIDER, 1.0))
     p.drawLine(QPointF(mid_x, div_y), QPointF(mid_x, div_y + 16.0))
     if show_bat:
         p.drawLine(QPointF(r_bat.x(), div_y), QPointF(r_bat.x(), div_y + 16.0))
 
-    # 4. Draw Sun glyph (centered in r_sun)
+    # 4. Draw Sun glyph (centered in r_sun, 18px glyph box)
     # Fluent Sun: viewBox 0 0 20 20, center (10,10) r=3.6, 8 radial lines
     sun_col = QColor(255, 255, 255) if (hovered_part == "bright" or active_part == "bright") else QColor(255, 255, 255, int(255 * 0.85))
     p.save()
     p.translate(r_sun.center().x(), r_sun.center().y())
-    p.scale(16.0 / 20.0, 16.0 / 20.0)
+    p.scale(18.0 / 20.0, 18.0 / 20.0)
     p.translate(-10.0, -10.0)
     pen_sun = QPen(sun_col, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen_sun)
@@ -2569,14 +2581,14 @@ def draw_quick_settings_pill(
     p.drawLine(QPointF(14.1, 5.9), QPointF(15.66, 4.34))
     p.restore()
 
-    # 5. Draw Speaker glyph (centered in r_spk)
+    # 5. Draw Speaker glyph (centered in r_spk, 18px glyph box)
     # Fluent Speaker: viewBox 0 0 20 20, path d="M4 7.2h2.8l4.2-3.7v13l-4.2-3.7H4V7.2z" fill="currentColor"
     # Waves: arc 1: M14.2 6.5c1.6 1.8 1.6 4.8 0 6.6
     #        arc 2: M16.6 4.2c2.8 3.1 2.8 7.9 0 11
     spk_col = QColor(255, 255, 255) if (hovered_part == "vol" or active_part == "vol") else QColor(255, 255, 255, int(255 * 0.85))
     p.save()
     p.translate(r_spk.center().x(), r_spk.center().y())
-    p.scale(16.0 / 20.0, 16.0 / 20.0)
+    p.scale(18.0 / 20.0, 18.0 / 20.0)
     p.translate(-10.0, -10.0)
     pen_spk = QPen(spk_col, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen_spk)
@@ -2663,20 +2675,20 @@ def draw_action_button(
     cy = rect.center().y()
 
     if kind == "tray":
-        # Chevron-up (18px stroke glyph)
+        # Chevron-up (18px glyph box, dikeyde tam ortalı)
         path_chv = QPainterPath()
-        path_chv.moveTo(cx - 5.0, cy + 2.5)
-        path_chv.lineTo(cx, cy - 2.5)
-        path_chv.lineTo(cx + 5.0, cy + 2.5)
+        path_chv.moveTo(cx - 5.5, cy + 2.75)
+        path_chv.lineTo(cx, cy - 2.75)
+        path_chv.lineTo(cx + 5.5, cy + 2.75)
         p.drawPath(path_chv)
 
     elif kind == "bright":
-        # Sun: center circle r=3.5, 8 radial rays
-        p.drawEllipse(QRectF(cx - 3.5, cy - 3.5, 7.0, 7.0))
+        # Sun: center circle r=3.6, 8 radial rays (18px glyph box)
+        p.drawEllipse(QRectF(cx - 3.6, cy - 3.6, 7.2, 7.2))
         for i in range(8):
             ang = i * math.pi / 4.0
             r1 = 5.5
-            r2 = 8.0
+            r2 = 9.0
             p.drawLine(
                 QPointF(cx + r1 * math.cos(ang), cy + r1 * math.sin(ang)),
                 QPointF(cx + r2 * math.cos(ang), cy + r2 * math.sin(ang)),
