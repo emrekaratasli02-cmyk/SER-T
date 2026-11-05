@@ -296,9 +296,10 @@ def draw_concentric_rings_slot(
 ) -> None:
     """Draw 40x40 concentric rings gauge with centred logo inside.
 
-    viewBox 42x42: outer r=18, inner r=13, stroke 2.2 round caps, clockwise from 12 o'clock.
-    Track: rgba(255, 255, 255, 0.08).
-    Colours: identity colour below 90%, #F87171 at >= 90%. Missing -> empty track only.
+    Refined concentric layout:
+    - Balanced radii & stroke: r_outer=17.6, r_inner=11.4, stroke=2.6 (optimal inter-ring rhythm).
+    - Subtle tinted identity tracks for enhanced contrast & depth against dark dock background.
+    - True round caps on active progress arcs, seamless full circle at 100%.
     """
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
@@ -306,19 +307,21 @@ def draw_concentric_rings_slot(
     center = slot_rect.center()
     cx = center.x()
     cy = center.y()
-    scale = slot_rect.width() / 42.0
-    r_outer = 18.0 * scale
-    r_inner = 13.0 * scale
-    stroke_w = RING_STROKE  # v33: tüm halkalarla aynı kalınlık (ölçekten bağımsız)
+    scale = slot_rect.width() / 40.0
+    r_outer = 17.6 * scale
+    r_inner = 11.4 * scale
+    stroke_w = 2.6 * scale
 
     rect_outer = QRectF(cx - r_outer, cy - r_outer, 2.0 * r_outer, 2.0 * r_outer)
     rect_inner = QRectF(cx - r_inner, cy - r_inner, 2.0 * r_inner, 2.0 * r_inner)
 
-    # 1. Background tracks
-    pen_track = QPen(COLOR_CONCENTRIC_TRACK, stroke_w, Qt.SolidLine, Qt.RoundCap)
-    p.setPen(pen_track)
+    # 1. Background tracks (tinted with respective ring identity color for depth & contrast)
+    track_outer = QColor(outer_color.red(), outer_color.green(), outer_color.blue(), 58)
+    track_inner = QColor(inner_color.red(), inner_color.green(), inner_color.blue(), 52)
     p.setBrush(Qt.NoBrush)
+    p.setPen(QPen(track_outer, stroke_w, Qt.SolidLine, Qt.RoundCap))
     p.drawEllipse(rect_outer)
+    p.setPen(QPen(track_inner, stroke_w, Qt.SolidLine, Qt.RoundCap))
     p.drawEllipse(rect_inner)
 
     # 2. Outer ring arc (start 12 o'clock = 90 deg, clockwise = negative span)
@@ -327,8 +330,12 @@ def draw_concentric_rings_slot(
         fg_col = usage_color(val_clamped, outer_color)
         pen_outer = QPen(fg_col, stroke_w, Qt.SolidLine, Qt.RoundCap)
         p.setPen(pen_outer)
-        span_angle = -int(round((val_clamped / 100.0) * 360.0 * 16.0))
-        p.drawArc(rect_outer, 90 * 16, span_angle)
+        if val_clamped >= 99.8:
+            p.drawEllipse(rect_outer)
+        else:
+            span_angle = -int(round((val_clamped / 100.0) * 360.0 * 16.0))
+            if span_angle != 0:
+                p.drawArc(rect_outer, 90 * 16, span_angle)
 
     # 3. Inner ring arc
     if inner_pct is not None and inner_pct > 0.0:
@@ -336,8 +343,12 @@ def draw_concentric_rings_slot(
         fg_col = usage_color(val_clamped, inner_color)
         pen_inner = QPen(fg_col, stroke_w, Qt.SolidLine, Qt.RoundCap)
         p.setPen(pen_inner)
-        span_angle = -int(round((val_clamped / 100.0) * 360.0 * 16.0))
-        p.drawArc(rect_inner, 90 * 16, span_angle)
+        if val_clamped >= 99.8:
+            p.drawEllipse(rect_inner)
+        else:
+            span_angle = -int(round((val_clamped / 100.0) * 360.0 * 16.0))
+            if span_angle != 0:
+                p.drawArc(rect_inner, 90 * 16, span_angle)
 
     # 4. Centred logo
     if logo_pixmap is not None and not logo_pixmap.isNull():
@@ -372,9 +383,9 @@ def draw_concentric_text_rows(
     # Sabit yüzde sütunu (%100 genişliği): tüm nokta etiketleri kartlarda aynı hizada dizilir
     f_pct_probe = QFontMetricsF(f_pct)
     col_w = f_pct_probe.horizontalAdvance("%100")
-    row_step = 19.0  # iki satırın taban çizgileri arası
+    row_step = 18.5  # iki satırın taban çizgileri arası (optik ritim: 18.5px)
     cap = _get_fm(f_pct).capHeight()
-    base1 = text_rect.center().y() - (row_step - cap) / 2.0  # görsel blok tam ortada
+    base1 = text_rect.center().y() - (row_step - cap) / 2.0  # görsel blok tam optik ortada (mid=32.0)
 
     fm_lbl = QFontMetricsF(f_lbl)
     fm_rst = QFontMetricsF(f_rst)
@@ -460,7 +471,7 @@ def draw_card_base(
     hover: bool = False,
     press_scale: float = 1.0,
 ) -> None:
-    """v24 kutusuz kart: yalnız üzerine gelince yumuşak akrilik vurgu ve ince specular kenar."""
+    """v24 kutusuz kart: yalnız üzerine gelince zarif akrilik vurgu ve ince specular üst kenar."""
     if not hover:
         return
     p.save()
@@ -471,11 +482,21 @@ def draw_card_base(
         p.scale(press_scale, press_scale)
         p.translate(-pc)
     c_path = theme.rounded_path(rect, radius)
+    # Akrilik gövde: tepede hafif aydınlık, gövdede pürüzsüzce eriyen yumuşak gradyan
     hover_grad = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
-    hover_grad.setColorAt(0.0, QColor(255, 255, 255, 26))
-    hover_grad.setColorAt(1.0, QColor(255, 255, 255, 13))
+    hover_grad.setColorAt(0.00, QColor(255, 255, 255, 28))
+    hover_grad.setColorAt(0.35, QColor(255, 255, 255, 18))
+    hover_grad.setColorAt(0.70, QColor(255, 255, 255, 12))
+    hover_grad.setColorAt(1.00, QColor(255, 255, 255, 7))
     p.fillPath(c_path, hover_grad)
-    p.setPen(QPen(QColor(255, 255, 255, 34), 0.8))
+
+    # İnce specular üst kenar ve akrilik rim: üst kenarda parlaklık, yan ve alt kenarda sönümlenme
+    stroke_grad = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
+    stroke_grad.setColorAt(0.00, QColor(255, 255, 255, 56))
+    stroke_grad.setColorAt(0.25, QColor(255, 255, 255, 28))
+    stroke_grad.setColorAt(0.70, QColor(255, 255, 255, 12))
+    stroke_grad.setColorAt(1.00, QColor(255, 255, 255, 6))
+    p.setPen(QPen(QBrush(stroke_grad), 0.8))
     p.drawPath(c_path)
     p.restore()
 
@@ -510,10 +531,12 @@ def _weather_icon_dy(icon: str) -> float:
 
 def draw_card_divider(p: QPainter, x: float, cy: float, height: float = CARD_DIVIDER_H) -> None:
     """Kartlar arası ince dikey ayraç: 1 cihaz pikseli kalın, cihaz pikseline oturur (1.25'te bulanmaz)."""
+    # Dock genelinde sakin ve eşit görünüm: standart CARD_DIVIDER_H yüksekliği ve sakin ayraç rengi
+    h = CARD_DIVIDER_H if (height is None or height <= 0 or abs(height - CARD_DIVIDER_H) <= 4.0) else height
     dpr = _device_ratio(p)
     px = round(x * dpr) / dpr
-    top = round((cy - height / 2.0) * dpr) / dpr
-    bottom = round((cy + height / 2.0) * dpr) / dpr
+    top = round((cy - h / 2.0) * dpr) / dpr
+    bottom = round((cy + h / 2.0) * dpr) / dpr
     p.save()
     p.setRenderHint(QPainter.Antialiasing, False)
     p.fillRect(QRectF(px, top, 1.0 / dpr, bottom - top), CARD_DIVIDER)
@@ -570,33 +593,27 @@ def get_claude_symbol_pixmap(target_size: float = 29.0, dpr: float = 1.0) -> Opt
         return None
 
 
-def draw_claude_star_glyph(p: QPainter, rect: QRectF, size: float = 16.0) -> None:
-    """Draw 6-spoke rounded star glyph (#D97757) centered inside slot."""
+def draw_claude_star_glyph(p: QPainter, rect: QRectF, size: float = 18.0) -> None:
+    """Draw crisp Claude star glyph (#D97757) centered inside slot."""
     p.save()
-    p.setRenderHint(QPainter.Antialiasing)
-    star_lines = [
-        (3.50, 12.00, 20.50, 12.00),
-        (4.64, 7.75, 19.36, 16.25),
-        (7.75, 4.64, 16.25, 19.36),
-        (12.00, 3.50, 12.00, 20.50),
-        (16.25, 4.64, 7.75, 19.36),
-        (19.36, 7.75, 4.64, 16.25),
-    ]
-    scale = size / 24.0
-    sx = rect.x() + (rect.width() - size) / 2.0
-    sy = rect.y() + (rect.height() - size) / 2.0
-    p.translate(sx, sy)
-    p.scale(scale, scale)
-    pen = QPen(COLOR_CLAUDE_CORAL, 2.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    cx = rect.center().x()
+    cy = rect.center().y()
+    stroke_w = 2.1
+    r = (size - stroke_w) / 2.0
+    d = r * 0.7071
+    pen = QPen(COLOR_CLAUDE_CORAL, stroke_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen)
-    for x1, y1, x2, y2 in star_lines:
-        p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+    p.drawLine(QPointF(cx - r, cy), QPointF(cx + r, cy))
+    p.drawLine(QPointF(cx, cy - r), QPointF(cx, cy + r))
+    p.drawLine(QPointF(cx - d, cy - d), QPointF(cx + d, cy + d))
+    p.drawLine(QPointF(cx - d, cy + d), QPointF(cx + d, cy - d))
     p.restore()
 
 
 def draw_claude_tile_star(p: QPainter, rect: QRectF) -> None:
-    """Draw 6-spoke rounded star glyph fallback."""
-    draw_claude_star_glyph(p, rect, size=16.0)
+    """Draw Claude star glyph fallback."""
+    draw_claude_star_glyph(p, rect, size=18.0)
 
 
 def draw_claude_card(
@@ -613,7 +630,7 @@ def draw_claude_card(
     slot_rect = QRectF(rect.x() + 10.0, rect.y() + 6.0, 40.0, 40.0)
     dev = p.device()
     dpr = dev.devicePixelRatioF() if dev is not None else 1.0
-    claude_pm = get_claude_symbol_pixmap(16.0, dpr)
+    claude_pm = get_claude_symbol_pixmap(18.0, dpr)
 
     # Data
     s_pct = claude_data.get("session")
@@ -637,18 +654,22 @@ def draw_claude_card(
         fallback_icon_fn=draw_claude_tile_star,
     )
 
-    # Right side text area: gap 9px -> x = 10 + 40 + 9 = rect.x() + 59.0
-    bx = rect.x() + 59.0
-    bw = max(20.0, rect.right() - 10.0 - bx)
+    # Right side text area: gap 7px -> x = 10 + 40 + 7 = rect.x() + 57.0, right pad 8px
+    bx = rect.x() + 57.0
+    bw = max(20.0, rect.right() - 8.0 - bx)
 
     p.save()
     if has_err:
-        p.setOpacity(0.65)
-        f_err = theme.make_font(11.0, QFont.Weight.Normal)
-        p.setFont(f_err)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        f_title = theme.make_font(FONT_SZ_LBL, QFont.Weight.Medium)
+        f_sub = theme.make_font(10.0, QFont.Weight.Normal)
+        fm_sub = QFontMetricsF(f_sub)
+        p.setFont(f_title)
+        p.setPen(COLOR_TXT_PRIMARY)
+        p.drawText(QRectF(bx, rect.y() + 9.0, bw - 10.0, 18.0), Qt.AlignLeft | Qt.AlignVCenter, "Claude")
+        p.setFont(f_sub)
         p.setPen(COLOR_TXT_MUTED)
-        p.drawText(QRectF(bx, rect.y(), bw, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, "Claude okunamadı")
-        p.setOpacity(1.0)
+        p.drawText(QRectF(bx, rect.y() + 27.0, bw, 16.0), Qt.AlignLeft | Qt.AlignVCenter, _elided_text(fm_sub, "Okunamadı", bw))
         p.setPen(Qt.NoPen)
         p.setBrush(COLOR_BAR_AMBER)
         p.drawEllipse(QPointF(rect.right() - 8.0, rect.top() + 8.0), 3.0, 3.0)
@@ -721,9 +742,9 @@ def draw_equalizer_tile(
     phase: Optional[float] = None,
     art_img: Optional[QImage] = None,
     accent_color: Optional[QColor] = None,
-    corner_radius: float = 3.0,
+    corner_radius: float = 6.0,
 ) -> None:
-    """40x40 recessed well tile with cover art (if available) and 5 symmetric Dynamic Edge equalizer bars."""
+    """Recessed well tile with cover art (if available) and 5 symmetric Dynamic Edge equalizer bars."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
     tile_path = theme.rounded_path(rect, corner_radius)
@@ -737,36 +758,45 @@ def draw_equalizer_tile(
         sz = min(iw, ih)
         src = QRectF((iw - sz) / 2.0, (ih - sz) / 2.0, float(sz), float(sz))
         p.drawImage(rect, art_img, src)
-        # Ekolayzır barlarının net okunması için hafif koyu scrim
-        p.fillRect(rect, QColor(8, 10, 14, 115 if playing else 145))
+        # Yumuşak dikey scrim: kapağın üstü aydınlık, barlar alt-orta kısımda net okunur
+        scrim = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        if playing:
+            scrim.setColorAt(0.0, QColor(8, 10, 14, 45))
+            scrim.setColorAt(0.55, QColor(8, 10, 14, 95))
+            scrim.setColorAt(1.0, QColor(8, 10, 14, 135))
+        else:
+            scrim.setColorAt(0.0, QColor(8, 10, 14, 75))
+            scrim.setColorAt(1.0, QColor(8, 10, 14, 140))
+        p.fillRect(rect, scrim)
         p.restore()
     else:
         grad = _get_equalizer_grad(rect)
         p.fillPath(tile_path, QBrush(grad))
 
-    # Gömme yuva (Recessed Well) ince iç kenarlık (kapak rengi varsa hafif renkli kenar)
-    rim_col = QColor(accent_color) if accent_color is not None else QColor(255, 255, 255, 24)
-    if accent_color is not None:
-        rim_col.setAlpha(90)
+    # İnce iç kenarlık (vurgu rengi varsa hafif renkli)
+    rim_col = QColor(accent_color) if accent_color is not None else QColor(255, 255, 255, 28)
+    rim_col.setAlpha(90 if accent_color is not None else 28)
     p.setPen(QPen(rim_col, 1.0))
     p.setBrush(Qt.NoBrush)
     p.drawPath(theme.rounded_path(rect.adjusted(0.5, 0.5, -0.5, -0.5), max(1.0, corner_radius - 0.5)))
 
     # 5 symmetric equalizer bars: Dynamic Edge style [25%, 65%, 100%, 65%, 25%]
-    bar_w = 3.0
-    bar_gap = 2.4
+    scale = min(rect.width(), rect.height()) / 40.0
+    bar_w = 2.6 * scale
+    bar_gap = 2.2 * scale
+    bar_r = 1.3 * scale
     if not playing:
-        heights = (3.5, 3.5, 3.5, 3.5, 3.5)
-        bar_col = QColor(255, 255, 255, 130)
+        heights = (3.2 * scale, 3.2 * scale, 3.2 * scale, 3.2 * scale, 3.2 * scale)
+        bar_col = QColor(255, 255, 255, 115)
     else:
         t = time.monotonic() if phase is None else float(phase)
         # Simetrik canlı salınım (merkez bar en yüksek, yanlar simetrik eşlenik)
         w0 = 0.5 + 0.5 * math.sin(t * 3.2)
         w1 = 0.5 + 0.5 * math.sin(t * 4.1 + 1.1)
         w2 = 0.5 + 0.5 * math.sin(t * 5.0 + 2.2)
-        h_outer = 6.0 + 4.5 * w0
-        h_mid = 12.0 + 6.5 * w1
-        h_center = 16.0 + 6.0 * w2
+        h_outer = (6.0 + 4.5 * w0) * scale
+        h_mid = (11.5 + 6.0 * w1) * scale
+        h_center = (16.0 + 6.0 * w2) * scale
         heights = (h_outer, h_mid, h_center, h_mid, h_outer)
         bar_col = QColor(255, 255, 255, 245)
 
@@ -775,11 +805,19 @@ def draw_equalizer_tile(
     cy = rect.center().y()
 
     p.setPen(Qt.NoPen)
+    # Kapak resmi varsa barların arkasına hafif gölge, kontrastı kusursuzlaştırır
+    if art_img is not None and not art_img.isNull() and playing:
+        p.setBrush(QColor(0, 0, 0, 80))
+        for i, bh in enumerate(heights):
+            bx = start_x + i * (bar_w + bar_gap)
+            by = cy - bh / 2.0 + 1.0 * scale
+            p.drawRoundedRect(QRectF(bx, by, bar_w, bh), bar_r, bar_r)
+
     p.setBrush(bar_col)
     for i, bh in enumerate(heights):
         bx = start_x + i * (bar_w + bar_gap)
         by = cy - bh / 2.0
-        p.drawRoundedRect(QRectF(bx, by, bar_w, bh), 1.5, 1.5)
+        p.drawRoundedRect(QRectF(bx, by, bar_w, bh), bar_r, bar_r)
 
     p.restore()
 
@@ -1010,11 +1048,12 @@ def draw_media_card(
         p.drawText(QRectF(bx, by, bw, 18.0), Qt.AlignLeft | Qt.AlignVCenter, _elided_text(fm_l, title, bw))
 
     p.setFont(f_sub)
-    p.setPen(COLOR_TXT_MUTED)
+    sub_col = QColor(255, 255, 255, 205) if tabular_sub else COLOR_TXT_MUTED
+    p.setPen(sub_col)
     p.drawText(QRectF(bx, by + 18.0, bw, 16.0), Qt.AlignLeft | Qt.AlignVCenter, elided_sub)
     p.restore()
 
-    # Controls: prev (glyph), play/pause with B3 track progress ring (32x32), next (glyph)
+    # Controls: prev (glyph), play/pause hero button (32x32), next (glyph)
     cy = rect.center().y()
 
     # Hit targets: prev (24x28), play (32x32), next (24x28)
@@ -1022,56 +1061,57 @@ def draw_media_card(
     r_play = QRectF(ctrl_x + 24.0 + 4.0, cy - 16.0, 32.0, 32.0)
     r_next = QRectF(ctrl_x + 24.0 + 4.0 + 32.0 + 4.0, cy - 14.0, 24.0, 28.0)
 
-    # 1. Prev button (plain glyph without circle)
+    # 1. Prev button (ikincil kontrol: rölantide sakin, üzerine gelince yumuşak çip)
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
-    prev_col = QColor(255, 255, 255) if hovered_control == "prev" else QColor(255, 255, 255, int(255 * 0.55))
-    if hovered_control == "prev":
+    prev_hover = (hovered_control == "prev")
+    if prev_hover:
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
-        p.drawRoundedRect(r_prev, 6.0, 6.0)
+        p.setBrush(QColor(255, 255, 255, 22))
+        p.drawRoundedRect(r_prev.adjusted(1.0, 2.0, -1.0, -2.0), 6.0, 6.0)
 
     p.translate(r_prev.center().x(), r_prev.center().y())
-    p.scale(14.0 / 20.0, 14.0 / 20.0)
+    p.scale(13.0 / 20.0, 13.0 / 20.0)
     p.translate(-10.0, -10.0)
     p.setPen(Qt.NoPen)
-    p.setBrush(prev_col)
+    p.setBrush(QColor(255, 255, 255, 235 if prev_hover else 125))
     p.drawPath(_PATH_MEDIA_PREV)
     p.restore()
 
-    # 2. Play/Pause button with B3 progress ring
+    # 2. Play/Pause button (birincil kahraman kontrol: dairesel gövde + sakin ince ilerleme halkası)
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
 
     pcx = r_play.center().x()
     pcy = r_play.center().y()
-    ring_radius = 13.0
+    play_hover = (hovered_control == "playpause")
+    disc_r = 14.0
+    disc_rect = QRectF(pcx - disc_r, pcy - disc_r, disc_r * 2.0, disc_r * 2.0)
 
-    # Hover background under ring
-    if hovered_control == "playpause":
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
-        p.drawEllipse(r_play)
+    # Birincil dairesel buton gövdesi (rölantide varlığını hissettirir, hover'da aydınlanır)
+    disc_bg = QColor(255, 255, 255, 48 if play_hover else 22)
+    p.setPen(Qt.NoPen)
+    p.setBrush(disc_bg)
+    p.drawEllipse(disc_rect)
 
-    # Ring Track
-    p.setPen(_PEN_BAR_TRACK_2)
+    # İnce, sakin halka izi (1.5px)
+    p.setPen(QPen(QColor(255, 255, 255, 18), 1.5))
     p.setBrush(Qt.NoBrush)
-    ring_rect = QRectF(pcx - ring_radius, pcy - ring_radius, ring_radius * 2.0, ring_radius * 2.0)
-    p.drawEllipse(ring_rect)
+    p.drawEllipse(disc_rect)
 
     arc_col = QColor(art_accent) if art_accent is not None else QColor(COLOR_ACCENT_BLUE)
-    arc_col.setAlpha(int(255 * 0.65))
-    arc_pen = QPen(arc_col, 2.0, Qt.SolidLine, Qt.RoundCap)
+    arc_col.setAlpha(180)
     if progress_frac is not None and progress_frac > 0.0:
+        arc_pen = QPen(arc_col, 1.5, Qt.SolidLine, Qt.RoundCap)
         p.setPen(arc_pen)
         start_angle = 90 * 16
         span_angle = -int(round(progress_frac * 360.0 * 16.0))
-        p.drawArc(ring_rect, start_angle, span_angle)
+        p.drawArc(disc_rect, start_angle, span_angle)
 
     # Center Play / Pause Icon
     p.save()
     p.translate(pcx, pcy)
-    p.scale(16.0 / 20.0, 16.0 / 20.0)
+    p.scale(15.0 / 20.0, 15.0 / 20.0)
     p.translate(-10.0, -10.0)
     p.setPen(Qt.NoPen)
     p.setBrush(Qt.white)
@@ -1079,34 +1119,36 @@ def draw_media_card(
     p.restore()
     p.restore()
 
-    # 3. Next button (plain glyph without circle)
+    # 3. Next button (ikincil kontrol: rölantide sakin, üzerine gelince yumuşak çip)
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
-    next_col = QColor(255, 255, 255) if hovered_control == "next" else QColor(255, 255, 255, int(255 * 0.55))
-    if hovered_control == "next":
+    next_hover = (hovered_control == "next")
+    if next_hover:
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
-        p.drawRoundedRect(r_next, 6.0, 6.0)
+        p.setBrush(QColor(255, 255, 255, 22))
+        p.drawRoundedRect(r_next.adjusted(1.0, 2.0, -1.0, -2.0), 6.0, 6.0)
 
     p.translate(r_next.center().x(), r_next.center().y())
-    p.scale(14.0 / 20.0, 14.0 / 20.0)
+    p.scale(13.0 / 20.0, 13.0 / 20.0)
     p.translate(-10.0, -10.0)
     p.setPen(Qt.NoPen)
-    p.setBrush(next_col)
+    p.setBrush(QColor(255, 255, 255, 235 if next_hover else 125))
     p.drawPath(_PATH_MEDIA_NEXT)
     p.restore()
 
-    # 4. Canlı ilerleme çizgisi: artık tüm kartı kesmez; metin sütununun altına oturur (bx .. ctrl_x - 4).
+    # 4. Canlı ilerleme çizgisi: metin sütununun altında ince, sakin gösterge (bx .. ctrl_x - 4)
     if progress_frac is not None:
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         lx1 = bx
         lx2 = max(bx + 20.0, ctrl_x - 4.0)
         ly = rect.bottom() - 4.0
-        p.setPen(_PEN_BAR_TRACK_2)
+        p.setPen(QPen(QColor(255, 255, 255, 16), 1.5, Qt.SolidLine, Qt.RoundCap))
         p.drawLine(QPointF(lx1, ly), QPointF(lx2, ly))
         if progress_frac > 0.0:
-            p.setPen(arc_pen)
+            fill_col = QColor(art_accent) if art_accent is not None else QColor(COLOR_ACCENT_BLUE)
+            fill_col.setAlpha(180)
+            p.setPen(QPen(fill_col, 1.5, Qt.SolidLine, Qt.RoundCap))
             fill_x2 = lx1 + (lx2 - lx1) * progress_frac
             p.drawLine(QPointF(lx1, ly), QPointF(fill_x2, ly))
         p.restore()
@@ -1144,14 +1186,13 @@ def draw_media_icon_button(
         p.setRenderHint(QPainter.Antialiasing)
         lx1 = tile_rect.left() + 4.0
         lx2 = tile_rect.right() - 4.0
-        ly = rect.bottom() - 3.0
-        p.setPen(_PEN_BAR_TRACK_2)
+        ly = rect.bottom() - 3.5
+        p.setPen(QPen(QColor(255, 255, 255, 16), 1.5, Qt.SolidLine, Qt.RoundCap))
         p.drawLine(QPointF(lx1, ly), QPointF(lx2, ly))
         if progress_frac > 0.0:
-            arc_col = QColor(art_accent) if art_accent is not None else QColor(COLOR_ACCENT_BLUE)
-            arc_col.setAlpha(int(255 * 0.65))
-            arc_pen = QPen(arc_col, 2.0, Qt.SolidLine, Qt.RoundCap)
-            p.setPen(arc_pen)
+            fill_col = QColor(art_accent) if art_accent is not None else QColor(COLOR_ACCENT_BLUE)
+            fill_col.setAlpha(180)
+            p.setPen(QPen(fill_col, 1.5, Qt.SolidLine, Qt.RoundCap))
             fill_x2 = lx1 + (lx2 - lx1) * progress_frac
             p.drawLine(QPointF(lx1, ly), QPointF(fill_x2, ly))
         p.restore()
@@ -1328,7 +1369,8 @@ def draw_ag_card(
     slot_rect = QRectF(rect.x() + 10.0, rect.y() + 6.0, 40.0, 40.0)
     dev = p.device()
     dpr = dev.devicePixelRatioF() if dev is not None else 1.0
-    ag_pm = get_antigravity_pixmap(17.0, dpr)
+    # Net ve orantili logo boyutu: 20.5px ic halkayi doldurur, bulanikligi onler
+    ag_pm = get_antigravity_pixmap(20.5, dpr)
 
     has_err = bool(ag_data.get("err")) or not ag_data.get("groups")
 
@@ -1361,41 +1403,73 @@ def draw_ag_card(
         used_gemini = float(max_grp.get("used", 0.0))
         gemini_reset_raw = max_grp.get("reset_at") or max_grp.get("reset_tr") or ""
 
-    # Concentric rings slot (Outer: Claude quota, Inner: Gemini quota)
-    draw_concentric_rings_slot(
-        p,
-        slot_rect,
-        outer_pct=used_claude if not has_err else None,
-        outer_color=COLOR_RING_OUTER,
-        inner_pct=used_gemini if not has_err else None,
-        inner_color=COLOR_GEMINI_BLUE,
-        logo_pixmap=ag_pm,
-    )
+    # Concentric rings slot (Hata durumunda iz ve logo sakin bir hiyerarsi icin hafifce kisilir)
+    if has_err:
+        p.save()
+        p.setOpacity(0.55)
+        draw_concentric_rings_slot(
+            p,
+            slot_rect,
+            outer_pct=None,
+            outer_color=COLOR_RING_OUTER,
+            inner_pct=None,
+            inner_color=COLOR_GEMINI_BLUE,
+            logo_pixmap=ag_pm,
+        )
+        p.restore()
+    else:
+        draw_concentric_rings_slot(
+            p,
+            slot_rect,
+            outer_pct=used_claude,
+            outer_color=COLOR_RING_OUTER,
+            inner_pct=used_gemini,
+            inner_color=COLOR_GEMINI_BLUE,
+            logo_pixmap=ag_pm,
+        )
 
-    if not has_err and (multi_accounts or active_account is not None):
+    # Aktif hesap rozeti: halka omuzuna tam oturan 13px daire, 2px koyu oyuk kenar ve optik merkezleme
+    if multi_accounts or active_account is not None:
         p.save()
         p.setRenderHint(QPainter.Antialiasing, True)
-        badge_r = QRectF(slot_rect.right() - 13.0, slot_rect.top() - 1.0, 14.0, 14.0)
-        p.setPen(QPen(QColor(13, 15, 19), 1.5))
-        p.setBrush(COLOR_CLAUDE_CORAL if want_busra else COLOR_GEMINI_BLUE)
+        badge_d = 13.0
+        badge_r = QRectF(slot_rect.right() - 11.5, slot_rect.top() + 0.5, badge_d, badge_d)
+        p.setPen(QPen(QColor(13, 15, 19), 2.0))
+        badge_bg = COLOR_CLAUDE_CORAL if want_busra else COLOR_ACCENT_BLUE
+        if has_err:
+            badge_bg = QColor(badge_bg)
+            badge_bg.setAlpha(180)
+        p.setBrush(badge_bg)
         p.drawEllipse(badge_r)
-        p.setPen(QColor(13, 15, 19))
+        p.setPen(QColor(13, 15, 19) if not has_err else QColor(255, 255, 255, 220))
         p.setFont(theme.make_font(9.0, QFont.Weight.Bold))
-        p.drawText(badge_r, Qt.AlignCenter, "B" if want_busra else "E")
+        p.drawText(badge_r.adjusted(0, -0.6, 0, -0.6), Qt.AlignCenter, "B" if want_busra else "E")
         p.restore()
 
-    # Right side text area: gap 9px -> x = 10 + 40 + 9 = rect.x() + 59.0
-    bx = rect.x() + 59.0
-    bw = max(20.0, rect.right() - 10.0 - bx)
+    # Right side text area: gap 8px -> x = rect.x() + 58.0
+    bx = rect.x() + 58.0
+    bw = max(20.0, rect.right() - 8.0 - bx)
 
     p.save()
     if has_err:
-        p.setOpacity(0.65)
-        f_err = theme.make_font(11.0, QFont.Weight.Normal)
-        p.setFont(f_err)
-        p.setPen(COLOR_TXT_MUTED)
-        p.drawText(QRectF(bx, rect.y(), bw, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, "Antigravity okunamadı")
-        p.setOpacity(1.0)
+        f_err_title = theme.make_font(11.0, QFont.Weight.Medium)
+        f_err_sub = theme.make_font(10.0, QFont.Weight.Normal)
+        fm_title = QFontMetricsF(f_err_title)
+
+        if bw >= 80.0:
+            p.setFont(f_err_title)
+            p.setPen(COLOR_TXT_PRIMARY)
+            p.drawText(QRectF(bx, rect.y() + 9.0, bw - 14.0, 16.0), Qt.AlignLeft | Qt.AlignVCenter, "Antigravity")
+            p.setFont(f_err_sub)
+            p.setPen(COLOR_BAR_AMBER)
+            p.drawText(QRectF(bx, rect.y() + 27.0, bw - 14.0, 15.0), Qt.AlignLeft | Qt.AlignVCenter, "Okunamadı")
+        else:
+            p.setFont(f_err_title)
+            p.setPen(COLOR_TXT_MUTED)
+            txt = _elided_text(fm_title, "Okunamadı", bw - 12.0)
+            p.drawText(QRectF(bx, rect.y(), bw - 12.0, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, txt)
+
+        # Amber uyari noktasi
         p.setPen(Qt.NoPen)
         p.setBrush(COLOR_BAR_AMBER)
         p.drawEllipse(QPointF(rect.right() - 8.0, rect.top() + 8.0), 3.0, 3.0)
@@ -1434,15 +1508,20 @@ def format_token_count(n: Any) -> str:
 
 
 def draw_opencode_glyph(p: QPainter, rect: QRectF) -> None:
-    """OpenCode terminal glifi (>_) halka göbeğinde zarif beyaz/açık renk."""
+    """OpenCode terminal glifi (>_) halka göbeğinde zarif ve net vektörel form."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing, True)
-    f_glyph = QFont("Consolas")
-    f_glyph.setPixelSize(12)
-    f_glyph.setWeight(QFont.Weight.Bold)
-    p.setFont(f_glyph)
-    p.setPen(COLOR_TXT_PRIMARY)
-    p.drawText(rect, Qt.AlignCenter, ">_")
+    center = rect.center()
+    cx, cy = center.x(), center.y()
+    pen = QPen(COLOR_TXT_PRIMARY, 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    path = QPainterPath()
+    path.moveTo(cx - 5.5, cy - 4.5)
+    path.lineTo(cx - 1.0, cy)
+    path.lineTo(cx - 5.5, cy + 4.5)
+    p.drawPath(path)
+    p.drawLine(QPointF(cx + 2.0, cy + 4.5), QPointF(cx + 6.5, cy + 4.5))
     p.restore()
 
 
@@ -1465,12 +1544,12 @@ def draw_opencode_card(
     if "recent_tokens" in oc_data:
         tokens_io = _as_nonneg(oc_data.get("recent_input")) + _as_nonneg(oc_data.get("recent_output"))
         cost_val = _as_cost(oc_data.get("recent_cost"))
-        sessions = _as_nonneg(oc_data.get("recent_sessions"))
+        sessions = _as_nonneg(oc_data.get("recent_sessions")) or _as_nonneg(oc_data.get("total_sessions"))
         by_model = oc_data.get("recent_by_model") or {}
     else:
         tokens_io = _as_nonneg(oc_data.get("today_input")) + _as_nonneg(oc_data.get("today_output"))
         cost_val = _as_cost(oc_data.get("today_cost"))
-        sessions = _as_nonneg(oc_data.get("today_sessions"))
+        sessions = _as_nonneg(oc_data.get("today_sessions")) or _as_nonneg(oc_data.get("total_sessions"))
         by_model = oc_data.get("today_by_model") or {}
 
     primary_model = "OpenCode"
@@ -1536,31 +1615,32 @@ def draw_opencode_card(
 
     # 1. Satır: %34 DeepSeek [sağda: 339K]
     pct_num = int(round(pct)) if pct is not None else 0
-    pct_str = f"%{pct_num}"
-    pct_col = usage_color(pct_num, COLOR_RING_OUTER)
+    pct_str = f"%{pct_num}" if pct is not None else "—"
+    pct_col = usage_color(pct_num, COLOR_RING_OUTER) if pct is not None else COLOR_TXT_MUTED
 
-    # Claude/AG kartlarıyla aynı sabit yüzde sütunu (tutarsızlığı önler);
-    # dar kart istisnası: etiket sütunda sığmıyorsa ama flush sığıyorsa flush çiz
+    # Claude/AG kartlarıyla aynı sabit yüzde sütunu (col_w = '%100' genişliği) kuralı KORUNMALI
     col_w = QFontMetricsF(f_pct1).horizontalAdvance("%100")
+    col_total = col_w + 6.0
     p.setFont(f_pct1)
     fm_pct = p.fontMetrics()
     wp1 = fm_pct.horizontalAdvance(pct_str)
     wl1_tmp = fm_lbl1.horizontalAdvance(primary_model) if primary_model else 0.0
-    fits_col1 = (not wl1_tmp) or wl1_tmp <= rw - (col_w + 6.0)
-    fits_flush1 = (not wl1_tmp) or wl1_tmp <= rw - wp1 - 6.0
+    fits_col1 = (not wl1_tmp) or wl1_tmp <= (rw - col_total)
+    fits_flush1 = (not wl1_tmp) or wl1_tmp <= (rw - wp1 - 6.0)
     use_flush1 = (not fits_col1) and fits_flush1
     if use_flush1:
         label_x = rx + wp1 + 6.0
         p.setPen(pct_col)
         p.drawText(QPointF(rx, base1), pct_str)
+        space1 = rw - wp1 - 6.0
     else:
-        label_x = rx + col_w + 6.0
+        label_x = rx + col_total
         p.setPen(pct_col)
         p.drawText(QPointF(rx + col_w - wp1, base1), pct_str)
+        space1 = rw - col_total
 
-    rst1 = format_token_count(tokens_io)
+    rst1 = format_token_count(tokens_io) if tokens_io > 0 else ""
     wr1 = fm_meta.horizontalAdvance(rst1) if rst1 else 0.0
-    space1 = (rw - wp1 - 6.0) if use_flush1 else (rw - (col_w + 6.0))
     show_rst1 = bool(rst1) and (space1 - wl1_tmp) >= (wr1 + 6.0)
     label_w1 = wl1_tmp if (show_rst1 or (wl1_tmp and wl1_tmp <= space1)) else max(0.0, space1)
 
@@ -1579,10 +1659,11 @@ def draw_opencode_card(
     # 2. Satır: 3 Oturum [sağda: Ücretsiz ($0)] — etiket sütununa hizalı
     sess_text = f"{sessions} Oturum"
     cost_info = "Ücretsiz" if cost_val == 0.0 else f"${cost_val:.2f}"
-    wl2 = fm_lbl2.horizontalAdvance(sess_text)
+    space2 = max(0.0, rw - (label_x - rx))
+    wl2 = fm_lbl2.horizontalAdvance(sess_text) if sess_text else 0.0
     wr2 = fm_meta.horizontalAdvance(cost_info) if cost_info else 0.0
-    show_rst2 = bool(cost_info) and (rw - wl2) >= (wr2 + 6.0)
-    label_w2 = wl2 if (show_rst2 or wl2 <= rw) else rw
+    show_rst2 = bool(cost_info) and (space2 - wl2) >= (wr2 + 6.0)
+    label_w2 = wl2 if (show_rst2 or wl2 <= space2) else space2
 
     if sess_text and label_w2 >= 14.0:
         elided_sess = _elided_text(fm_lbl2, sess_text, label_w2)
@@ -1689,6 +1770,7 @@ def draw_sys_card(
     cx_ram = rect.x() + rect.width() - pad_x - size / 2.0
 
     f_num = theme.make_font(11.0, QFont.Weight.DemiBold, tabular=True)
+    f_num_sm = theme.make_font(10.0, QFont.Weight.DemiBold, tabular=True)
     f_lbl = theme.make_font(9.0, QFont.Weight.DemiBold, letter_spacing=0.5)
 
     rings = [
@@ -1696,11 +1778,13 @@ def draw_sys_card(
         (cx_ram, r_val, COLOR_RAM_BAR, True, "RAM"),
     ]
 
+    pen_track = QPen(COLOR_RING_TRACK, stroke, Qt.SolidLine, Qt.RoundCap)
+
     for cx, val, base_col, is_ram, lbl in rings:
         arc_rect = QRectF(cx - r, cy - r, 2.0 * r, 2.0 * r)
 
-        # 1. Background full track circle (rgba(255, 255, 255, 0.13))
-        p.setPen(_PEN_SYS_TRACK)
+        # 1. Background full track circle (sol kartlarla aynı iz dili)
+        p.setPen(pen_track)
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(arc_rect)
 
@@ -1714,16 +1798,18 @@ def draw_sys_card(
             p.drawArc(arc_rect, 90 * 16, span_angle)
 
         # 3. Percentage number centred inside (no % sign, '–' for missing/err)
-        p.setFont(f_num)
-        p.setPen(fg_col if (val is not None and val > 0.0) else COLOR_TXT_PRIMARY)
         num_str = f"{int(round(val))}" if val is not None else "–"
-        text_rect = QRectF(cx - r, cy - r - 0.5, 2.0 * r, 2.0 * r)
+        p.setFont(f_num_sm if len(num_str) >= 3 else f_num)
+        p.setPen(fg_col if (val is not None and val > 0.0) else COLOR_TXT_PRIMARY)
+        text_y_off = -1.2 if val is None else -0.5
+        text_rect = QRectF(cx - r, cy - r + text_y_off, 2.0 * r, 2.0 * r)
         p.drawText(text_rect, Qt.AlignCenter, num_str)
 
-        # 4. Alt etiket: CPU / RAM (8.5 px, halkaya ortalı, sönük gri)
+        # 4. Alt etiket: CPU / RAM (halkaya ortalı, halka altı ve kart tabanı arasında dengeli)
         p.setFont(f_lbl)
         p.setPen(COLOR_TXT_MUTED)
-        lbl_rect = QRectF(cx - size / 2.0 - 2.0, rect.y() + 39.0, size + 4.0, 10.0)
+        y_lbl = cy + size / 2.0
+        lbl_rect = QRectF(cx - size / 2.0 - 4.0, y_lbl, size + 8.0, rect.bottom() - y_lbl)
         p.drawText(lbl_rect, Qt.AlignCenter, lbl)
 
     p.restore()
@@ -2031,15 +2117,15 @@ def measure_clock_v1_width(
     fm_date = _get_fm(f_date)
     w_time = _text_width(fm_time, time_str)
     w_date = _text_width(fm_date, date_str)
-    w_left = max(w_time, w_date)
+    w_clock_text = max(w_time, w_date)
 
-    w = 10.0 + w_left  # 10px left padding
+    w = 10.0 + w_clock_text  # 10px left padding + clock/date text
     if has_weather and temp_str:
         f_temp = theme.make_font(12.0, QFont.Weight.DemiBold)
         fm_temp = _get_fm(f_temp)
         w_temp = _text_width(fm_temp, temp_str)
-        # 10px gap + 1px separator + 10px gap + 14px icon + 5px gap + temp_w (v24: ayraç iki yana eşit)
-        w += 10.0 + 1.0 + 10.0 + 14.0 + 5.0 + w_temp
+        # 14px icon + 5px gap + temp_w + 10px gap + 1px separator + 10px gap
+        w += 14.0 + 5.0 + w_temp + 10.0 + 1.0 + 10.0
     w += 10.0  # 10px right padding
     return float(math.ceil(w))
 
@@ -2056,9 +2142,9 @@ def draw_clock_v1(
 ) -> Tuple[QRectF, Optional[QRectF]]:
     """Renders Clock V1 'Sade' without box or background.
 
-    Left (if weather available): 14px weather icon + 5px + temp '16°' 12px/600 on same baseline,
+    Left (if weather available): 14px weather icon + 5px + temp '16°' 12px/600 on harmonized baseline,
       1px separator rgba(255,255,255,52) 24px high.
-    Right: time 'HH:MM' 13.5px/600 tabular, 2px gap,
+    Right: time 'HH:MM' 13.5px/600 tabular, 2.5px gap,
       date 'Sal, 27 Ekim' 10.5px Regular; both aligned to exact same left x.
 
     Hover: rounded rect rgba(255,255,255,.07) radius 11 behind whole clock.
@@ -2090,9 +2176,6 @@ def draw_clock_v1(
 
     fm_time = _get_fm(f_time)
     fm_date = _get_fm(f_date)
-    w_time = _text_width(fm_time, time_str)
-    w_date = _text_width(fm_date, date_str)
-    w_left = max(w_time, w_date)
 
     cur_x = rect.x() + 10.0
     r_wx: Optional[QRectF] = None
@@ -2105,8 +2188,26 @@ def draw_clock_v1(
         fm_temp = _get_fm(f_temp)
         w_temp = _text_width(fm_temp, temp_str)
         temp_base = cy + fm_temp.capHeight() / 2.0
-        # İkon ile sıcaklık yazısı aynı baseline'da, aralarında 5px (4-6px)
-        icon_y = temp_base - 14.0 + _weather_icon_dy(wx_icon or "cloud")
+
+        # İkon ile sıcaklık yazısı optik baseline uyumu:
+        # Bulut gövdesi tüm hava durumlarında aynı yatay hatta sabitlenir;
+        # yağış/yıldırım/sis sarkmaları tipografik uzantı gibi doğal taşar,
+        # güneş ise rakamların optik merkeziyle dengelenir.
+        target_cloud_base = temp_base - 1.5
+        if wx_icon == "cloud":
+            cy_box = target_cloud_base - 3.82
+        elif wx_icon == "partly":
+            cy_box = target_cloud_base - 4.20
+        elif wx_icon in ("rain", "drizzle", "snow", "storm"):
+            cy_box = target_cloud_base - 1.20
+        elif wx_icon == "fog":
+            cy_box = target_cloud_base - 0.58
+        elif wx_icon == "sun":
+            cy_box = cy - 0.5
+        else:
+            cy_box = cy
+
+        icon_y = cy_box - 7.0
         r_icon = QRectF(cur_x, icon_y, 14.0, 14.0)
         p.save()
         p.setOpacity(0.85)
@@ -2123,9 +2224,9 @@ def draw_clock_v1(
         # Hava durumu tıklama alanı: sol kenardan ayırıcıya kadar
         r_wx = QRectF(wx_left, rect.y(), max(0.0, sep_x + 1.0 - wx_left), rect.height())
 
-    # Saat üst satır Semibold/13-14px, Tarih alt satır Regular 10.5px
-    # aralarını 2px nefesli hizala; iki footer satırının sol kenarları BİREBİR AYNI x'te olacak.
-    gap_td = 2.0
+    # Saat üst satır Semibold/13.5px, Tarih alt satır Regular 10.5px
+    # aralarını 2.5px nefesli hizala; iki footer satırının sol kenarları BİREBİR AYNI x'te olacak.
+    gap_td = 2.5
     cap_t = fm_time.capHeight()
     cap_d = fm_date.capHeight()
     total_h = cap_t + gap_td + cap_d
@@ -2133,13 +2234,21 @@ def draw_clock_v1(
     date_base = time_base + gap_td + cap_d
     text_x = cur_x
 
+    # Dar alanda taşmayı önle: önce ikincil bilgi (tarih) elide edilir
+    avail_w = max(0.0, rect.right() - 10.0 - text_x)
+    w_time = _text_width(fm_time, time_str)
+    w_date = _text_width(fm_date, date_str)
+
     p.setFont(f_time)
     p.setPen(Qt.white)
-    p.drawText(QPointF(text_x, time_base), time_str)
+    time_to_draw = _elided_text(fm_time, time_str, avail_w) if (w_time > avail_w and avail_w > 0.0) else time_str
+    p.drawText(QPointF(text_x, time_base), time_to_draw)
 
     p.setFont(f_date)
-    p.setPen(QColor(235, 238, 245, int(255 * 0.70)))
-    p.drawText(QPointF(text_x, date_base), date_str)
+    p.setPen(COLOR_TXT_MUTED)
+    if avail_w >= 18.0:
+        date_to_draw = _elided_text(fm_date, date_str, avail_w) if w_date > avail_w else date_str
+        p.drawText(QPointF(text_x, date_base), date_to_draw)
 
     p.restore()
     return rect, r_wx
@@ -2447,7 +2556,8 @@ def draw_battery_pill(
     Üzerine gelince / panel açıkken yumuşak kart zemini.
     Tüm kart tek isabet alanıdır; dikdörtgen döndürülür.
     """
-    col = battery_color(percent, charging)
+    is_ac = charging or on_ac_full
+    col = battery_color(percent, is_ac)
     lvl = 100.0 if percent is None else max(0.0, min(100.0, float(percent)))
     cx = rect.center().x()
     # 52 px kart yüksekliğinde 34 px halka; 32 px gibi dar bir rect geçilirse sığacak çap kullanılır
@@ -2460,6 +2570,7 @@ def draw_battery_pill(
 
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
     if hovered:
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
@@ -2476,15 +2587,15 @@ def draw_battery_pill(
         p.setBrush(QColor(255, 255, 255, 30))
         p.drawPath(_rounded_path(rect, CARD_RADIUS))
 
-    # Arka iz + aktif yay (12 yönünden saat yönünde)
-    p.setPen(QPen(COLOR_RING_TRACK, stroke, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
+    # Arka iz + aktif yay (12 yönünden saat yönünde, sol kartlarla aynı iz dili)
+    p.setPen(QPen(COLOR_RING_TRACK, stroke, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawEllipse(r_ring)
     if lvl > 0.0:
         p.setPen(QPen(col, stroke, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         p.drawArc(r_ring, 90 * 16, -int(round((lvl / 100.0) * 360 * 16)))
 
-    if charging or on_ac_full:
+    if is_ac:
         bolt_w = max(6.0, dia * (10.0 / 34.0))
         bolt_h = max(9.0, dia * (16.0 / 34.0))
         bolt = _get_bolt_path(cx, cy, bolt_w, bolt_h)
@@ -2492,11 +2603,15 @@ def draw_battery_pill(
         p.setBrush(QColor(panel_style.OK))
         p.drawPath(bolt)
     else:
-        f = theme.make_font(11.0 if dia >= 30.0 else 9.5, QFont.Weight.DemiBold, tabular=True)
-        p.setFont(f)
-        p.setPen(COLOR_TXT_PRIMARY)
         txt = f"{int(round(lvl))}" if percent is not None else "—"
-        p.drawText(r_ring, Qt.AlignmentFlag.AlignCenter, txt)
+        f_sz = (10.0 if dia >= 30.0 else 9.0) if len(txt) >= 3 else (11.0 if dia >= 30.0 else 9.0)
+        f = theme.make_font(f_sz, QFont.Weight.DemiBold, tabular=True)
+        p.setFont(f)
+        txt_col = col if (percent is not None and percent <= 20) else COLOR_TXT_PRIMARY
+        p.setPen(txt_col)
+        text_y_off = -1.2 if percent is None else -0.5
+        text_rect = QRectF(cx - r, cy - r + text_y_off, 2.0 * r, 2.0 * r)
+        p.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, txt)
     p.restore()
     return QRectF(rect)
 
@@ -2522,6 +2637,7 @@ def draw_quick_settings_pill(
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
 
+    # 1. Taban kapsül
     p.setPen(QPen(QColor(255, 255, 255, int(255 * 0.08)), 1.0))
     p.setBrush(QColor(255, 255, 255, int(255 * 0.065)))
     p.drawRoundedRect(rect, 10.0, 10.0)
@@ -2537,88 +2653,82 @@ def draw_quick_settings_pill(
         r_spk = QRectF(rect.x() + rect.width() / 2.0, rect.y(), rect.width() / 2.0, rect.height())
     mid_x = r_spk.x()
 
-    def _inner(r: QRectF, first: bool, last: bool) -> QRectF:
-        return r.adjusted(3.0 if first else 2.0, 3.0, -3.0 if last else -2.0, -3.0)
-
-    parts = [("bright", r_sun, True, False), ("vol", r_spk, False, not show_bat)]
+    # 2. Hover / aktif bölme vurgusu (kapsül kavisini pürüzsüz takip eder, iç kutu eklemez)
+    pill_clip = QPainterPath()
+    pill_clip.addRoundedRect(rect, 10.0, 10.0)
+    p.save()
+    p.setClipPath(pill_clip)
+    parts = [("bright", r_sun), ("vol", r_spk)]
     if show_bat:
-        parts.append(("bat", r_bat, False, True))
-    for key, r, first, last in parts:
+        parts.append(("bat", r_bat))
+    for key, r in parts:
         if active_part == key:
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, int(255 * 0.15)))
-            p.drawRoundedRect(_inner(r, first, last), 6.0, 6.0)
+            p.fillRect(r, QColor(255, 255, 255, int(255 * 0.16)))
         elif hovered_part == key:
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
-            p.drawRoundedRect(_inner(r, first, last), 6.0, 6.0)
+            p.fillRect(r, QColor(255, 255, 255, int(255 * 0.10)))
+    p.restore()
 
-    # ayırıcılar (1 x 16, alfa 52 tek stil)
-    div_y = rect.center().y() - 8.0
+    # 3. Ayırıcılar (boşta sakin, aktif/hover bölme kenarında otomatik gizlenir)
+    div_y = rect.center().y() - 7.0
     p.setPen(QPen(CARD_DIVIDER, 1.0))
-    p.drawLine(QPointF(mid_x, div_y), QPointF(mid_x, div_y + 16.0))
-    if show_bat:
-        p.drawLine(QPointF(r_bat.x(), div_y), QPointF(r_bat.x(), div_y + 16.0))
+    if not (hovered_part in ("bright", "vol") or active_part in ("bright", "vol")):
+        p.drawLine(QPointF(mid_x, div_y), QPointF(mid_x, div_y + 14.0))
+    if r_bat is not None and not (hovered_part in ("vol", "bat") or active_part in ("vol", "bat")):
+        p.drawLine(QPointF(r_bat.x(), div_y), QPointF(r_bat.x(), div_y + 14.0))
 
-    # 4. Draw Sun glyph (centered in r_sun, 18px glyph box)
-    # Fluent Sun: viewBox 0 0 20 20, center (10,10) r=3.6, 8 radial lines
+    # 4. Sun glifi (18px kutu, optik dengeli dolu çekirdek ve 1.7px eşit çizgi)
     sun_col = QColor(255, 255, 255) if (hovered_part == "bright" or active_part == "bright") else QColor(255, 255, 255, int(255 * 0.85))
     p.save()
     p.translate(r_sun.center().x(), r_sun.center().y())
     p.scale(18.0 / 20.0, 18.0 / 20.0)
     p.translate(-10.0, -10.0)
-    pen_sun = QPen(sun_col, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    pen_sun = QPen(sun_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen_sun)
+    p.setBrush(sun_col)
+    p.drawEllipse(QRectF(10.0 - 3.3, 10.0 - 3.3, 6.6, 6.6))
     p.setBrush(Qt.NoBrush)
-    p.drawEllipse(QRectF(10.0 - 3.6, 10.0 - 3.6, 7.2, 7.2))
-    p.drawLine(QPointF(10.0, 2.0), QPointF(10.0, 4.2))
-    p.drawLine(QPointF(10.0, 15.8), QPointF(10.0, 18.0))
-    p.drawLine(QPointF(2.0, 10.0), QPointF(4.2, 10.0))
-    p.drawLine(QPointF(15.8, 10.0), QPointF(18.0, 10.0))
-    p.drawLine(QPointF(4.34, 4.34), QPointF(5.9, 5.9))
-    p.drawLine(QPointF(14.1, 14.1), QPointF(15.66, 15.66))
-    p.drawLine(QPointF(4.34, 15.66), QPointF(5.9, 14.1))
-    p.drawLine(QPointF(14.1, 5.9), QPointF(15.66, 4.34))
+    p.drawLine(QPointF(10.0, 2.2), QPointF(10.0, 5.0))
+    p.drawLine(QPointF(10.0, 15.0), QPointF(10.0, 17.8))
+    p.drawLine(QPointF(2.2, 10.0), QPointF(5.0, 10.0))
+    p.drawLine(QPointF(15.0, 10.0), QPointF(17.8, 10.0))
+    p.drawLine(QPointF(4.48, 4.48), QPointF(6.46, 6.46))
+    p.drawLine(QPointF(15.52, 15.52), QPointF(13.54, 13.54))
+    p.drawLine(QPointF(4.48, 15.52), QPointF(6.46, 13.54))
+    p.drawLine(QPointF(15.52, 4.48), QPointF(13.54, 6.46))
     p.restore()
 
-    # 5. Draw Speaker glyph (centered in r_spk, 18px glyph box)
-    # Fluent Speaker: viewBox 0 0 20 20, path d="M4 7.2h2.8l4.2-3.7v13l-4.2-3.7H4V7.2z" fill="currentColor"
-    # Waves: arc 1: M14.2 6.5c1.6 1.8 1.6 4.8 0 6.6
-    #        arc 2: M16.6 4.2c2.8 3.1 2.8 7.9 0 11
+    # 5. Speaker glifi (güneşle eşit optik ağırlık: %86 ölçek, 1.7px eşit çizgi)
     spk_col = QColor(255, 255, 255) if (hovered_part == "vol" or active_part == "vol") else QColor(255, 255, 255, int(255 * 0.85))
     p.save()
     p.translate(r_spk.center().x(), r_spk.center().y())
-    p.scale(18.0 / 20.0, 18.0 / 20.0)
-    p.translate(-10.0, -10.0)
-    pen_spk = QPen(spk_col, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.scale(17.2 / 20.0, 17.2 / 20.0)
+    p.translate(-10.2, -10.0)
+    pen_spk = QPen(spk_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen_spk)
     p.setBrush(spk_col)
 
     spk_body = QPainterPath()
-    spk_body.moveTo(4.0, 7.2)
-    spk_body.lineTo(6.8, 7.2)
-    spk_body.lineTo(11.0, 3.5)
-    spk_body.lineTo(11.0, 16.5)
-    spk_body.lineTo(6.8, 12.8)
-    spk_body.lineTo(4.0, 12.8)
+    spk_body.moveTo(4.4, 7.4)
+    spk_body.lineTo(7.0, 7.4)
+    spk_body.lineTo(11.0, 3.8)
+    spk_body.lineTo(11.0, 16.2)
+    spk_body.lineTo(7.0, 12.6)
+    spk_body.lineTo(4.4, 12.6)
     spk_body.closeSubpath()
     p.drawPath(spk_body)
 
     if vol_muted:
-        # Diagonal slash across speaker
         p.setBrush(Qt.NoBrush)
-        p.drawLine(QPointF(3.0, 3.0), QPointF(17.0, 17.0))
+        p.drawLine(QPointF(3.2, 3.2), QPointF(16.8, 16.8))
     else:
         p.setBrush(Qt.NoBrush)
         lvl = max(0.0, min(100.0, float(vol_level)))
         if lvl > 0.0:
-            # 1 sound wave: M14.2 6.5c1.6 1.8 1.6 4.8 0 6.6
             w1 = QPainterPath()
             w1.moveTo(14.2, 6.5)
             w1.cubicTo(15.8, 8.3, 15.8, 11.3, 14.2, 13.1)
             p.drawPath(w1)
         if lvl >= 50.0:
-            # 2nd sound wave: M16.6 4.2c2.8 3.1 2.8 7.9 0 11
             w2 = QPainterPath()
             w2.moveTo(16.6, 4.2)
             w2.cubicTo(19.4, 7.3, 19.4, 12.1, 16.6, 15.2)
@@ -2667,7 +2777,7 @@ def draw_action_button(
     # (güncellemeler simgesi .65) ve aynı inceliktedir; üzerine gelince tam beyaz.
     rest_a = 0.65 if kind == "tray" else 0.78
     glyph_col = QColor(255, 255, 255) if (hover or active) else QColor(255, 255, 255, int(255 * rest_a))
-    pen = QPen(glyph_col, 1.7 if kind == "tray" else 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    pen = QPen(glyph_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.NoBrush)
 
@@ -2675,11 +2785,11 @@ def draw_action_button(
     cy = rect.center().y()
 
     if kind == "tray":
-        # Chevron-up (18px glyph box, dikeyde tam ortalı)
+        # Chevron-up (18px glyph box, optik dikey merkezleme: üst tepe cy - 3.25, taban cy + 2.25)
         path_chv = QPainterPath()
-        path_chv.moveTo(cx - 5.5, cy + 2.75)
-        path_chv.lineTo(cx, cy - 2.75)
-        path_chv.lineTo(cx + 5.5, cy + 2.75)
+        path_chv.moveTo(cx - 5.5, cy + 2.25)
+        path_chv.lineTo(cx, cy - 3.25)
+        path_chv.lineTo(cx + 5.5, cy + 2.25)
         p.drawPath(path_chv)
 
     elif kind == "bright":
@@ -2776,7 +2886,8 @@ def draw_tray_column(
     p.scale(14.0 / 24.0, 14.0 / 24.0)
     p.translate(-12.0, -12.0)
 
-    pen = QPen(QColor(255, 255, 255, int(255 * 0.85)), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    spk_col = QColor(255, 255, 255) if hovered_btn == "spk" else QColor(255, 255, 255, int(255 * 0.85))
+    pen = QPen(spk_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.NoBrush)
 
@@ -2810,14 +2921,15 @@ def draw_tray_column(
     p.scale(14.0 / 24.0, 14.0 / 24.0)
     p.translate(-12.0, -12.0)
 
-    pen = QPen(QColor(255, 255, 255, int(255 * 0.85)), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    chv_col = QColor(255, 255, 255) if hovered_btn == "chv" else QColor(255, 255, 255, int(255 * 0.85))
+    pen = QPen(chv_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.NoBrush)
 
     chv_path = QPainterPath()
-    chv_path.moveTo(6, 15)
-    chv_path.lineTo(12, 9)
-    chv_path.lineTo(18, 15)
+    chv_path.moveTo(6, 14.5)
+    chv_path.lineTo(12, 8.5)
+    chv_path.lineTo(18, 14.5)
     p.drawPath(chv_path)
     p.restore()
 
