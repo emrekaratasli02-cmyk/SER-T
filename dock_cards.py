@@ -1434,15 +1434,20 @@ def format_token_count(n: Any) -> str:
 
 
 def draw_opencode_glyph(p: QPainter, rect: QRectF) -> None:
-    """OpenCode terminal glifi (>_) halka göbeğinde zarif beyaz/açık renk."""
+    """OpenCode terminal glifi (>_) halka göbeğinde zarif ve net vektörel form."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing, True)
-    f_glyph = QFont("Consolas")
-    f_glyph.setPixelSize(12)
-    f_glyph.setWeight(QFont.Weight.Bold)
-    p.setFont(f_glyph)
-    p.setPen(COLOR_TXT_PRIMARY)
-    p.drawText(rect, Qt.AlignCenter, ">_")
+    center = rect.center()
+    cx, cy = center.x(), center.y()
+    pen = QPen(COLOR_TXT_PRIMARY, 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    path = QPainterPath()
+    path.moveTo(cx - 5.5, cy - 4.5)
+    path.lineTo(cx - 1.0, cy)
+    path.lineTo(cx - 5.5, cy + 4.5)
+    p.drawPath(path)
+    p.drawLine(QPointF(cx + 2.0, cy + 4.5), QPointF(cx + 6.5, cy + 4.5))
     p.restore()
 
 
@@ -1465,12 +1470,12 @@ def draw_opencode_card(
     if "recent_tokens" in oc_data:
         tokens_io = _as_nonneg(oc_data.get("recent_input")) + _as_nonneg(oc_data.get("recent_output"))
         cost_val = _as_cost(oc_data.get("recent_cost"))
-        sessions = _as_nonneg(oc_data.get("recent_sessions"))
+        sessions = _as_nonneg(oc_data.get("recent_sessions")) or _as_nonneg(oc_data.get("total_sessions"))
         by_model = oc_data.get("recent_by_model") or {}
     else:
         tokens_io = _as_nonneg(oc_data.get("today_input")) + _as_nonneg(oc_data.get("today_output"))
         cost_val = _as_cost(oc_data.get("today_cost"))
-        sessions = _as_nonneg(oc_data.get("today_sessions"))
+        sessions = _as_nonneg(oc_data.get("today_sessions")) or _as_nonneg(oc_data.get("total_sessions"))
         by_model = oc_data.get("today_by_model") or {}
 
     primary_model = "OpenCode"
@@ -1536,31 +1541,32 @@ def draw_opencode_card(
 
     # 1. Satır: %34 DeepSeek [sağda: 339K]
     pct_num = int(round(pct)) if pct is not None else 0
-    pct_str = f"%{pct_num}"
-    pct_col = usage_color(pct_num, COLOR_RING_OUTER)
+    pct_str = f"%{pct_num}" if pct is not None else "—"
+    pct_col = usage_color(pct_num, COLOR_RING_OUTER) if pct is not None else COLOR_TXT_MUTED
 
-    # Claude/AG kartlarıyla aynı sabit yüzde sütunu (tutarsızlığı önler);
-    # dar kart istisnası: etiket sütunda sığmıyorsa ama flush sığıyorsa flush çiz
+    # Claude/AG kartlarıyla aynı sabit yüzde sütunu (col_w = '%100' genişliği) kuralı KORUNMALI
     col_w = QFontMetricsF(f_pct1).horizontalAdvance("%100")
+    col_total = col_w + 6.0
     p.setFont(f_pct1)
     fm_pct = p.fontMetrics()
     wp1 = fm_pct.horizontalAdvance(pct_str)
     wl1_tmp = fm_lbl1.horizontalAdvance(primary_model) if primary_model else 0.0
-    fits_col1 = (not wl1_tmp) or wl1_tmp <= rw - (col_w + 6.0)
-    fits_flush1 = (not wl1_tmp) or wl1_tmp <= rw - wp1 - 6.0
+    fits_col1 = (not wl1_tmp) or wl1_tmp <= (rw - col_total)
+    fits_flush1 = (not wl1_tmp) or wl1_tmp <= (rw - wp1 - 6.0)
     use_flush1 = (not fits_col1) and fits_flush1
     if use_flush1:
         label_x = rx + wp1 + 6.0
         p.setPen(pct_col)
         p.drawText(QPointF(rx, base1), pct_str)
+        space1 = rw - wp1 - 6.0
     else:
-        label_x = rx + col_w + 6.0
+        label_x = rx + col_total
         p.setPen(pct_col)
         p.drawText(QPointF(rx + col_w - wp1, base1), pct_str)
+        space1 = rw - col_total
 
-    rst1 = format_token_count(tokens_io)
+    rst1 = format_token_count(tokens_io) if tokens_io > 0 else ""
     wr1 = fm_meta.horizontalAdvance(rst1) if rst1 else 0.0
-    space1 = (rw - wp1 - 6.0) if use_flush1 else (rw - (col_w + 6.0))
     show_rst1 = bool(rst1) and (space1 - wl1_tmp) >= (wr1 + 6.0)
     label_w1 = wl1_tmp if (show_rst1 or (wl1_tmp and wl1_tmp <= space1)) else max(0.0, space1)
 
@@ -1579,10 +1585,11 @@ def draw_opencode_card(
     # 2. Satır: 3 Oturum [sağda: Ücretsiz ($0)] — etiket sütununa hizalı
     sess_text = f"{sessions} Oturum"
     cost_info = "Ücretsiz" if cost_val == 0.0 else f"${cost_val:.2f}"
-    wl2 = fm_lbl2.horizontalAdvance(sess_text)
+    space2 = max(0.0, rw - (label_x - rx))
+    wl2 = fm_lbl2.horizontalAdvance(sess_text) if sess_text else 0.0
     wr2 = fm_meta.horizontalAdvance(cost_info) if cost_info else 0.0
-    show_rst2 = bool(cost_info) and (rw - wl2) >= (wr2 + 6.0)
-    label_w2 = wl2 if (show_rst2 or wl2 <= rw) else rw
+    show_rst2 = bool(cost_info) and (space2 - wl2) >= (wr2 + 6.0)
+    label_w2 = wl2 if (show_rst2 or wl2 <= space2) else space2
 
     if sess_text and label_w2 >= 14.0:
         elided_sess = _elided_text(fm_lbl2, sess_text, label_w2)
