@@ -315,6 +315,66 @@ def launch(path: str, args: Optional[List[str]] = None) -> bool:
 # 5. DRAWING PRIMITIVES
 # ==============================================================================
 
+_OPTICAL_SIZE_CACHE: Dict[int, Tuple[float, float]] = {}
+
+
+def _optical_icon_size(pixmap: Optional[QPixmap], base_size: float = 32.0) -> Tuple[float, float]:
+    """Hesaplanan optik boyut: Katı kare/squircle ikonlar (WhatsApp, Excel) dairesel
+    ikonlara (Chrome) göre %25 daha fazla optik alan kaplar. Bu nedenle katı kareler ~29.8px,
+    daireler ve yatay/klasör ikonları 32px olarak dengelenir."""
+    if pixmap is None or pixmap.isNull():
+        return (base_size, base_size)
+    key = pixmap.cacheKey()
+    cached = _OPTICAL_SIZE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    pw, ph = pixmap.width(), pixmap.height()
+    if pw <= 0 or ph <= 0:
+        return (base_size, base_size)
+
+    try:
+        img = pixmap.toImage()
+        step = max(1, min(pw, ph) // 32)
+        min_x, max_x = pw, -1
+        min_y, max_y = ph, -1
+        filled = 0
+
+        for y in range(0, ph, step):
+            for x in range(0, pw, step):
+                if img.pixelColor(x, y).alpha() > 25:
+                    filled += 1
+                    if x < min_x: min_x = x
+                    if x > max_x: max_x = x
+                    if y < min_y: min_y = y
+                    if y > max_y: max_y = y
+
+        if max_x < min_x or max_y < min_y:
+            res = (base_size, base_size)
+        else:
+            cw = max_x - min_x + 1
+            ch = max_y - min_y + 1
+            aspect = cw / max(1, ch)
+            bbox_samples = ((cw // step) + 1) * ((ch // step) + 1)
+            fill_ratio = filled / max(1, bbox_samples)
+
+            if 0.88 <= aspect <= 1.14 and fill_ratio >= 0.82:
+                target = round(base_size * 0.93, 1)  # ~29.8px
+                res = (target, target)
+            elif aspect > 1.15:
+                target_h = round(min(base_size, base_size / aspect), 1)
+                res = (base_size, target_h)
+            elif aspect < 0.85:
+                target_w = round(min(base_size, base_size * aspect), 1)
+                res = (target_w, base_size)
+            else:
+                res = (base_size, base_size)
+    except Exception:
+        res = (base_size, base_size)
+
+    _OPTICAL_SIZE_CACHE[key] = res
+    return res
+
 
 def draw_tile(
     p: QPainter,
@@ -348,7 +408,7 @@ def draw_tile(
     is_running = bool(tile.get("running", False)) or (dot_count is not None and dot_count > 0)
     is_active = bool(tile.get("active", False))
 
-    # Draw rounded tile hover fill, active recessed well, or orange attention flash
+    # Draw rounded tile hover fill, active capsule, or orange attention flash
     if flash_phase is not None and flash_phase > 0.0:
         # Turuncu dikkat parlaması (RGBA 255, 140, 0)
         flash_alpha = int(255 * 0.35 * max(0.0, min(1.0, flash_phase)))
@@ -357,26 +417,20 @@ def draw_tile(
         p.setPen(QPen(QColor(255, 160, 20, int(255 * 0.70 * flash_phase)), 1.2))
         p.drawPath(tile_path)
     elif is_active:
-        # v28: Aktif pencere için belirgin cam kapsül + 1px specular kenarlık (Threads / ExtraDock vurgusu)
+        # Aktif pencere: zarif cam kapsül (kutusuz dille uyumlu)
         tile_path = theme.rounded_path(rect, TILE_RADIUS)
-        act_grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-        act_grad.setColorAt(0.0, QColor(255, 255, 255, int(255 * (0.16 + 0.04 * eff_hover))))
-        act_grad.setColorAt(1.0, QColor(255, 255, 255, int(255 * (0.09 + 0.03 * eff_hover))))
-        p.fillPath(tile_path, act_grad)
-        p.setPen(QPen(QColor(255, 255, 255, 42), 1.0))
+        p.fillPath(tile_path, QColor(255, 255, 255, int(255 * (0.08 + 0.04 * eff_hover))))
+        p.setPen(QPen(QColor(255, 255, 255, 26), 0.8))
         p.setBrush(Qt.NoBrush)
         p.drawPath(theme.rounded_path(rect.adjusted(0.5, 0.5, -0.5, -0.5), TILE_RADIUS - 0.5))
     elif eff_hover > 0.0:
-        hover_bg = QColor(255, 255, 255, int(255 * 0.09 * eff_hover))
+        hover_bg = QColor(255, 255, 255, int(255 * 0.10 * eff_hover))
         tile_path = theme.rounded_path(rect, TILE_RADIUS)
         p.fillPath(tile_path, hover_bg)
-    elif is_running:
-        # Açık ama arka plandaki uygulama: hafif gömme yuva (Recessed Well)
-        well_path = theme.rounded_path(rect, TILE_RADIUS)
-        p.fillPath(well_path, QColor(255, 255, 255, 8))
-        p.setPen(QPen(QColor(255, 255, 255, 16), 0.8))
+        p.setPen(QPen(QColor(255, 255, 255, int(255 * 0.08 * eff_hover)), 0.8))
         p.setBrush(Qt.NoBrush)
         p.drawPath(theme.rounded_path(rect.adjusted(0.5, 0.5, -0.5, -0.5), TILE_RADIUS - 0.5))
+    # Rölantide kutusuz: Açık arka plan veya çerçeve yok
 
     # Draw icon with lift and scale
     p.save()
@@ -392,24 +446,26 @@ def draw_tile(
         p.scale(tot_scale, tot_scale)
     p.translate(-cx, -(cy + lift_y))
 
-    # Icon (32 logical px centered)
+    # Icon (optik dengeli ve ortalı)
     ICON_SIZE_RENDER = 32.0
+    opt_w, opt_h = _optical_icon_size(pixmap, ICON_SIZE_RENDER)
     icon_rect = QRectF(
-        cx - ICON_SIZE_RENDER / 2.0,
-        cy + lift_y - ICON_SIZE_RENDER / 2.0,
-        ICON_SIZE_RENDER,
-        ICON_SIZE_RENDER,
+        cx - opt_w / 2.0,
+        cy + lift_y - opt_h / 2.0,
+        opt_w,
+        opt_h,
     )
     if pixmap is not None and not pixmap.isNull():
         theme.draw_icon_crisp(p, pixmap, icon_rect)
     else:
         # High quality fallback icon with app initial
-        fb_path = theme.rounded_path(icon_rect, 6.0)
+        fb_rect = QRectF(cx - 15.0, cy + lift_y - 15.0, 30.0, 30.0)
+        fb_path = theme.rounded_path(fb_rect, 6.0)
         p.fillPath(fb_path, QColor(45, 52, 68))
         p.setFont(theme.make_font(12.0, QFont.Weight.Bold))
         p.setPen(Qt.white)
         name_str = tile.get("name") or tile.get("exe") or "A"
-        p.drawText(icon_rect, Qt.AlignCenter, name_str[:1].upper())
+        p.drawText(fb_rect, Qt.AlignCenter, name_str[:1].upper())
 
     p.restore()
 
@@ -423,7 +479,7 @@ def draw_tile(
         p.setFont(f_b)
         fm_b = QFontMetricsF(f_b)
         txt_w = fm_b.horizontalAdvance(badge_str)
-        bw = max(15.0, txt_w + 7.0)
+        bw = max(14.0, txt_w + 6.0)
         bh = 14.0
         bx = icon_rect.right() - bw + 4.0
         by = icon_rect.top() - 3.0
@@ -433,7 +489,7 @@ def draw_tile(
         is_dl = badge_str.startswith("↓")
         badge_bg = QColor(10, 132, 255) if is_dl else QColor(255, 59, 48)
         p.fillPath(b_path, badge_bg)
-        p.setPen(QPen(QColor(255, 255, 255, 220), 0.8))
+        p.setPen(QPen(QColor(13, 15, 19, 220), 1.0))
         p.drawPath(b_path)
         p.setPen(QColor(255, 255, 255))
         p.drawText(badge_box, Qt.AlignCenter, badge_str)
@@ -449,32 +505,34 @@ def draw_tile(
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         if is_active:
-            # Öndeki aktif uygulama: Işıldayan 14x3 beyaz hap gösterge
-            pill_w = 14.0
-            pill_h = 3.0
+            # Öndeki aktif uygulama: Işıldayan 13x2.8 beyaz hap gösterge
+            pill_w = 13.0
+            pill_h = 2.8
             pill_rect = QRectF(cx - pill_w / 2.0, ind_y - pill_h / 2.0, pill_w, pill_h)
-            p.fillPath(theme.rounded_path(pill_rect, 1.5), QColor(255, 255, 255, 255))
-            # Hafif aydınlık hare
-            p.setPen(QPen(QColor(255, 255, 255, 45), 0.8))
-            p.drawPath(theme.rounded_path(pill_rect.adjusted(-0.5, -0.5, 0.5, 0.5), 2.0))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, 240))
+            p.drawRoundedRect(pill_rect, 1.4, 1.4)
+            p.setPen(QPen(QColor(255, 255, 255, 50), 0.8))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(pill_rect.adjusted(-0.4, -0.4, 0.4, 0.4), 1.8, 1.8)
         elif dot_count is not None and dot_count > 1:
-            # Çoklu pencere: İki zarif minik nokta (macOS tarzı)
+            # Çoklu pencere: İki zarif net nokta (macOS tarzı)
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, 140))
-            p.drawEllipse(QPointF(cx - 3.5, ind_y), 1.8, 1.8)
-            p.drawEllipse(QPointF(cx + 3.5, ind_y), 1.8, 1.8)
+            p.setBrush(QColor(255, 255, 255, 190))
+            p.drawEllipse(QPointF(cx - 3.2, ind_y), 1.7, 1.7)
+            p.drawEllipse(QPointF(cx + 3.2, ind_y), 1.7, 1.7)
         else:
-            # Arka plan tek pencere: Yumuşak 3.6px nokta
+            # Arka plan tek pencere: Yumuşak, net tek nokta
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, 130))
-            p.drawEllipse(QPointF(cx, ind_y), 1.8, 1.8)
+            p.setBrush(QColor(255, 255, 255, 190))
+            p.drawEllipse(QPointF(cx, ind_y), 1.85, 1.85)
         p.restore()
     elif launch_phase is not None:  # v24: açılıyor, nabız gibi atan nokta
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(255, 255, 255, int(220 * max(0.0, min(1.0, launch_phase)))))
-        p.drawEllipse(QPointF(cx, ind_y), 2.0, 2.0)
+        p.drawEllipse(QPointF(cx, ind_y), 1.85, 1.85)
         p.restore()
 
     p.restore()
