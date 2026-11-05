@@ -2522,6 +2522,7 @@ def draw_quick_settings_pill(
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
 
+    # 1. Taban kapsül
     p.setPen(QPen(QColor(255, 255, 255, int(255 * 0.08)), 1.0))
     p.setBrush(QColor(255, 255, 255, int(255 * 0.065)))
     p.drawRoundedRect(rect, 10.0, 10.0)
@@ -2537,88 +2538,82 @@ def draw_quick_settings_pill(
         r_spk = QRectF(rect.x() + rect.width() / 2.0, rect.y(), rect.width() / 2.0, rect.height())
     mid_x = r_spk.x()
 
-    def _inner(r: QRectF, first: bool, last: bool) -> QRectF:
-        return r.adjusted(3.0 if first else 2.0, 3.0, -3.0 if last else -2.0, -3.0)
-
-    parts = [("bright", r_sun, True, False), ("vol", r_spk, False, not show_bat)]
+    # 2. Hover / aktif bölme vurgusu (kapsül kavisini pürüzsüz takip eder, iç kutu eklemez)
+    pill_clip = QPainterPath()
+    pill_clip.addRoundedRect(rect, 10.0, 10.0)
+    p.save()
+    p.setClipPath(pill_clip)
+    parts = [("bright", r_sun), ("vol", r_spk)]
     if show_bat:
-        parts.append(("bat", r_bat, False, True))
-    for key, r, first, last in parts:
+        parts.append(("bat", r_bat))
+    for key, r in parts:
         if active_part == key:
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, int(255 * 0.15)))
-            p.drawRoundedRect(_inner(r, first, last), 6.0, 6.0)
+            p.fillRect(r, QColor(255, 255, 255, int(255 * 0.16)))
         elif hovered_part == key:
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
-            p.drawRoundedRect(_inner(r, first, last), 6.0, 6.0)
+            p.fillRect(r, QColor(255, 255, 255, int(255 * 0.10)))
+    p.restore()
 
-    # ayırıcılar (1 x 16, alfa 52 tek stil)
-    div_y = rect.center().y() - 8.0
+    # 3. Ayırıcılar (boşta sakin, aktif/hover bölme kenarında otomatik gizlenir)
+    div_y = rect.center().y() - 7.0
     p.setPen(QPen(CARD_DIVIDER, 1.0))
-    p.drawLine(QPointF(mid_x, div_y), QPointF(mid_x, div_y + 16.0))
-    if show_bat:
-        p.drawLine(QPointF(r_bat.x(), div_y), QPointF(r_bat.x(), div_y + 16.0))
+    if not (hovered_part in ("bright", "vol") or active_part in ("bright", "vol")):
+        p.drawLine(QPointF(mid_x, div_y), QPointF(mid_x, div_y + 14.0))
+    if r_bat is not None and not (hovered_part in ("vol", "bat") or active_part in ("vol", "bat")):
+        p.drawLine(QPointF(r_bat.x(), div_y), QPointF(r_bat.x(), div_y + 14.0))
 
-    # 4. Draw Sun glyph (centered in r_sun, 18px glyph box)
-    # Fluent Sun: viewBox 0 0 20 20, center (10,10) r=3.6, 8 radial lines
+    # 4. Sun glifi (18px kutu, optik dengeli dolu çekirdek ve 1.7px eşit çizgi)
     sun_col = QColor(255, 255, 255) if (hovered_part == "bright" or active_part == "bright") else QColor(255, 255, 255, int(255 * 0.85))
     p.save()
     p.translate(r_sun.center().x(), r_sun.center().y())
     p.scale(18.0 / 20.0, 18.0 / 20.0)
     p.translate(-10.0, -10.0)
-    pen_sun = QPen(sun_col, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    pen_sun = QPen(sun_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen_sun)
+    p.setBrush(sun_col)
+    p.drawEllipse(QRectF(10.0 - 3.3, 10.0 - 3.3, 6.6, 6.6))
     p.setBrush(Qt.NoBrush)
-    p.drawEllipse(QRectF(10.0 - 3.6, 10.0 - 3.6, 7.2, 7.2))
-    p.drawLine(QPointF(10.0, 2.0), QPointF(10.0, 4.2))
-    p.drawLine(QPointF(10.0, 15.8), QPointF(10.0, 18.0))
-    p.drawLine(QPointF(2.0, 10.0), QPointF(4.2, 10.0))
-    p.drawLine(QPointF(15.8, 10.0), QPointF(18.0, 10.0))
-    p.drawLine(QPointF(4.34, 4.34), QPointF(5.9, 5.9))
-    p.drawLine(QPointF(14.1, 14.1), QPointF(15.66, 15.66))
-    p.drawLine(QPointF(4.34, 15.66), QPointF(5.9, 14.1))
-    p.drawLine(QPointF(14.1, 5.9), QPointF(15.66, 4.34))
+    p.drawLine(QPointF(10.0, 2.2), QPointF(10.0, 5.0))
+    p.drawLine(QPointF(10.0, 15.0), QPointF(10.0, 17.8))
+    p.drawLine(QPointF(2.2, 10.0), QPointF(5.0, 10.0))
+    p.drawLine(QPointF(15.0, 10.0), QPointF(17.8, 10.0))
+    p.drawLine(QPointF(4.48, 4.48), QPointF(6.46, 6.46))
+    p.drawLine(QPointF(15.52, 15.52), QPointF(13.54, 13.54))
+    p.drawLine(QPointF(4.48, 15.52), QPointF(6.46, 13.54))
+    p.drawLine(QPointF(15.52, 4.48), QPointF(13.54, 6.46))
     p.restore()
 
-    # 5. Draw Speaker glyph (centered in r_spk, 18px glyph box)
-    # Fluent Speaker: viewBox 0 0 20 20, path d="M4 7.2h2.8l4.2-3.7v13l-4.2-3.7H4V7.2z" fill="currentColor"
-    # Waves: arc 1: M14.2 6.5c1.6 1.8 1.6 4.8 0 6.6
-    #        arc 2: M16.6 4.2c2.8 3.1 2.8 7.9 0 11
+    # 5. Speaker glifi (güneşle eşit optik ağırlık: %86 ölçek, 1.7px eşit çizgi)
     spk_col = QColor(255, 255, 255) if (hovered_part == "vol" or active_part == "vol") else QColor(255, 255, 255, int(255 * 0.85))
     p.save()
     p.translate(r_spk.center().x(), r_spk.center().y())
-    p.scale(18.0 / 20.0, 18.0 / 20.0)
-    p.translate(-10.0, -10.0)
-    pen_spk = QPen(spk_col, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.scale(17.2 / 20.0, 17.2 / 20.0)
+    p.translate(-10.2, -10.0)
+    pen_spk = QPen(spk_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen_spk)
     p.setBrush(spk_col)
 
     spk_body = QPainterPath()
-    spk_body.moveTo(4.0, 7.2)
-    spk_body.lineTo(6.8, 7.2)
-    spk_body.lineTo(11.0, 3.5)
-    spk_body.lineTo(11.0, 16.5)
-    spk_body.lineTo(6.8, 12.8)
-    spk_body.lineTo(4.0, 12.8)
+    spk_body.moveTo(4.4, 7.4)
+    spk_body.lineTo(7.0, 7.4)
+    spk_body.lineTo(11.0, 3.8)
+    spk_body.lineTo(11.0, 16.2)
+    spk_body.lineTo(7.0, 12.6)
+    spk_body.lineTo(4.4, 12.6)
     spk_body.closeSubpath()
     p.drawPath(spk_body)
 
     if vol_muted:
-        # Diagonal slash across speaker
         p.setBrush(Qt.NoBrush)
-        p.drawLine(QPointF(3.0, 3.0), QPointF(17.0, 17.0))
+        p.drawLine(QPointF(3.2, 3.2), QPointF(16.8, 16.8))
     else:
         p.setBrush(Qt.NoBrush)
         lvl = max(0.0, min(100.0, float(vol_level)))
         if lvl > 0.0:
-            # 1 sound wave: M14.2 6.5c1.6 1.8 1.6 4.8 0 6.6
             w1 = QPainterPath()
             w1.moveTo(14.2, 6.5)
             w1.cubicTo(15.8, 8.3, 15.8, 11.3, 14.2, 13.1)
             p.drawPath(w1)
         if lvl >= 50.0:
-            # 2nd sound wave: M16.6 4.2c2.8 3.1 2.8 7.9 0 11
             w2 = QPainterPath()
             w2.moveTo(16.6, 4.2)
             w2.cubicTo(19.4, 7.3, 19.4, 12.1, 16.6, 15.2)
@@ -2667,7 +2662,7 @@ def draw_action_button(
     # (güncellemeler simgesi .65) ve aynı inceliktedir; üzerine gelince tam beyaz.
     rest_a = 0.65 if kind == "tray" else 0.78
     glyph_col = QColor(255, 255, 255) if (hover or active) else QColor(255, 255, 255, int(255 * rest_a))
-    pen = QPen(glyph_col, 1.7 if kind == "tray" else 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    pen = QPen(glyph_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.NoBrush)
 
@@ -2675,11 +2670,11 @@ def draw_action_button(
     cy = rect.center().y()
 
     if kind == "tray":
-        # Chevron-up (18px glyph box, dikeyde tam ortalı)
+        # Chevron-up (18px glyph box, optik dikey merkezleme: üst tepe cy - 3.25, taban cy + 2.25)
         path_chv = QPainterPath()
-        path_chv.moveTo(cx - 5.5, cy + 2.75)
-        path_chv.lineTo(cx, cy - 2.75)
-        path_chv.lineTo(cx + 5.5, cy + 2.75)
+        path_chv.moveTo(cx - 5.5, cy + 2.25)
+        path_chv.lineTo(cx, cy - 3.25)
+        path_chv.lineTo(cx + 5.5, cy + 2.25)
         p.drawPath(path_chv)
 
     elif kind == "bright":
@@ -2776,7 +2771,8 @@ def draw_tray_column(
     p.scale(14.0 / 24.0, 14.0 / 24.0)
     p.translate(-12.0, -12.0)
 
-    pen = QPen(QColor(255, 255, 255, int(255 * 0.85)), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    spk_col = QColor(255, 255, 255) if hovered_btn == "spk" else QColor(255, 255, 255, int(255 * 0.85))
+    pen = QPen(spk_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.NoBrush)
 
@@ -2810,14 +2806,15 @@ def draw_tray_column(
     p.scale(14.0 / 24.0, 14.0 / 24.0)
     p.translate(-12.0, -12.0)
 
-    pen = QPen(QColor(255, 255, 255, int(255 * 0.85)), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    chv_col = QColor(255, 255, 255) if hovered_btn == "chv" else QColor(255, 255, 255, int(255 * 0.85))
+    pen = QPen(chv_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.NoBrush)
 
     chv_path = QPainterPath()
-    chv_path.moveTo(6, 15)
-    chv_path.lineTo(12, 9)
-    chv_path.lineTo(18, 15)
+    chv_path.moveTo(6, 14.5)
+    chv_path.lineTo(12, 8.5)
+    chv_path.lineTo(18, 14.5)
     p.drawPath(chv_path)
     p.restore()
 
