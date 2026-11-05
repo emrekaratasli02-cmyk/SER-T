@@ -100,8 +100,14 @@ CLAUDE_CARD_WIDTH: float = 204.0  # v24: %100 + Oturum + '23 sa 59 dk' sığsın
 MEDIA_CARD_WIDTH: float = 314.0
 MEDIA_CARD_WIDTH_COMPACT: float = 240.0
 AG_CARD_WIDTH: float = 204.0
+OC_CARD_WIDTH: float = 184.0   # OpenCode kullanım kartı
 # Sol kanat sığmazsa Claude/Antigravity kartları bu genişliğe kadar daralır (sıfırlanma yazısı sığmazsa gizlenir)
 CONC_CARD_MIN_WIDTH: float = 132.0
+# Metinsiz mod (show_text=False): sadece halka + logo, dar kart (~96-110 px)
+CLAUDE_CARD_TEXTLESS_WIDTH: float = 104.0
+AG_CARD_TEXTLESS_WIDTH: float = 104.0
+OC_CARD_TEXTLESS_WIDTH: float = 104.0
+AI_CARD_TEXTLESS_WIDTH: float = 104.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
@@ -617,6 +623,33 @@ def draw_claude_star_glyph(p: QPainter, rect: QRectF, size: float = 18.0) -> Non
 def draw_claude_tile_star(p: QPainter, rect: QRectF) -> None:
     """Draw Claude star glyph fallback."""
     draw_claude_star_glyph(p, rect, size=18.0)
+
+
+def measure_claude_card_width(
+    claude_data: Optional[Dict[str, Any]] = None,
+    show_text: bool = False,
+) -> float:
+    """Claude kota kartının genişliğini döndürür (metinsiz modda dar ~104px, show_text=True'da 204px)."""
+    return CLAUDE_CARD_WIDTH if show_text else CLAUDE_CARD_TEXTLESS_WIDTH
+
+
+def measure_ag_card_width(
+    ag_data: Optional[Dict[str, Any]] = None,
+    show_text: bool = False,
+) -> float:
+    """Antigravity kota kartının genişliğini döndürür (metinsiz modda dar ~104px, show_text=True'da 204px)."""
+    return AG_CARD_WIDTH if show_text else AG_CARD_TEXTLESS_WIDTH
+
+
+def measure_opencode_card_width(
+    oc_data: Optional[Dict[str, Any]] = None,
+    show_text: bool = False,
+) -> float:
+    """OpenCode kota kartının genişliğini döndürür (metinsiz modda dar ~104px, show_text=True'da 184px)."""
+    return OC_CARD_WIDTH if show_text else OC_CARD_TEXTLESS_WIDTH
+
+
+measure_oc_card_width = measure_opencode_card_width
 
 
 def draw_claude_card(

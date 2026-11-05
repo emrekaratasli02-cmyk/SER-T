@@ -204,16 +204,26 @@ DOCK_RADIUS: float = 20.0
 CARD_HEIGHT: float = 52.0
 CARD_RADIUS: float = 13.0
 CARD_Y: float = 6.0
-GAP_MODULE: float = 6.0
+GAP_MODULE: float = 8.0  # v34: metinsiz kartlar arası nefes payı (8px)
 CLAUDE_CARD_WIDTH: float = 204.0  # v24: %100 + Oturum + '23 sa 59 dk' sığsın (metin alanı 135)
 MEDIA_CARD_WIDTH: float = 314.0
 MEDIA_CARD_WIDTH_COMPACT: float = 240.0
 AG_CARD_WIDTH: float = 204.0
 OC_CARD_WIDTH: float = 184.0   # OpenCode kullanım kartı (%34 DeepSeek / 3 Oturum Ücretsiz)
-OC_CARD_MIN_WIDTH: float = 140.0  # sıkışınca küçülebileceği alt sınır
-LEFT_CARD_HARD_MIN_WIDTH: float = 112.0  # çok dar ekranda Claude/AG için okunur alt sınır
-OC_CARD_TINY_MIN_WIDTH: float = 118.0   # çok dar ekranda OpenCode'un ince hali
-LEFT_CARD_GUARD_MIN_WIDTH: float = 104.0  # son güvenlik ağı sınırı (ataç için)
+OC_CARD_MIN_WIDTH: float = 140.0  # sıkışınca küçülebileceği alt sınır (show_text=True)
+LEFT_CARD_HARD_MIN_WIDTH: float = 112.0  # çok dar ekranda Claude/AG için okunur alt sınır (show_text=True)
+OC_CARD_TINY_MIN_WIDTH: float = 118.0   # çok dar ekranda OpenCode'un ince hali (show_text=True)
+LEFT_CARD_GUARD_MIN_WIDTH: float = 104.0  # son güvenlik ağı sınırı (ataç için; show_text=True)
+# Metinsiz mod (show_text=False) boyut ve alt sınırları
+CLAUDE_CARD_TEXTLESS_WIDTH: float = 104.0
+AG_CARD_TEXTLESS_WIDTH: float = 104.0
+OC_CARD_TEXTLESS_WIDTH: float = 104.0
+AI_CARD_TEXTLESS_WIDTH: float = 104.0
+OC_CARD_TEXTLESS_MIN_WIDTH: float = 88.0
+CONC_CARD_TEXTLESS_MIN_WIDTH: float = 88.0
+LEFT_CARD_TEXTLESS_HARD_MIN: float = 72.0
+OC_CARD_TEXTLESS_TINY_MIN: float = 72.0
+LEFT_CARD_TEXTLESS_GUARD_MIN: float = 64.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
@@ -2422,10 +2432,15 @@ class SeritDock(QWidget):
 
         mail_data = self.store.get("mail") or {}
         cal_data = self.store.get("cal") or {}
+        ag_data = self.store.get("ag") or {}
+        oc_data = self.store.get("oc") or {}
+        claude_entry = self.store.get("claude") or {}
 
+        ai_show_text = bool(self.settings.get("ai_cards_show_text", False))
         w_mail = dock_cards.measure_mail_card_width(mail_data) if show_mail else 0.0
-        w_ag = AG_CARD_WIDTH if show_ag else 0.0
-        w_claude = CLAUDE_CARD_WIDTH if show_claude else 0.0
+        w_ag = dock_cards.measure_ag_card_width(ag_data, show_text=ai_show_text) if show_ag else 0.0
+        w_oc = dock_cards.measure_opencode_card_width(oc_data, show_text=ai_show_text) if show_oc else 0.0
+        w_claude = dock_cards.measure_claude_card_width(claude_entry, show_text=ai_show_text) if show_claude else 0.0
         w_cal = dock_cards.measure_calendar_card_width(cal_data) if show_cal else 0.0
 
         n_tiles = len(self.tiles)
@@ -2452,7 +2467,7 @@ class SeritDock(QWidget):
             if show_ag:
                 lw_items.append(w_ag)
             if show_oc:
-                lw_items.append(OC_CARD_WIDTH)
+                lw_items.append(w_oc)
             if show_sys:
                 lw_items.append(SYS_CARD_WIDTH)
             if self._has_battery():
@@ -2488,7 +2503,7 @@ class SeritDock(QWidget):
         if show_ag:
             items.append(w_ag)
         if show_oc:
-            items.append(OC_CARD_WIDTH)
+            items.append(w_oc)
         if show_sys:
             items.append(SYS_CARD_WIDTH)
         if w_apps > 0:
@@ -2530,7 +2545,7 @@ class SeritDock(QWidget):
 
     # Kart içeriğinin kart kenarına uzaklığı (sol, sağ): ayraç iki yandaki içeriğin tam ortasına konur.
     _CONTENT_INSET: Dict[str, Tuple[float, float]] = {
-        "claude": (10.0, 10.0), "ag": (10.0, 10.0), "mail": (10.0, 10.0), "sys": (10.0, 10.0),
+        "claude": (10.0, 10.0), "ag": (10.0, 10.0), "oc": (10.0, 10.0), "mail": (10.0, 10.0), "sys": (10.0, 10.0),
         "apps": (6.0, 6.0), "media": (6.0, 10.0), "cal": (10.0, 10.0),
         "bat": (6.0, 6.0),
     }
@@ -3663,10 +3678,11 @@ class SeritDock(QWidget):
         cal_data = self.store.get("cal") or {}
         claude_entry = self.store.get("claude") or {}
 
+        ai_show_text = bool(self.settings.get("ai_cards_show_text", False))
         w_mail = dock_cards.measure_mail_card_width(mail_data) if show_mail else 0.0
-        w_ag = AG_CARD_WIDTH if show_ag else 0.0
-        w_oc = OC_CARD_WIDTH if show_oc else 0.0
-        w_claude = CLAUDE_CARD_WIDTH if show_claude else 0.0
+        w_ag = dock_cards.measure_ag_card_width(ag_data, show_text=ai_show_text) if show_ag else 0.0
+        w_oc = dock_cards.measure_opencode_card_width(oc_data, show_text=ai_show_text) if show_oc else 0.0
+        w_claude = dock_cards.measure_claude_card_width(claude_entry, show_text=ai_show_text) if show_claude else 0.0
         natural_cal_w = dock_cards.measure_calendar_card_width(cal_data) if show_cal else 0.0
 
         now_dt = dt.datetime.now(sources.LOCAL_TZ)
@@ -3731,6 +3747,19 @@ class SeritDock(QWidget):
                                  + float(self.V25_MIN_CLEAR))
             max_allowed_lw = (apps_x - (GAP_MODULE if (w_apps > 0) else 0.0) - 10.0
                               - shelf_reserve)
+            if ai_show_text:
+                oc_min_w = OC_CARD_MIN_WIDTH
+                conc_min_w = dock_cards.CONC_CARD_MIN_WIDTH
+                hard_min_w = LEFT_CARD_HARD_MIN_WIDTH
+                oc_tiny_min_w = OC_CARD_TINY_MIN_WIDTH
+                guard_min_w = LEFT_CARD_GUARD_MIN_WIDTH
+            else:
+                oc_min_w = OC_CARD_TEXTLESS_MIN_WIDTH
+                conc_min_w = CONC_CARD_TEXTLESS_MIN_WIDTH
+                hard_min_w = LEFT_CARD_TEXTLESS_HARD_MIN
+                oc_tiny_min_w = OC_CARD_TEXTLESS_TINY_MIN
+                guard_min_w = LEFT_CARD_TEXTLESS_GUARD_MIN
+
             overflow = needed_space - max_allowed_lw
             if overflow > 0 and show_mail:
                 can_shrink = max(0.0, eff_mail_w - dock_cards.MAIL_CARD_MIN_WIDTH)
@@ -3738,46 +3767,46 @@ class SeritDock(QWidget):
                 eff_mail_w -= cut
                 overflow -= cut
             if overflow > 0 and show_oc:
-                can_shrink = max(0.0, eff_oc_w - OC_CARD_MIN_WIDTH)
+                can_shrink = max(0.0, eff_oc_w - oc_min_w)
                 cut = min(overflow, can_shrink)
                 eff_oc_w -= cut
                 overflow -= cut
             n_pair = int(show_claude) + int(show_ag)
             if overflow > 0 and n_pair:
-                per = min(overflow / n_pair, max(0.0, CLAUDE_CARD_WIDTH - dock_cards.CONC_CARD_MIN_WIDTH))
+                per = min(overflow / n_pair, max(0.0, min(eff_claude_w, eff_ag_w) - conc_min_w))
                 if show_claude:
                     eff_claude_w -= per
                 if show_ag:
                     eff_ag_w -= per
                 overflow -= per * n_pair
             # Çok dar ekran (≈1280 px): ataç + kartlar birlikte yaşasın diye kademeli fedakârlık.
-            # 1) pil kartı düşer  2) iki büyük kart 112 px'e kadar daralır  3) en son OpenCode düşer.
+            # 1) pil kartı düşer  2) iki büyük kart hard min'e kadar daralır  3) en son OpenCode düşer.
             if overflow > 0 and show_bat:
                 show_bat = False
                 overflow -= (BAT_CARD_WIDTH + GAP_MODULE)
             if overflow > 0 and n_pair:
                 per = min(overflow / n_pair,
-                          max(0.0, min(eff_claude_w, eff_ag_w) - LEFT_CARD_HARD_MIN_WIDTH))
+                          max(0.0, min(eff_claude_w, eff_ag_w) - hard_min_w))
                 if show_claude:
                     eff_claude_w -= per
                 if show_ag:
                     eff_ag_w -= per
                 overflow -= per * n_pair
             if overflow > 0 and show_oc:
-                # 3) OpenCode kartı 118 px'e kadar ince kalır; hâlâ sığmıyorsa kart düşer.
-                can_shrink = max(0.0, eff_oc_w - OC_CARD_TINY_MIN_WIDTH)
+                # 3) OpenCode kartı tiny min'e kadar ince kalır; hâlâ sığmıyorsa kart düşer.
+                can_shrink = max(0.0, eff_oc_w - oc_tiny_min_w)
                 cut = min(overflow, can_shrink)
                 eff_oc_w -= cut
                 overflow -= cut
             if overflow > 0 and show_oc:
                 show_oc = False
                 eff_oc_w = 0.0
-                overflow -= (OC_CARD_TINY_MIN_WIDTH + GAP_MODULE)
-            # Son güvenlik ağı: buna rağmen taşma varsa büyük kartları okunur sınırın altına
+                overflow -= (oc_tiny_min_w + GAP_MODULE)
+            # Son güvenlik ağı: buna rağmen taşma varsa büyük kartları guard min altına
             # inmeden biraz daha daralt, kalanı logla (ataç gizlenmesin diye).
             if overflow > 0 and n_pair:
                 per = min(overflow / n_pair,
-                          max(0.0, min(eff_claude_w, eff_ag_w) - LEFT_CARD_GUARD_MIN_WIDTH))
+                          max(0.0, min(eff_claude_w, eff_ag_w) - guard_min_w))
                 if show_claude:
                     eff_claude_w -= per
                 if show_ag:
@@ -3853,7 +3882,8 @@ class SeritDock(QWidget):
             _avail_media = _media_right - (apps_x + w_apps + 40.0)
             # v26.1: Sağ küme genişlediğinde (ağ hızı + güncellemeler) medya kartı 190 px'e
             # kadar esneyebilir; böylece A yerleşimi bozulmaz, Ataş (raf) simgesi kaybolmaz.
-            _min_media_a = dock_cards.MEDIA_ICON_W if media_icon_only else 190.0
+            _has_extra_rw = bool(self._v25_right_items())
+            _min_media_a = dock_cards.MEDIA_ICON_W if media_icon_only else (190.0 if _has_extra_rw else MEDIA_CARD_WIDTH_COMPACT)
             if _left_x + lw_w > apps_x - 40.0 or (has_media and _avail_media < _min_media_a):
                 _use_A = False
 
@@ -3900,14 +3930,14 @@ class SeritDock(QWidget):
                         p.restore()
 
                     if card_key == "claude":
-                        dock_cards.draw_claude_card(p, r_card, claude_entry, hover=is_hover, press_scale=press_scale)
+                        dock_cards.draw_claude_card(p, r_card, claude_entry, hover=is_hover, press_scale=press_scale, show_text=ai_show_text)
                     elif card_key == "mail":
                         dock_cards.draw_mail_card(p, r_card, mail_data, hover=is_hover, press_scale=press_scale)
                     elif card_key == "ag":
                         ag_acc = str(self.settings.get("ag_active_account", "emre"))
-                        dock_cards.draw_ag_card(p, r_card, ag_data, hover=is_hover, press_scale=press_scale, active_account=ag_acc)
+                        dock_cards.draw_ag_card(p, r_card, ag_data, hover=is_hover, press_scale=press_scale, active_account=ag_acc, show_text=ai_show_text)
                     elif card_key == "oc":
-                        dock_cards.draw_opencode_card(p, r_card, oc_data, hover=is_hover, press_scale=press_scale)
+                        dock_cards.draw_opencode_card(p, r_card, oc_data, hover=is_hover, press_scale=press_scale, show_text=ai_show_text)
                     elif card_key == "sys":
                         sys_entry = self.store.get("sys") or {}
                         c_disp = None if self.preview_mode else self.anim_cpu.value
@@ -4095,14 +4125,14 @@ class SeritDock(QWidget):
 
             x = 6.0  # inner padding 6px
             if show_claude:
-                r_claude = QRectF(x, card_y, CLAUDE_CARD_WIDTH, card_h)
+                r_claude = QRectF(x, card_y, w_claude, card_h)
                 if is_full:
                     self.hit_boxes.append((r_claude, "claude", None))
                 if intersects(r_claude):
                     c_hover = (self._hover_key == "claude")
                     c_press = self.press_tween.scale if (self._pressed_key == "claude") else 1.0
-                    dock_cards.draw_claude_card(p, r_claude, claude_entry, hover=c_hover, press_scale=c_press)
-                x += CLAUDE_CARD_WIDTH + GAP_MODULE
+                    dock_cards.draw_claude_card(p, r_claude, claude_entry, hover=c_hover, press_scale=c_press, show_text=ai_show_text)
+                x += w_claude + GAP_MODULE
 
             if show_mail:
                 r_mail = QRectF(x, card_y, w_mail, card_h)
@@ -4122,7 +4152,7 @@ class SeritDock(QWidget):
                     ag_hover = (self._hover_key == "ag")
                     ag_press = self.press_tween.scale if (self._pressed_key == "ag") else 1.0
                     ag_acc = str(self.settings.get("ag_active_account", "emre"))
-                    dock_cards.draw_ag_card(p, r_ag, ag_data, hover=ag_hover, press_scale=ag_press, active_account=ag_acc)
+                    dock_cards.draw_ag_card(p, r_ag, ag_data, hover=ag_hover, press_scale=ag_press, active_account=ag_acc, show_text=ai_show_text)
                 x += w_ag + GAP_MODULE
 
             if show_oc:
@@ -4132,7 +4162,7 @@ class SeritDock(QWidget):
                 if intersects(r_oc):
                     oc_hover = (self._hover_key == "oc")
                     oc_press = self.press_tween.scale if (self._pressed_key == "oc") else 1.0
-                    dock_cards.draw_opencode_card(p, r_oc, oc_data, hover=oc_hover, press_scale=oc_press)
+                    dock_cards.draw_opencode_card(p, r_oc, oc_data, hover=oc_hover, press_scale=oc_press, show_text=ai_show_text)
                 x += w_oc + GAP_MODULE
 
             if show_sys:

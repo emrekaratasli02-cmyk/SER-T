@@ -23,6 +23,7 @@ sys.path.insert(0, str(APP_DIR))
 os.environ.setdefault("SERIT_TEST", "1")
 
 from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QApplication
 
 spec = importlib.util.spec_from_file_location("serit_v5_v33ih", str(APP_DIR / "serit_v5.pyw"))
@@ -78,6 +79,7 @@ def test_intelli_hide_slides_down_on_overlap() -> None:
     d = _dock({"intelli_hide": True})
     d.preview_mode = False
     try:
+        QCursor.setPos(0, 0)
         d._hover_key = "app_0"
         d._hover_app_idx = 0
         d.check_window_overlap = lambda: True
@@ -100,6 +102,7 @@ def test_reveal_when_overlap_clears_or_mouse_approaches() -> None:
     d = _dock({"intelli_hide": True})
     d.preview_mode = False
     try:
+        QCursor.setPos(0, 0)
         # Önce gizle
         d.check_window_overlap = lambda: True
         d._check_intelli_hide()
