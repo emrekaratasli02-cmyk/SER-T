@@ -1473,9 +1473,9 @@ def draw_opencode_card(
         fallback_icon_fn=draw_opencode_glyph,
     )
 
-    # Sağ taraf metin alanı: gap 9px -> bx = rect.x() + 59.0
-    bx = rect.x() + 59.0
-    bw = max(20.0, rect.right() - 10.0 - bx)
+    # Sağ taraf metin alanı: halka ile metin arası 7px, sağ boşluk 8px (dar kartta tam model adı sığsın)
+    bx = rect.x() + 57.0
+    bw = max(20.0, rect.right() - 8.0 - bx)
 
     p.save()
     if has_err:
