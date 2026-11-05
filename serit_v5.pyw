@@ -211,6 +211,7 @@ OC_CARD_WIDTH: float = 184.0   # OpenCode kullanım kartı (%34 DeepSeek / 3 Otu
 OC_CARD_MIN_WIDTH: float = 140.0  # sıkışınca küçülebileceği alt sınır
 LEFT_CARD_HARD_MIN_WIDTH: float = 112.0  # çok dar ekranda Claude/AG için okunur alt sınır
 OC_CARD_TINY_MIN_WIDTH: float = 118.0   # çok dar ekranda OpenCode'un ince hali
+LEFT_CARD_GUARD_MIN_WIDTH: float = 104.0  # son güvenlik ağı sınırı (ataç için)
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
@@ -3705,6 +3706,18 @@ class SeritDock(QWidget):
                 show_oc = False
                 eff_oc_w = 0.0
                 overflow -= (OC_CARD_TINY_MIN_WIDTH + GAP_MODULE)
+            # Son güvenlik ağı: buna rağmen taşma varsa büyük kartları okunur sınırın altına
+            # inmeden biraz daha daralt, kalanı logla (ataç gizlenmesin diye).
+            if overflow > 0 and n_pair:
+                per = min(overflow / n_pair,
+                          max(0.0, min(eff_claude_w, eff_ag_w) - LEFT_CARD_GUARD_MIN_WIDTH))
+                if show_claude:
+                    eff_claude_w -= per
+                if show_ag:
+                    eff_ag_w -= per
+                overflow -= per * n_pair
+            if overflow > 0:
+                self._v25_note(f"sol kanat {int(overflow)}px tasiyor (cok dar ekran)")
 
             lw_cards: List[Tuple[str, float]] = []
             if show_claude:
