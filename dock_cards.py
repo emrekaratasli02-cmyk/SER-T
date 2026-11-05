@@ -471,7 +471,7 @@ def draw_card_base(
     hover: bool = False,
     press_scale: float = 1.0,
 ) -> None:
-    """v24 kutusuz kart: yalnız üzerine gelince yumuşak akrilik vurgu ve ince specular kenar."""
+    """v24 kutusuz kart: yalnız üzerine gelince zarif akrilik vurgu ve ince specular üst kenar."""
     if not hover:
         return
     p.save()
@@ -482,11 +482,21 @@ def draw_card_base(
         p.scale(press_scale, press_scale)
         p.translate(-pc)
     c_path = theme.rounded_path(rect, radius)
+    # Akrilik gövde: tepede hafif aydınlık, gövdede pürüzsüzce eriyen yumuşak gradyan
     hover_grad = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
-    hover_grad.setColorAt(0.0, QColor(255, 255, 255, 26))
-    hover_grad.setColorAt(1.0, QColor(255, 255, 255, 13))
+    hover_grad.setColorAt(0.00, QColor(255, 255, 255, 28))
+    hover_grad.setColorAt(0.35, QColor(255, 255, 255, 18))
+    hover_grad.setColorAt(0.70, QColor(255, 255, 255, 12))
+    hover_grad.setColorAt(1.00, QColor(255, 255, 255, 7))
     p.fillPath(c_path, hover_grad)
-    p.setPen(QPen(QColor(255, 255, 255, 34), 0.8))
+
+    # İnce specular üst kenar ve akrilik rim: üst kenarda parlaklık, yan ve alt kenarda sönümlenme
+    stroke_grad = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
+    stroke_grad.setColorAt(0.00, QColor(255, 255, 255, 56))
+    stroke_grad.setColorAt(0.25, QColor(255, 255, 255, 28))
+    stroke_grad.setColorAt(0.70, QColor(255, 255, 255, 12))
+    stroke_grad.setColorAt(1.00, QColor(255, 255, 255, 6))
+    p.setPen(QPen(QBrush(stroke_grad), 0.8))
     p.drawPath(c_path)
     p.restore()
 
@@ -521,10 +531,12 @@ def _weather_icon_dy(icon: str) -> float:
 
 def draw_card_divider(p: QPainter, x: float, cy: float, height: float = CARD_DIVIDER_H) -> None:
     """Kartlar arası ince dikey ayraç: 1 cihaz pikseli kalın, cihaz pikseline oturur (1.25'te bulanmaz)."""
+    # Dock genelinde sakin ve eşit görünüm: standart CARD_DIVIDER_H yüksekliği ve sakin ayraç rengi
+    h = CARD_DIVIDER_H if (height is None or height <= 0 or abs(height - CARD_DIVIDER_H) <= 4.0) else height
     dpr = _device_ratio(p)
     px = round(x * dpr) / dpr
-    top = round((cy - height / 2.0) * dpr) / dpr
-    bottom = round((cy + height / 2.0) * dpr) / dpr
+    top = round((cy - h / 2.0) * dpr) / dpr
+    bottom = round((cy + h / 2.0) * dpr) / dpr
     p.save()
     p.setRenderHint(QPainter.Antialiasing, False)
     p.fillRect(QRectF(px, top, 1.0 / dpr, bottom - top), CARD_DIVIDER)
