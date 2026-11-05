@@ -52,6 +52,75 @@ try:
 except Exception:  # pragma: no cover
     _draw_speaker_icon = None
 
+try:
+    import media  # noqa: E402
+except Exception:  # pragma: no cover
+    media = None
+
+
+def list_output_devices(active_only: bool = True) -> list[Dict[str, Any]]:
+    """Ses cikis cihazlarini ve aktif varsayilani dondurur."""
+    import os
+    if os.environ.get("SERIT_TEST") == "1":
+        return [
+            {"id": "{0.0.0.00000000}.{realtek_mock}", "name": "Speakers (Realtek(R) Audio)", "default": True},
+            {"id": "{0.0.0.00000000}.{airpods_mock}", "name": "Headphones (AirPods)", "default": False},
+        ]
+    if media is not None and hasattr(media, "list_output_devices"):
+        try:
+            devs = media.list_output_devices(active_only=active_only)
+            if devs:
+                return [dict(d) for d in devs]
+        except Exception:
+            pass
+    return []
+
+
+def set_default_output_device(device_id: str) -> bool:
+    """Windows Core Audio IPolicyConfig COM arayuzu ile varsayilan ses cikis uc noktasini ayarlar."""
+    import os
+    if os.environ.get("SERIT_TEST") == "1" or os.environ.get("SERIT_ALLOW_REAL_AUDIO") != "1":
+        return True
+    if not device_id:
+        return False
+    try:
+        import ctypes
+        import comtypes
+        from comtypes import GUID, COMMETHOD, HRESULT, IUnknown
+        from ctypes import POINTER, c_int, c_longlong, c_void_p, c_wchar_p
+        import comtypes.client as cc
+
+        try:
+            ctypes.windll.ole32.CoInitializeEx(None, 0x2)
+        except Exception:
+            pass
+
+        CLSID_PolicyConfigClient = GUID('{870af99c-171d-4f9e-af0d-e63df40c2bc9}')
+
+        class IPolicyConfig(IUnknown):
+            _iid_ = GUID('{f8679f50-850a-41cf-9c72-430f290290c8}')
+            _methods_ = [
+                COMMETHOD([], HRESULT, 'GetMixFormat', (['in'], c_wchar_p, 'wszDeviceId'), (['out', 'retval'], POINTER(c_void_p), 'ppwfxFormat')),
+                COMMETHOD([], HRESULT, 'GetDeviceFormat', (['in'], c_wchar_p, 'wszDeviceId'), (['in'], c_int, 'dwFlags'), (['out', 'retval'], POINTER(c_void_p), 'ppwfxFormat')),
+                COMMETHOD([], HRESULT, 'ResetDeviceFormat', (['in'], c_wchar_p, 'wszDeviceId')),
+                COMMETHOD([], HRESULT, 'SetDeviceFormat', (['in'], c_wchar_p, 'wszDeviceId'), (['in'], c_void_p, 'pwfxFormat'), (['in'], c_void_p, 'pwfxFormatReq')),
+                COMMETHOD([], HRESULT, 'GetProcessingPeriod', (['in'], c_wchar_p, 'wszDeviceId'), (['in'], c_int, 'dwFlags'), (['out', 'retval'], POINTER(c_longlong), 'phnsDefaultPeriod'), (['out', 'retval'], POINTER(c_longlong), 'phnsMinimumPeriod')),
+                COMMETHOD([], HRESULT, 'SetProcessingPeriod', (['in'], c_wchar_p, 'wszDeviceId'), (['in'], c_longlong, 'hnsPeriod')),
+                COMMETHOD([], HRESULT, 'GetShareMode', (['in'], c_wchar_p, 'wszDeviceId'), (['out', 'retval'], POINTER(c_void_p), 'pShareMode')),
+                COMMETHOD([], HRESULT, 'SetShareMode', (['in'], c_wchar_p, 'wszDeviceId'), (['in'], c_void_p, 'pShareMode')),
+                COMMETHOD([], HRESULT, 'GetPropertyValue', (['in'], c_wchar_p, 'wszDeviceId'), (['in'], c_void_p, 'key'), (['out', 'retval'], POINTER(c_void_p), 'pv')),
+                COMMETHOD([], HRESULT, 'SetPropertyValue', (['in'], c_wchar_p, 'wszDeviceId'), (['in'], c_void_p, 'key'), (['in'], c_void_p, 'pv')),
+                COMMETHOD([], HRESULT, 'SetDefaultEndpoint', (['in'], c_wchar_p, 'wszDeviceId'), (['in'], c_int, 'eRole')),
+                COMMETHOD([], HRESULT, 'SetEndpointVisibility', (['in'], c_wchar_p, 'wszDeviceId'), (['in'], c_int, 'bVisible')),
+            ]
+
+        client = cc.CreateObject(CLSID_PolicyConfigClient, interface=IPolicyConfig)
+        hr0 = client.SetDefaultEndpoint(str(device_id), 0)
+        hr1 = client.SetDefaultEndpoint(str(device_id), 1)
+        return (hr0 == 0 and hr1 == 0)
+    except Exception:
+        return False
+
 
 def fmt_mmss(seconds: Any) -> str:
     """Saniyeyi '02:24' veya '1:05:12' biçimine çevirir; geçersizse '—'."""
@@ -79,6 +148,7 @@ class MediaPanel(ps.PopoverBase):
     mute_requested = Signal(bool)            # True | False
     open_mixer_requested = Signal()          # Ses mikseri panelini aç
     open_app_requested = Signal(str)         # Kaynak uygulamayı öne getir (exe/aumid)
+    device_switch_requested = Signal(str)    # Ses çıkış cihazını değiştir (device_id)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(
@@ -100,6 +170,8 @@ class MediaPanel(ps.PopoverBase):
         self._vol_level: float = 50.0
         self._vol_muted: bool = False
         self._vol_device: str = ""
+        self._devices: list[Dict[str, Any]] = []
+        self._active_device_id: str = ""
 
         self._hover: Optional[str] = None
         self._dragging: Optional[str] = None      # 'seek' | 'vol'
@@ -147,7 +219,13 @@ class MediaPanel(ps.PopoverBase):
         self._layout()
         self.update()
 
-    def set_volume(self, level: Optional[float], muted: bool = False, device: Optional[str] = None) -> None:
+    def set_volume(
+        self,
+        level: Optional[float],
+        muted: bool = False,
+        device: Optional[str] = None,
+        devices: Optional[list[Dict[str, Any]]] = None,
+    ) -> None:
         if level is not None:
             try:
                 self._vol_level = max(0.0, min(100.0, float(level)))
@@ -156,8 +234,101 @@ class MediaPanel(ps.PopoverBase):
         self._vol_muted = bool(muted)
         if device is not None:
             self._vol_device = str(device)
+            for d in self._devices:
+                if d.get("name") == self._vol_device:
+                    self._active_device_id = str(d.get("id", ""))
+                    break
+        if devices is not None:
+            self.set_devices(devices, self._active_device_id or None)
         self._layout()
         self.update()
+
+    def set_devices(self, devices: list[Dict[str, Any]], active_id: Optional[str] = None) -> None:
+        """Ses cikis cihazlari listesini kaydeder ve secili olani belirler."""
+        self._devices = [dict(d) for d in devices if isinstance(d, dict)]
+        if active_id is not None:
+            self._active_device_id = str(active_id)
+            for d in self._devices:
+                if d.get("id") == self._active_device_id:
+                    self._vol_device = str(d.get("name") or "")
+                    break
+        else:
+            found = False
+            for d in self._devices:
+                if d.get("default"):
+                    self._active_device_id = str(d.get("id", ""))
+                    self._vol_device = str(d.get("name") or "")
+                    found = True
+                    break
+            if not found and self._devices:
+                self._active_device_id = str(self._devices[0].get("id", ""))
+                self._vol_device = str(self._devices[0].get("name") or "")
+        self._layout()
+        self.update()
+
+    def refresh_devices(self) -> None:
+        """Sistemdeki ses cikis cihazlarini gunceller."""
+        try:
+            devs = list_output_devices(active_only=True)
+            if devs:
+                self.set_devices(devs, self._active_device_id or None)
+        except Exception:
+            pass
+
+    def get_active_device(self) -> Optional[Dict[str, Any]]:
+        """Mevcut secili ses cikis cihazini doner."""
+        for d in self._devices:
+            if d.get("id") == self._active_device_id:
+                return d
+        if self._devices:
+            return self._devices[0]
+        return None
+
+    def switch_device(self, delta: int = 1) -> Optional[Dict[str, Any]]:
+        """Ses cikis cihazini delta adim kadar degistirir (+1 sonraki, -1 onceki)."""
+        if not self._devices:
+            self.refresh_devices()
+        if not self._devices:
+            return None
+        if len(self._devices) <= 1:
+            return self._devices[0]
+
+        cur_idx = -1
+        if self._active_device_id:
+            for i, d in enumerate(self._devices):
+                if d.get("id") == self._active_device_id:
+                    cur_idx = i
+                    break
+        if cur_idx == -1 and self._vol_device:
+            for i, d in enumerate(self._devices):
+                if d.get("name") == self._vol_device:
+                    cur_idx = i
+                    break
+        if cur_idx == -1:
+            cur_idx = 0
+
+        next_idx = (cur_idx + delta) % len(self._devices)
+        target = self._devices[next_idx]
+        self._active_device_id = str(target.get("id", ""))
+        self._vol_device = str(target.get("name") or "")
+        self.device_switch_requested.emit(self._active_device_id)
+        set_default_output_device(self._active_device_id)
+        self._layout()
+        self.update()
+        return target
+
+    def set_active_device_by_id(self, dev_id: str) -> bool:
+        """Belirtilen ID'ye sahip cihazi varsayilan yapar."""
+        for d in self._devices:
+            if d.get("id") == dev_id:
+                self._active_device_id = str(dev_id)
+                self._vol_device = str(d.get("name") or "")
+                self.device_switch_requested.emit(self._active_device_id)
+                set_default_output_device(self._active_device_id)
+                self._layout()
+                self.update()
+                return True
+        return False
 
     def _live_times(self) -> Tuple[Optional[float], Optional[float], Optional[float]]:
         """(pos_s, dur_s, frac) döner; canlı oynatmada geçen süreyi ekler."""
@@ -240,7 +411,22 @@ class MediaPanel(ps.PopoverBase):
         c2 = QRectF(x0, y, cw, card2_h)
         r["card_vol"] = c2
         in2 = c2.adjusted(ps.CARD_PAD, ps.CARD_PAD, -ps.CARD_PAD, -ps.CARD_PAD)
-        r["mixer_link"] = QRectF(in2.right() - 140.0, in2.top() - 2.0, 140.0, 18.0)
+
+        # Üst satır: SES VE ÇIKIŞ | [‹] [Hoparlör · Realtek] [›] | Mikser ›
+        y_top = in2.top() - 2.0
+        h_btn = 19.0
+        r_right = in2.right()
+
+        w_mix = 44.0
+        r["mixer_link"] = QRectF(r_right - w_mix, y_top, w_mix, h_btn)
+
+        w_step = 17.0
+        r["dev_next"] = QRectF(r["mixer_link"].left() - 4.0 - w_step, y_top, w_step, h_btn)
+
+        w_chip = 108.0
+        r["dev_chip"] = QRectF(r["dev_next"].left() - 4.0 - w_chip, y_top, w_chip, h_btn)
+
+        r["dev_prev"] = QRectF(r["dev_chip"].left() - 4.0 - w_step, y_top, w_step, h_btn)
 
         vol_row_y = in2.top() + 24.0
         r["mute_btn"] = QRectF(in2.left(), vol_row_y, 28.0, 28.0)
@@ -283,11 +469,16 @@ class MediaPanel(ps.PopoverBase):
         vol_muted: bool = False,
         vol_device: Optional[str] = None,
         *,
+        devices: Optional[list[Dict[str, Any]]] = None,
         switch_from_x: Optional[int] = None,
     ) -> None:
         self._anchor_global = QRectF(anchor_global) if anchor_global is not None else None
         if media_info is not None:
             self._media = dict(media_info)
+        if devices is not None:
+            self.set_devices(devices)
+        elif not self._devices:
+            self.refresh_devices()
         if vol_level is not None:
             self.set_volume(vol_level, vol_muted, vol_device)
         self.resize(self.WIDTH, self.compute_height())
@@ -340,7 +531,8 @@ class MediaPanel(ps.PopoverBase):
     def _hit(self, pos: QPointF) -> Optional[str]:
         for key in (
             "close", "app_chip", "playpause", "prev", "next", "back10", "fwd10",
-            "seek_hit", "mixer_link", "mute_btn", "vol_hit", "open_app",
+            "seek_hit", "dev_prev", "dev_chip", "dev_next", "mixer_link",
+            "mute_btn", "vol_hit", "open_app",
         ):
             r = self._rects.get(key)
             if r is not None and r.contains(pos):
@@ -403,6 +595,13 @@ class MediaPanel(ps.PopoverBase):
         if h != self._hover:
             self._hover = h
             self.update()
+        if h in (
+            "close", "app_chip", "playpause", "prev", "next", "back10", "fwd10",
+            "dev_prev", "dev_chip", "dev_next", "mixer_link", "mute_btn", "open_app",
+        ):
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
@@ -425,6 +624,7 @@ class MediaPanel(ps.PopoverBase):
     def leaveEvent(self, event) -> None:
         if self._hover is not None:
             self._hover = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
             self.update()
         super().leaveEvent(event)
 
@@ -465,6 +665,10 @@ class MediaPanel(ps.PopoverBase):
                 self._media["updated_at"] = time.monotonic()
                 self.seek_requested.emit(frac)
                 self.update()
+        elif key == "dev_prev":
+            self.switch_device(-1)
+        elif key in ("dev_next", "dev_chip"):
+            self.switch_device(1)
         elif key == "mute_btn":
             self._vol_muted = not self._vol_muted
             self.mute_requested.emit(self._vol_muted)
@@ -646,14 +850,75 @@ class MediaPanel(ps.PopoverBase):
 
         # 3. Ses ve Çıkış Kartı
         c2 = self._rects["card_vol"]
-        dev_disp = ""
+        ps.draw_card(p, c2, overline="Ses ve çıkış", overline_right=None)
+
+        # Cihaz değiştirici: [‹] [Hoparlör · Realtek] [›] ve Mikser ›
+        dev_text = self._vol_device or "Hoparlör"
+        disp_raw = ""
         try:
             import media as _m_mod
-            dev_disp = _m_mod.tr_device_name(self._vol_device)
+            disp_raw = _m_mod.tr_device_name(dev_text)
         except Exception:
-            dev_disp = self._vol_device
-        dev_short = (dev_disp.split(" · ")[0] if dev_disp else "Ses mikseri") + " ›"
-        ps.draw_card(p, c2, overline="Ses ve çıkış", overline_right=dev_short)
+            disp_raw = dev_text
+        if not disp_raw:
+            disp_raw = "Hoparlör"
+
+        has_multi = len(self._devices) > 1
+        r_prev = self._rects["dev_prev"]
+        r_chip = self._rects["dev_chip"]
+        r_next = self._rects["dev_next"]
+        r_mix = self._rects["mixer_link"]
+
+        # Önceki cihaz düğmesi [‹]
+        hov_prev = (self._hover == "dev_prev") and has_multi
+        p.setPen(QColor(255, 255, 255, 38) if hov_prev else QColor(255, 255, 255, 20))
+        p.setBrush(QColor(255, 255, 255, 24) if hov_prev else QColor(255, 255, 255, 10))
+        p.drawRoundedRect(r_prev, 4.0, 4.0)
+        p.setFont(ps.font(11.0, QFont.Weight.Bold))
+        p.setPen(ps.ACCENT if hov_prev else (ps.TEXT if has_multi else QColor(255, 255, 255, 45)))
+        p.drawText(r_prev, Qt.AlignmentFlag.AlignCenter, "‹")
+
+        # Cihaz Çipi / Seçici [Hoparlör · Realtek]
+        hov_chip = (self._hover == "dev_chip")
+        p.setPen(QColor(accent) if hov_chip else QColor(255, 255, 255, 26))
+        p.setBrush(QColor(255, 255, 255, 26) if hov_chip else QColor(255, 255, 255, 14))
+        p.drawRoundedRect(r_chip, 5.0, 5.0)
+
+        # Aktif cihaz yeşil / açık nokta göstergesi
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(ps.OK if not self._vol_muted else ps.TEXT_MUTED))
+        p.drawEllipse(QPointF(r_chip.left() + 7.5, r_chip.center().y()), 2.5, 2.5)
+
+        # Cihaz adı metni
+        f_chip = ps.font(10.0, QFont.Weight.Medium)
+        fm_chip = QFontMetricsF(f_chip)
+        p.setFont(f_chip)
+        p.setPen(ps.ACCENT if hov_chip else ps.TEXT)
+        elided_dev = fm_chip.elidedText(disp_raw, Qt.TextElideMode.ElideRight, r_chip.width() - 17.0)
+        p.drawText(
+            QRectF(r_chip.left() + 14.0, r_chip.top(), r_chip.width() - 16.0, r_chip.height()),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            elided_dev,
+        )
+
+        # Sonraki cihaz düğmesi [›]
+        hov_next = (self._hover == "dev_next") and has_multi
+        p.setPen(QColor(255, 255, 255, 38) if hov_next else QColor(255, 255, 255, 20))
+        p.setBrush(QColor(255, 255, 255, 24) if hov_next else QColor(255, 255, 255, 10))
+        p.drawRoundedRect(r_next, 4.0, 4.0)
+        p.setFont(ps.font(11.0, QFont.Weight.Bold))
+        p.setPen(ps.ACCENT if hov_next else (ps.TEXT if has_multi else QColor(255, 255, 255, 45)))
+        p.drawText(r_next, Qt.AlignmentFlag.AlignCenter, "›")
+
+        # Sağdaki mikser bağlantısı (Mikser ›)
+        hov_mix = (self._hover == "mixer_link")
+        p.setFont(ps.font(10.0, QFont.Weight.Normal))
+        p.setPen(ps.ACCENT if hov_mix else ps.TEXT_MUTED)
+        p.drawText(
+            r_mix,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            "Mikser ›",
+        )
 
         # Sessiz düğmesi
         rm = self._rects["mute_btn"]
