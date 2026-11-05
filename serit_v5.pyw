@@ -209,6 +209,8 @@ MEDIA_CARD_WIDTH_COMPACT: float = 240.0
 AG_CARD_WIDTH: float = 204.0
 OC_CARD_WIDTH: float = 184.0   # OpenCode kullanım kartı (%34 DeepSeek / 3 Oturum Ücretsiz)
 OC_CARD_MIN_WIDTH: float = 140.0  # sıkışınca küçülebileceği alt sınır
+LEFT_CARD_HARD_MIN_WIDTH: float = 112.0  # çok dar ekranda Claude/AG için okunur alt sınır
+OC_CARD_TINY_MIN_WIDTH: float = 118.0   # çok dar ekranda OpenCode'un ince hali
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
@@ -3679,6 +3681,30 @@ class SeritDock(QWidget):
                     eff_claude_w -= per
                 if show_ag:
                     eff_ag_w -= per
+                overflow -= per * n_pair
+            # Çok dar ekran (≈1280 px): ataç + kartlar birlikte yaşasın diye kademeli fedakârlık.
+            # 1) pil kartı düşer  2) iki büyük kart 112 px'e kadar daralır  3) en son OpenCode düşer.
+            if overflow > 0 and show_bat:
+                show_bat = False
+                overflow -= (BAT_CARD_WIDTH + GAP_MODULE)
+            if overflow > 0 and n_pair:
+                per = min(overflow / n_pair,
+                          max(0.0, min(eff_claude_w, eff_ag_w) - LEFT_CARD_HARD_MIN_WIDTH))
+                if show_claude:
+                    eff_claude_w -= per
+                if show_ag:
+                    eff_ag_w -= per
+                overflow -= per * n_pair
+            if overflow > 0 and show_oc:
+                # 3) OpenCode kartı 118 px'e kadar ince kalır; hâlâ sığmıyorsa kart düşer.
+                can_shrink = max(0.0, eff_oc_w - OC_CARD_TINY_MIN_WIDTH)
+                cut = min(overflow, can_shrink)
+                eff_oc_w -= cut
+                overflow -= cut
+            if overflow > 0 and show_oc:
+                show_oc = False
+                eff_oc_w = 0.0
+                overflow -= (OC_CARD_TINY_MIN_WIDTH + GAP_MODULE)
 
             lw_cards: List[Tuple[str, float]] = []
             if show_claude:
