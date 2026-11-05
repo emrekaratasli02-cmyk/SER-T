@@ -47,8 +47,11 @@ CARD_RADIUS: float = 13.0
 CARD_FILL: QColor = QColor(255, 255, 255, int(255 * 0.065))   # v24'ten beri bantta çizilmez (eski kutu)
 CARD_FILL_HOVER: QColor = QColor(255, 255, 255, 18)           # v24 kutusuz kart: yalnız üzerine gelince
 CARD_BORDER: QColor = QColor(255, 255, 255, int(255 * 0.08))
-CARD_DIVIDER: QColor = QColor(255, 255, 255, 30)              # kartlar arası ince ayraç (1 cihaz pikseli)
+CARD_DIVIDER: QColor = QColor(255, 255, 255, 52)              # kartlar arası ince ayraç (1 cihaz pikseli)
 CARD_DIVIDER_H: float = 28.0
+
+FONT_SZ_LBL: float = 10.5
+FONT_SZ_META: float = 9.5
 
 # v24 renk düzeni (Emre: B + ortak değişiklikler): Claude turuncusu ve tek mavi vurgu.
 COLOR_ACCENT_BLUE: QColor = QColor("#6EA8FE")
@@ -88,6 +91,7 @@ COLOR_RAM_BAR: QColor = QColor(COLOR_ACCENT_BLUE)
 COLOR_TXT_PRIMARY: QColor = QColor(255, 255, 255, int(255 * 0.95))
 COLOR_TXT_MUTED: QColor = QColor(235, 238, 245, int(255 * 0.74))  # v33: .58 -> .74 (okunurluk)
 COLOR_TXT_FAINT: QColor = QColor(235, 238, 245, 168)           # sıfırlanma saati (v33: .52 -> .66)
+COLOR_TXT_LABEL: QColor = QColor(235, 238, 245, 180)           # v34: kart etiketi (Medium 10.5)
 COLOR_CAL_RED: QColor = QColor("#FF453A")
 
 TR_DAYS_SHORT = {0: "Pzt", 1: "Sal", 2: "Çar", 3: "Per", 4: "Cum", 5: "Cmt", 6: "Paz"}
@@ -356,12 +360,11 @@ def draw_concentric_text_rows(
 ) -> None:
     """Draw two text rows for concentric card (v24):
 
-    Each row: percentage 12 DemiBold tabular in ring colour, label 11 muted, reset time 10 faint
-    right-aligned (only when it fits). All three share one baseline per row (different sizes centred
-    vertically used to sit on different baselines).
+    Each row: percentage 12 Bold tabular in ring colour, label 10.5 Medium, reset time 10 faint
+    right-aligned (only when it fits). All three share one baseline per row.
     """
-    f_pct = theme.make_font(12.0, QFont.Weight.DemiBold, tabular=True)  # 13 olursa %100 satırında saat sığmaz
-    f_lbl = theme.make_font(11.0, QFont.Weight.Normal)
+    f_pct = theme.make_font(12.0, QFont.Weight.Bold, tabular=True, letter_spacing=-0.2)
+    f_lbl = theme.make_font(FONT_SZ_LBL, QFont.Weight.Medium)
     f_rst = theme.make_font(10.0, QFont.Weight.Normal)
 
     rx = text_rect.x()
@@ -369,6 +372,9 @@ def draw_concentric_text_rows(
     row_step = 19.0  # iki satırın taban çizgileri arası
     cap = _get_fm(f_pct).capHeight()
     base1 = text_rect.center().y() - (row_step - cap) / 2.0  # görsel blok tam ortada
+
+    fm_lbl = QFontMetricsF(f_lbl)
+    fm_rst = QFontMetricsF(f_rst)
 
     p.save()
     for (pct_val, base_col, lbl_text, rst_text), base_y in ((row1, base1), (row2, base1 + row_step)):
@@ -387,19 +393,29 @@ def draw_concentric_text_rows(
         p.drawText(QPointF(rx, base_y), pct_str)
         wp = fm_pct.horizontalAdvance(pct_str)
 
-        # 2. Label (same baseline)
-        p.setFont(f_lbl)
-        wl = p.fontMetrics().horizontalAdvance(lbl_text)
-        p.setPen(COLOR_TXT_MUTED)
-        p.drawText(QPointF(rx + wp + 4.0, base_y), lbl_text)
-
-        # 3. Reset time, right-aligned, only when it fits next to the label
-        if rst_text:
+        # Yerleşim önceliği: tam etiket + saat sığıyorsa ikisi de; sığmıyorsa saat düşer,
+        # etiket tam kalır; etiket de sığmıyorsa kırpılır. Hiçbir durumda üst üste binmez.
+        wl = fm_lbl.horizontalAdvance(lbl_text) if lbl_text else 0.0
+        wr = fm_rst.horizontalAdvance(rst_text) if rst_text else 0.0
+        lbl_x = rx + wp + 6.0
+        space = rw - wp - 6.0
+        show_rst = bool(rst_text) and (space - wl) >= (wr + 6.0)
+        if show_rst:
+            label_w = wl
+        elif wl and wl <= space:
+            label_w = wl
+        else:
+            label_w = max(0.0, space)
+        if lbl_text and label_w >= 14.0:
+            elided_lbl = _elided_text(fm_lbl, lbl_text, label_w)
+            if elided_lbl:
+                p.setFont(f_lbl)
+                p.setPen(COLOR_TXT_LABEL)
+                p.drawText(QPointF(lbl_x, base_y), elided_lbl)
+        if show_rst:
             p.setFont(f_rst)
-            wr = p.fontMetrics().horizontalAdvance(rst_text)
-            if wp + 4.0 + wl + 5.0 + wr <= rw:
-                p.setPen(COLOR_TXT_FAINT)
-                p.drawText(QPointF(rx + rw - wr, base_y), rst_text)
+            p.setPen(COLOR_TXT_FAINT)
+            p.drawText(QPointF(rx + rw - wr, base_y), rst_text)
 
     p.restore()
 
@@ -1473,59 +1489,69 @@ def draw_opencode_card(
         return
 
     # Claude ve Antigravity ile birebir aynı çift satır hizalama ve fontlar
-    f_pct = theme.make_font(12.0, QFont.Weight.DemiBold, tabular=True)
-    f_lbl = theme.make_font(11.0, QFont.Weight.Normal)
-    f_rst = theme.make_font(10.0, QFont.Weight.Normal)
+    f_pct1 = theme.make_font(12.0, QFont.Weight.Bold, tabular=True, letter_spacing=-0.2)
+    f_lbl1 = theme.make_font(FONT_SZ_LBL, QFont.Weight.Medium)
+    f_lbl2 = theme.make_font(FONT_SZ_LBL, QFont.Weight.Normal)
+    f_meta = theme.make_font(FONT_SZ_META, QFont.Weight.Normal)
 
     rx = bx
     rw = bw
     row_step = 19.0
-    cap = _get_fm(f_pct).capHeight()
+    cap = _get_fm(f_pct1).capHeight()
     base1 = (rect.y() + 8.0 + 18.0) - (row_step - cap) / 2.0
     base2 = base1 + row_step
+
+    fm_lbl1 = QFontMetricsF(f_lbl1)
+    fm_lbl2 = QFontMetricsF(f_lbl2)
+    fm_meta = QFontMetricsF(f_meta)
 
     # 1. Satır: %34 DeepSeek [sağda: 339K]
     pct_num = int(round(pct)) if pct is not None else 0
     pct_str = f"%{pct_num}"
     pct_col = usage_color(pct_num, COLOR_RING_OUTER)
 
-    p.setFont(f_pct)
+    p.setFont(f_pct1)
     fm_pct = p.fontMetrics()
     p.setPen(pct_col)
     p.drawText(QPointF(rx, base1), pct_str)
     wp1 = fm_pct.horizontalAdvance(pct_str)
 
-    p.setFont(f_lbl)
-    fm_lbl = p.fontMetrics()
-    p.setPen(COLOR_TXT_MUTED)
-    p.drawText(QPointF(rx + wp1 + 4.0, base1), primary_model)
-    wl1 = fm_lbl.horizontalAdvance(primary_model)
-
     rst1 = format_token_count(tokens_io)
-    p.setFont(f_rst)
-    fm_rst = p.fontMetrics()
-    wr1 = fm_rst.horizontalAdvance(rst1)
-    if wp1 + 4.0 + wl1 + 5.0 + wr1 <= rw:
+    wl1 = fm_lbl1.horizontalAdvance(primary_model) if primary_model else 0.0
+    wr1 = fm_meta.horizontalAdvance(rst1) if rst1 else 0.0
+    space1 = rw - wp1 - 6.0
+    show_rst1 = bool(rst1) and (space1 - wl1) >= (wr1 + 6.0)
+    label_w1 = wl1 if (show_rst1 or (wl1 and wl1 <= space1)) else max(0.0, space1)
+
+    if primary_model and label_w1 >= 14.0:
+        elided_m = _elided_text(fm_lbl1, primary_model, label_w1)
+        if elided_m:
+            p.setFont(f_lbl1)
+            p.setPen(COLOR_TXT_LABEL)
+            p.drawText(QPointF(rx + wp1 + 6.0, base1), elided_m)
+
+    if show_rst1:
+        p.setFont(f_meta)
         p.setPen(COLOR_TXT_FAINT)
         p.drawText(QPointF(rx + rw - wr1, base1), rst1)
 
     # 2. Satır: 3 Oturum [sağda: Ücretsiz ($0)]
-    sess_num_str = str(sessions)
-    p.setFont(f_pct)
-    p.setPen(COLOR_RING_INNER)
-    p.drawText(QPointF(rx, base2), sess_num_str)
-    wp2 = fm_pct.horizontalAdvance(sess_num_str)
-
-    p.setFont(f_lbl)
-    p.setPen(COLOR_TXT_MUTED)
-    lbl2 = "Oturum"
-    p.drawText(QPointF(rx + wp2 + 4.0, base2), lbl2)
-    wl2 = fm_lbl.horizontalAdvance(lbl2)
-
+    sess_text = f"{sessions} Oturum"
     cost_info = "Ücretsiz" if cost_val == 0.0 else f"${cost_val:.2f}"
-    wr2 = fm_rst.horizontalAdvance(cost_info)
-    if wp2 + 4.0 + wl2 + 5.0 + wr2 <= rw:
-        p.setFont(f_rst)
+    wl2 = fm_lbl2.horizontalAdvance(sess_text)
+    wr2 = fm_meta.horizontalAdvance(cost_info) if cost_info else 0.0
+    show_rst2 = bool(cost_info) and (rw - wl2) >= (wr2 + 6.0)
+    label_w2 = wl2 if (show_rst2 or wl2 <= rw) else rw
+
+    if sess_text and label_w2 >= 14.0:
+        elided_sess = _elided_text(fm_lbl2, sess_text, label_w2)
+        if elided_sess:
+            p.setFont(f_lbl2)
+            p.setPen(COLOR_TXT_MUTED)
+            p.drawText(QPointF(rx, base2), elided_sess)
+
+    if show_rst2:
+        p.setFont(f_meta)
         p.setPen(COLOR_TXT_FAINT)
         p.drawText(QPointF(rx + rw - wr2, base2), cost_info)
 
@@ -1637,9 +1663,10 @@ def draw_sys_card(
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(arc_rect)
 
+        fg_col = get_sys_ring_color(val, base_col, is_ram=is_ram) if (val is not None and val > 0.0) else base_col
+
         # 2. Foreground active arc (clockwise from 12 o'clock)
         if val is not None and val > 0.0:
-            fg_col = get_sys_ring_color(val, base_col, is_ram=is_ram)
             pen_fg = QPen(fg_col, stroke, Qt.SolidLine, Qt.RoundCap)
             p.setPen(pen_fg)
             span_angle = -int(round((val / 100.0) * 360.0 * 16.0))
@@ -1647,7 +1674,7 @@ def draw_sys_card(
 
         # 3. Percentage number centred inside (no % sign, '–' for missing/err)
         p.setFont(f_num)
-        p.setPen(COLOR_TXT_PRIMARY)
+        p.setPen(fg_col if (val is not None and val > 0.0) else COLOR_TXT_PRIMARY)
         num_str = f"{int(round(val))}" if val is not None else "–"
         text_rect = QRectF(cx - r, cy - r - 0.5, 2.0 * r, 2.0 * r)
         p.drawText(text_rect, Qt.AlignCenter, num_str)
@@ -2386,7 +2413,16 @@ def draw_battery_pill(
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     if hovered:
-        draw_card_base(p, rect, CARD_RADIUS, hover=True, press_scale=1.0)
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        c_path = theme.rounded_path(rect, CARD_RADIUS)
+        hover_grad = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
+        hover_grad.setColorAt(0.0, QColor(255, 255, 255, 26))
+        hover_grad.setColorAt(1.0, QColor(255, 255, 255, 13))
+        p.fillPath(c_path, hover_grad)
+        p.setPen(QPen(QColor(255, 255, 255, 34), 0.8))
+        p.drawPath(c_path)
+        p.restore()
     elif active:
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 30))
