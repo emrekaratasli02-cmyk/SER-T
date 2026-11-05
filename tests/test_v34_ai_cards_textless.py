@@ -205,10 +205,46 @@ def test_card_threshold_colors_preserved() -> None:
     print("[PASS] test_card_threshold_colors_preserved")
 
 
+def test_measure_claude_card_width_textless_vs_text() -> None:
+    # Textless mode: narrowed width (~96-110px, 104px)
+    w_textless = dock_cards.measure_claude_card_width(show_text=False)
+    assert 96.0 <= w_textless <= 110.0, f"Expected 96-110px in textless, got {w_textless}"
+    assert w_textless == dock_cards.CLAUDE_CARD_TEXTLESS_WIDTH == 104.0
+    # Full text mode: preserved old width (204px)
+    w_full = dock_cards.measure_claude_card_width(show_text=True)
+    assert w_full == dock_cards.CLAUDE_CARD_WIDTH == 204.0
+    print("[PASS] test_measure_claude_card_width_textless_vs_text")
+
+
+def test_measure_ag_card_width_textless_vs_text() -> None:
+    # Textless mode: narrowed width (~96-110px, 104px)
+    w_textless = dock_cards.measure_ag_card_width(show_text=False)
+    assert 96.0 <= w_textless <= 110.0, f"Expected 96-110px in textless, got {w_textless}"
+    assert w_textless == dock_cards.AG_CARD_TEXTLESS_WIDTH == 104.0
+    # Full text mode: preserved old width (204px)
+    w_full = dock_cards.measure_ag_card_width(show_text=True)
+    assert w_full == dock_cards.AG_CARD_WIDTH == 204.0
+    print("[PASS] test_measure_ag_card_width_textless_vs_text")
+
+
+def test_measure_opencode_card_width_textless_vs_text() -> None:
+    # Textless mode: narrowed width (~96-110px, 104px)
+    w_textless = dock_cards.measure_opencode_card_width(show_text=False)
+    assert 96.0 <= w_textless <= 110.0, f"Expected 96-110px in textless, got {w_textless}"
+    assert w_textless == dock_cards.OC_CARD_TEXTLESS_WIDTH == 104.0
+    # Full text mode: preserved old width (184px)
+    w_full = dock_cards.measure_opencode_card_width(show_text=True)
+    assert w_full == dock_cards.OC_CARD_WIDTH == 184.0
+    print("[PASS] test_measure_opencode_card_width_textless_vs_text")
+
+
 if __name__ == "__main__":
     test_claude_card_face_textless_by_default()
     test_ag_card_face_textless_by_default()
     test_opencode_card_face_textless_by_default()
     test_concentric_text_rows_enabled_flag()
     test_card_threshold_colors_preserved()
+    test_measure_claude_card_width_textless_vs_text()
+    test_measure_ag_card_width_textless_vs_text()
+    test_measure_opencode_card_width_textless_vs_text()
     print("ALL AI CARD TEXTLESS TESTS PASSED!")
