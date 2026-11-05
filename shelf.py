@@ -429,11 +429,12 @@ def _device_dpr(p: QPainter) -> float:
 
 
 def draw_shelf_icon(p: QPainter, rect: QRectF, state: str, count: int, hover: bool = False, pulse: float = 0.0) -> None:
-    """28x28 yuvarlak kutu (rect içinde ortalı) + ataç; sayı > 0 ise sağ üstte mavi rozet; pulse > 0 ise ışıma halkası."""
+    """28x28 ataç simgesi (rect içinde ortalı); sayı > 0 ise sağ üstte mavi rozet; pulse > 0 ise ışıma halkası."""
     if state not in ("idle", "over", "open"):
         state = "idle"
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
     box = QRectF(rect.center().x() - SHELF_ICON_W / 2.0, rect.center().y() - SHELF_ICON_W / 2.0,
                  SHELF_ICON_W, SHELF_ICON_W)
 
@@ -452,37 +453,41 @@ def draw_shelf_icon(p: QPainter, rect: QRectF, state: str, count: int, hover: bo
         glyph = QColor(ps.ACCENT)
     elif state == "open":
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, 18))                     # .07
+        p.setBrush(QColor(255, 255, 255, 22))
         p.drawRoundedRect(box, 8.0, 8.0)
         glyph = QColor(255, 255, 255)
     else:
         if hover:
             p.setPen(QPen(QColor(255, 255, 255, 28), 0.9))
-            p.setBrush(QColor(255, 255, 255, 16))
+            p.setBrush(QColor(255, 255, 255, 20))
             p.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), 8.0, 8.0)
         elif pulse > 0.0:
             p.setPen(QPen(QColor(110, 168, 254, int(130 * pulse)), 1.0))
             p.setBrush(QColor(110, 168, 254, int(25 * pulse)))
             p.drawRoundedRect(box, 8.0, 8.0)
-        else:
-            # v28: Gömme yuva (Recessed Well) — fiziksel buton derinliği ve ince kenar
-            p.setPen(QPen(QColor(255, 255, 255, 16), 0.8))
-            p.setBrush(QColor(255, 255, 255, 8))
-            p.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), 8.0, 8.0)
-        glyph = QColor(255, 255, 255, 217 if (hover or pulse > 0.0) else 150)      # .59 (hover .85)
+        # Rölantide zemin/kenarlık yok (Kutusuz kart dili)
+        glyph = QColor(255, 255, 255, 255 if hover else (217 if pulse > 0.0 else 185))
     icon_sz = 18.0
     pm = _svg_pixmap("clip", glyph, icon_sz, _device_dpr(p))
     p.drawPixmap(QPointF(box.center().x() - icon_sz / 2.0, box.center().y() - icon_sz / 2.0), pm)
 
     if count and count > 0:
         txt = "99+" if count > 99 else str(int(count))
-        f = ps.font(10.0, QFont.Weight.Bold, tabular=True)
-        tw = QFontMetricsF(f).horizontalAdvance(txt)
-        bw = max(16.0, tw + 8.0)
-        br = QRectF(box.left() + 18.0, box.top() - 6.0, bw, 16.0)
-        p.setPen(Qt.PenStyle.NoPen)
+        f = ps.font(9.0, QFont.Weight.Bold, tabular=True)
+        fm = QFontMetricsF(f)
+        tw = fm.horizontalAdvance(txt)
+        is_single = (len(txt) == 1)
+        bh = 15.0
+        bw = bh if is_single else max(bh, tw + 7.0)
+        bx = box.right() - bw + 3.5
+        by = box.top() - 3.5
+        br = QRectF(bx, by, bw, bh)
+        r_corner = bh / 2.0
+
+        p.setPen(QPen(QColor(13, 15, 19, 220), 1.0))
         p.setBrush(ps.ACCENT)
-        p.drawRoundedRect(br, 8.0, 8.0)
+        p.drawRoundedRect(br, r_corner, r_corner)
+
         p.setFont(f)
         p.setPen(QColor(0x0D, 0x0F, 0x13))
         p.drawText(br, Qt.AlignmentFlag.AlignCenter, txt)
