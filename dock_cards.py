@@ -296,9 +296,10 @@ def draw_concentric_rings_slot(
 ) -> None:
     """Draw 40x40 concentric rings gauge with centred logo inside.
 
-    viewBox 42x42: outer r=18, inner r=13, stroke 2.2 round caps, clockwise from 12 o'clock.
-    Track: rgba(255, 255, 255, 0.08).
-    Colours: identity colour below 90%, #F87171 at >= 90%. Missing -> empty track only.
+    Refined concentric layout:
+    - Balanced radii & stroke: r_outer=17.6, r_inner=11.4, stroke=2.6 (optimal inter-ring rhythm).
+    - Subtle tinted identity tracks for enhanced contrast & depth against dark dock background.
+    - True round caps on active progress arcs, seamless full circle at 100%.
     """
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
@@ -306,19 +307,21 @@ def draw_concentric_rings_slot(
     center = slot_rect.center()
     cx = center.x()
     cy = center.y()
-    scale = slot_rect.width() / 42.0
-    r_outer = 18.0 * scale
-    r_inner = 13.0 * scale
-    stroke_w = RING_STROKE  # v33: tüm halkalarla aynı kalınlık (ölçekten bağımsız)
+    scale = slot_rect.width() / 40.0
+    r_outer = 17.6 * scale
+    r_inner = 11.4 * scale
+    stroke_w = 2.6 * scale
 
     rect_outer = QRectF(cx - r_outer, cy - r_outer, 2.0 * r_outer, 2.0 * r_outer)
     rect_inner = QRectF(cx - r_inner, cy - r_inner, 2.0 * r_inner, 2.0 * r_inner)
 
-    # 1. Background tracks
-    pen_track = QPen(COLOR_CONCENTRIC_TRACK, stroke_w, Qt.SolidLine, Qt.RoundCap)
-    p.setPen(pen_track)
+    # 1. Background tracks (tinted with respective ring identity color for depth & contrast)
+    track_outer = QColor(outer_color.red(), outer_color.green(), outer_color.blue(), 58)
+    track_inner = QColor(inner_color.red(), inner_color.green(), inner_color.blue(), 52)
     p.setBrush(Qt.NoBrush)
+    p.setPen(QPen(track_outer, stroke_w, Qt.SolidLine, Qt.RoundCap))
     p.drawEllipse(rect_outer)
+    p.setPen(QPen(track_inner, stroke_w, Qt.SolidLine, Qt.RoundCap))
     p.drawEllipse(rect_inner)
 
     # 2. Outer ring arc (start 12 o'clock = 90 deg, clockwise = negative span)
@@ -327,8 +330,12 @@ def draw_concentric_rings_slot(
         fg_col = usage_color(val_clamped, outer_color)
         pen_outer = QPen(fg_col, stroke_w, Qt.SolidLine, Qt.RoundCap)
         p.setPen(pen_outer)
-        span_angle = -int(round((val_clamped / 100.0) * 360.0 * 16.0))
-        p.drawArc(rect_outer, 90 * 16, span_angle)
+        if val_clamped >= 99.8:
+            p.drawEllipse(rect_outer)
+        else:
+            span_angle = -int(round((val_clamped / 100.0) * 360.0 * 16.0))
+            if span_angle != 0:
+                p.drawArc(rect_outer, 90 * 16, span_angle)
 
     # 3. Inner ring arc
     if inner_pct is not None and inner_pct > 0.0:
@@ -336,8 +343,12 @@ def draw_concentric_rings_slot(
         fg_col = usage_color(val_clamped, inner_color)
         pen_inner = QPen(fg_col, stroke_w, Qt.SolidLine, Qt.RoundCap)
         p.setPen(pen_inner)
-        span_angle = -int(round((val_clamped / 100.0) * 360.0 * 16.0))
-        p.drawArc(rect_inner, 90 * 16, span_angle)
+        if val_clamped >= 99.8:
+            p.drawEllipse(rect_inner)
+        else:
+            span_angle = -int(round((val_clamped / 100.0) * 360.0 * 16.0))
+            if span_angle != 0:
+                p.drawArc(rect_inner, 90 * 16, span_angle)
 
     # 4. Centred logo
     if logo_pixmap is not None and not logo_pixmap.isNull():
@@ -372,9 +383,9 @@ def draw_concentric_text_rows(
     # Sabit yüzde sütunu (%100 genişliği): tüm nokta etiketleri kartlarda aynı hizada dizilir
     f_pct_probe = QFontMetricsF(f_pct)
     col_w = f_pct_probe.horizontalAdvance("%100")
-    row_step = 19.0  # iki satırın taban çizgileri arası
+    row_step = 18.5  # iki satırın taban çizgileri arası (optik ritim: 18.5px)
     cap = _get_fm(f_pct).capHeight()
-    base1 = text_rect.center().y() - (row_step - cap) / 2.0  # görsel blok tam ortada
+    base1 = text_rect.center().y() - (row_step - cap) / 2.0  # görsel blok tam optik ortada (mid=32.0)
 
     fm_lbl = QFontMetricsF(f_lbl)
     fm_rst = QFontMetricsF(f_rst)
