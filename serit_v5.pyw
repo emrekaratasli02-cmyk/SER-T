@@ -3395,6 +3395,20 @@ class SeritDock(QWidget):
                 out["shelf"] = QRectF(x, y, shelf_w, h)
             return x, out
 
+        def keep_shelf(out_: Dict[str, Optional[QRectF]]) -> Dict[str, Optional[QRectF]]:
+            """Yer dar: rafı sol kanadın hemen sağına yasla. Gizlemek yerine görünür tutar."""
+            if shelf_w <= 0.0 or out_.get("shelf") is not None:
+                return out_
+            pomo_r = out_.get("pomo")
+            right_bound = (pomo_r.x() - 6.0) if pomo_r is not None else (apps_x - 6.0)
+            fx = min(limit, lw_end + 6.0)
+            if fx + shelf_w <= right_bound:
+                out_["shelf"] = QRectF(fx, y, shelf_w, h)
+                self._v25_note("raf simgesi sol kanada yaslandi (yer dar)")
+                return out_
+            self._v25_note("raf simgesi gizlendi (yer dar)")
+            return out_
+
         x, out = build(pw, shelf_w > 0.0)
         if x >= limit:
             return out
@@ -3403,7 +3417,7 @@ class SeritDock(QWidget):
             x, out = build(pw, shelf_w > 0.0, self.V25_TIGHT_APPS_GAP, self.V25_TIGHT_POMO_GAP)
             if x >= limit:
                 return out
-            # 1) pomodoronun görev satırı düşer (yalnız süre / "Odak · n/4"), 2) raf simgesi gizlenir
+            # 1) pomodoronun görev satırı düşer (yalnız süre / "Odak · n/4"), 2) raf sola yaslanır
             try:
                 cw = float(pomodoro.band_width(dict(self._pomo_state, compact=True)))
             except Exception:
@@ -3417,11 +3431,9 @@ class SeritDock(QWidget):
             x, out = build(min(cw, pw), False)
             if x >= limit:
                 self._pomo_compact = True
-                self._v25_note("raf simgesi gizlendi (yer dar)")
-                return out
+                return keep_shelf(out)
         elif shelf_w > 0.0:
-            self._v25_note("raf simgesi gizlendi (yer dar)")
-            return res
+            return keep_shelf(res)
         self._v25_note("pomodoro blogu gizlendi (yer dar)")
         return res
 
@@ -3640,7 +3652,15 @@ class SeritDock(QWidget):
                 + (BAT_CARD_WIDTH if show_bat else 0.0)
                 + max(0, n_lw - 1) * GAP_MODULE
             )
-            max_allowed_lw = apps_x - (GAP_MODULE if (w_apps > 0) else 0.0) - 10.0
+            # Raf (ataş) simgesi sol kanadın hemen sağına yaslanır: kartlar ne kadar genişlerse
+            # genişlesin ataş için yer ayrılır, böylece OpenCode kartı açıkken de gizlenmez.
+            shelf_reserve = 0.0
+            if self._shelf_visible():
+                shelf_reserve = (float(getattr(shelf, "SHELF_ICON_W", 28.0))
+                                 + float(self.V25_SHELF_APPS_GAP)
+                                 + float(self.V25_MIN_CLEAR))
+            max_allowed_lw = (apps_x - (GAP_MODULE if (w_apps > 0) else 0.0) - 10.0
+                              - shelf_reserve)
             overflow = needed_space - max_allowed_lw
             if overflow > 0 and show_mail:
                 can_shrink = max(0.0, eff_mail_w - dock_cards.MAIL_CARD_MIN_WIDTH)
@@ -3907,7 +3927,7 @@ class SeritDock(QWidget):
                 _last_r = r_cal if show_cal else r_media
                 _inset = self._CONTENT_INSET["cal" if show_cal else "media"][1]
                 # Sağ kümede modüller varsa en soldakinin soluna, yoksa actions_left_x soluna
-                right_bound = (actions_x - self.V25_RIGHT_GAP) if items else (actions_left_x + 9.0)
+                right_bound = (actions_left_x - self.V25_RIGHT_GAP) if items else (actions_left_x + 9.0)
                 div_x = ((_last_r.right() - _inset) + right_bound) / 2.0
                 self._draw_divider(p, div_x, div_cy, intersects)
 
