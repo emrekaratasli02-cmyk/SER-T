@@ -37,6 +37,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QColor,
+    QCursor,
     QPen,
     QFont,
     QFontMetricsF,
@@ -183,6 +184,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "pinned": None,
     "alerts_enabled": True,
     "reserve_space": True,
+    "intelli_hide": False,
     "net_speed_enabled": False,
     "updates_enabled": False,
     # "band" = tam genişlik koyu şerit (Lumabar "full width"), "pill" = ortada kapsül
@@ -683,6 +685,28 @@ class SeritDock(QWidget):
         )
         self.dock_width_tween.on_update = self._on_width_tween_update
 
+        # Intelli-Hide state & sliding tween
+        self._is_intelli_hidden: bool = False
+        self._normal_x: int = 0
+        self._normal_y: int = 0
+        self._hidden_y: int = 0
+        self.anim_dock_y = anim.Tween(0.0, 0.0, theme.DUR_HOVER_EXIT, driver=self.anim_driver)
+        self.anim_dock_y.on_update = self._on_dock_y_update
+
+        self._intelli_timer = QTimer(self)
+        self._intelli_timer.setInterval(250)
+        self._intelli_timer.timeout.connect(self._check_intelli_hide)
+
+        self._intelli_leave_timer = QTimer(self)
+        self._intelli_leave_timer.setSingleShot(True)
+        self._intelli_leave_timer.setInterval(350)
+        self._intelli_leave_timer.timeout.connect(self._on_intelli_leave_timeout)
+
+        self._intelli_check_timer = QTimer(self)
+        self._intelli_check_timer.setSingleShot(True)
+        self._intelli_check_timer.setInterval(80)
+        self._intelli_check_timer.timeout.connect(self._check_intelli_hide)
+
         # Tactile press spring
         self.press_tween = anim.PressTween(
             normal_scale=1.0,
@@ -867,6 +891,7 @@ class SeritDock(QWidget):
             self.media_panel.mute_requested.connect(self._on_bat_mute_requested)
             self.media_panel.open_mixer_requested.connect(self._on_media_open_mixer)
             self.media_panel.open_app_requested.connect(self._on_media_open_app)
+            self.media_panel.device_switch_requested.connect(self._on_media_panel_device_switch)
         except Exception as exc:
             sources.log_err("media_panel_init", exc)
             self.media_panel = None
@@ -1247,7 +1272,7 @@ class SeritDock(QWidget):
         self.submit_fetch("calmonth")
 
     def _register_appbar(self) -> bool:
-        if self.preview_mode or not bool(self.settings.get("reserve_space", True)):
+        if self.preview_mode or not bool(self.settings.get("reserve_space", True)) or bool(self.settings.get("intelli_hide", False)):
             return False
         hwnd = int(self.winId())
         if not hwnd:
@@ -1371,17 +1396,24 @@ class SeritDock(QWidget):
             scr.availableGeometryChanged.connect(lambda _g: (self.place_dock(), self._register_appbar()))
         for ms in (400, 1200, 3000):
             QTimer.singleShot(ms, self.place_dock)
+        if bool(self.settings.get("intelli_hide", False)):
+            self._intelli_timer.start()
+            QTimer.singleShot(500, self._check_intelli_hide)
 
     _WM_TASKBAR_CREATED: int = 0
 
     def nativeEvent(self, event_type, message):
         """Explorer yeniden başlayınca Windows 'TaskbarCreated' yayınlar: alanı ve gizlemeyi yenile."""
         try:
-            if event_type == b"windows_generic_MSG" and SeritDock._WM_TASKBAR_CREATED:
+            if event_type == b"windows_generic_MSG":
                 import ctypes.wintypes as _wt
                 msg = _wt.MSG.from_address(int(message))
-                if msg.message == SeritDock._WM_TASKBAR_CREATED:
+                if SeritDock._WM_TASKBAR_CREATED and msg.message == SeritDock._WM_TASKBAR_CREATED:
                     QTimer.singleShot(1500, self._on_taskbar_created)
+                elif msg.message in (0x001A, 0x001C, 0x0047):
+                    # 0x001A: WM_SETTINGCHANGE, 0x001C: WM_ACTIVATEAPP, 0x0047: WM_WINDOWPOSCHANGED
+                    if bool(self.settings.get("intelli_hide", False)):
+                        self._schedule_intelli_check()
         except Exception as exc:
             sources.log_err("nativeEvent", exc)
         return super().nativeEvent(event_type, message)
@@ -1841,6 +1873,21 @@ class SeritDock(QWidget):
         except Exception as exc:
             sources.log_err("media_open_mixer", exc)
 
+    def _on_media_panel_device_switch(self, dev_id: str) -> None:
+        if self.preview_mode or not dev_id:
+            return
+        def _do_switch():
+            try:
+                import media_panel
+                media_panel.set_default_output_device(dev_id)
+            except Exception as exc:
+                sources.log_err("media_device_switch", exc)
+        self.submit_action(
+            "media_device_switch",
+            _do_switch,
+            on_done=lambda: QTimer.singleShot(250, lambda: self.submit_fetch("media")),
+        )
+
     def _on_media_open_app(self, exe_or_app: str) -> None:
         if self.preview_mode:
             return
@@ -2295,7 +2342,17 @@ class SeritDock(QWidget):
             sg = screen.geometry() if screen else QRect(0, 0, 1536, 864)
             if self.width() != sg.width() or self.height() != int(DOCK_HEIGHT):
                 self.resize(sg.width(), int(DOCK_HEIGHT))
-            self.move(sg.left(), int(geom.bottom() - DOCK_HEIGHT + 1))
+            normal_y = int(geom.bottom() - DOCK_HEIGHT + 1)
+            self._normal_x = sg.left()
+            self._normal_y = normal_y
+            self._hidden_y = int(sg.bottom() - 2)
+            if getattr(self, "_is_intelli_hidden", False):
+                self.move(sg.left(), self._hidden_y)
+            else:
+                self.move(sg.left(), normal_y)
+                if hasattr(self, "anim_dock_y"):
+                    self.anim_dock_y.value = float(normal_y)
+                    self.anim_dock_y.target_val = float(normal_y)
             return
 
         pos = self.settings.get("pos")
@@ -2313,7 +2370,17 @@ class SeritDock(QWidget):
 
         clamped_x = max(geom.left(), min(x, geom.right() - self.width()))
         clamped_y = max(geom.top(), min(target_y, geom.bottom() - int(DOCK_HEIGHT)))
-        self.move(clamped_x, clamped_y)
+        sg = screen.geometry() if screen else geom
+        self._normal_x = clamped_x
+        self._normal_y = clamped_y
+        self._hidden_y = int(sg.bottom() - 2)
+        if getattr(self, "_is_intelli_hidden", False):
+            self.move(clamped_x, self._hidden_y)
+        else:
+            self.move(clamped_x, clamped_y)
+            if hasattr(self, "anim_dock_y"):
+                self.anim_dock_y.value = float(clamped_y)
+                self.anim_dock_y.target_val = float(clamped_y)
 
     def _is_band(self) -> bool:
         return str(self.settings.get("style", "band")) != "pill"
@@ -4234,7 +4301,18 @@ class SeritDock(QWidget):
                     break
         super().mousePressEvent(event)
 
+    def enterEvent(self, event: QEvent) -> None:
+        if bool(self.settings.get("intelli_hide", False)):
+            if hasattr(self, "_intelli_leave_timer"):
+                self._intelli_leave_timer.stop()
+            if getattr(self, "_is_intelli_hidden", False):
+                self._reveal_intelli_dock()
+        super().enterEvent(event)
+
     def mouseMoveEvent(self, event) -> None:
+        if bool(self.settings.get("intelli_hide", False)) and getattr(self, "_is_intelli_hidden", False):
+            self._reveal_intelli_dock()
+            return
         pos = event.position()
         if event.buttons() & Qt.LeftButton:
             # Check tile horizontal drag (> 6 px)
@@ -4328,6 +4406,9 @@ class SeritDock(QWidget):
             self._hover_tray_item = None
             self.setToolTip("")
             self.update()
+        if bool(self.settings.get("intelli_hide", False)) and not self.preview_mode:
+            if hasattr(self, "_intelli_leave_timer"):
+                self._intelli_leave_timer.start(350)
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
@@ -4977,6 +5058,193 @@ class SeritDock(QWidget):
         else:
             self.show()
             self.update()
+
+    # ------------------------------------------------------- Intelli-Hide
+    def _on_dock_y_update(self, val: float) -> None:
+        self.move(self.x(), int(round(val)))
+
+    def _schedule_intelli_check(self) -> None:
+        if getattr(self, "_intelli_check_timer", None) is not None:
+            self._intelli_check_timer.start(80)
+
+    def _is_any_panel_or_menu_open(self) -> bool:
+        """Herhangi bir popover, panel, önizleme veya menü açık mı?"""
+        for attr in (
+            "popover", "vol_popover", "tray_popover", "brightness_popover",
+            "battery_panel", "tray_panel", "shelf_panel", "media_panel",
+            "mail_panel", "quota_panel", "opencode_panel", "hover_preview",
+            "window_picker", "_settings_win", "_pomo_action_menu",
+            "_shelf_action_menu", "_app_action_menu", "_dock_action_menu",
+        ):
+            p = getattr(self, attr, None)
+            if p is not None:
+                if hasattr(p, "is_open") and p.is_open():
+                    return True
+                if hasattr(p, "isVisible") and p.isVisible():
+                    return True
+        return False
+
+    def _is_window_overlapping(
+        self, hwnd: int, dock_rect: tuple[int, int, int, int], own_pid: int, own_hwnd: int
+    ) -> bool:
+        if not hwnd or hwnd == own_hwnd:
+            return False
+        try:
+            import ctypes
+            import ctypes.wintypes as _wt
+            u32 = ctypes.windll.user32
+
+            if not u32.IsWindowVisible(hwnd) or u32.IsIconic(hwnd):
+                return False
+
+            pid = _wt.DWORD(0)
+            u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if int(pid.value) == own_pid:
+                return False
+
+            buf = ctypes.create_unicode_buffer(64)
+            u32.GetClassNameW(hwnd, buf, 64)
+            if buf.value in winapi._SHELL_CLASSES:
+                return False
+
+            r = _wt.RECT()
+            if not u32.GetWindowRect(hwnd, ctypes.byref(r)):
+                return False
+
+            dl, dt, dr, db = dock_rect
+            if r.right <= r.left or r.bottom <= r.top:
+                return False
+            # Kesişim kontrolü
+            if r.right <= dl or r.left >= dr or r.bottom <= dt or r.top >= db:
+                return False
+            return True
+        except Exception:
+            return False
+
+    def check_window_overlap(self) -> bool:
+        """Intelli-Hide: aktif pencere veya fare altındaki pencere dock alanıyla kesişiyor mu?"""
+        if self.preview_mode:
+            return False
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if not screen:
+            return False
+
+        dock_x = int(getattr(self, "_normal_x", self.x()))
+        dock_y = int(getattr(self, "_normal_y", self.y()))
+        dock_w = int(self.width())
+        dock_h = int(DOCK_HEIGHT)
+        dock_rect = (dock_x, dock_y, dock_x + dock_w, dock_y + dock_h)
+
+        try:
+            import ctypes
+            import ctypes.wintypes as _wt
+            u32 = ctypes.windll.user32
+
+            own_pid = os.getpid()
+            own_hwnd = int(self.winId() or 0)
+
+            # 1. Aktif (foreground) pencere
+            fg = u32.GetForegroundWindow()
+            if fg and self._is_window_overlapping(fg, dock_rect, own_pid, own_hwnd):
+                return True
+
+            # 2. Fare altındaki pencere
+            pt = _wt.POINT()
+            if u32.GetCursorPos(ctypes.byref(pt)):
+                h_pt = u32.WindowFromPoint(pt)
+                if h_pt:
+                    # GA_ROOT = 2
+                    root = u32.GetAncestor(h_pt, 2) or h_pt
+                    if root and root != fg and self._is_window_overlapping(root, dock_rect, own_pid, own_hwnd):
+                        return True
+        except Exception as exc:
+            sources.log_err("check_window_overlap", exc)
+        return False
+
+    def _check_intelli_hide(self) -> None:
+        if self.preview_mode or not bool(self.settings.get("intelli_hide", False)):
+            if getattr(self, "_is_intelli_hidden", False):
+                self._reveal_intelli_dock()
+            return
+        if getattr(self, "_fs_hidden", False):
+            return
+
+        cursor = QCursor.pos()
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        sg = screen.geometry() if screen else QRect(0, 0, 1536, 864)
+
+        # Fare ekran alt kenarında (0-3 px) mı veya dock üzerinde mi?
+        is_at_bottom_edge = (cursor.y() >= sg.bottom() - 3 and sg.left() <= cursor.x() <= sg.right())
+        is_over_dock = self.geometry().contains(cursor)
+        panel_open = self._is_any_panel_or_menu_open()
+
+        if is_at_bottom_edge or is_over_dock or panel_open:
+            if self._is_intelli_hidden:
+                self._reveal_intelli_dock()
+            return
+
+        if self.check_window_overlap():
+            if not self._is_intelli_hidden:
+                self._hide_intelli_dock()
+        else:
+            if self._is_intelli_hidden:
+                self._reveal_intelli_dock()
+
+    def _reveal_intelli_dock(self) -> None:
+        """Intelli-Hide: dock'u ekran altına çekilmiş halden normal konumuna yumuşakça kaydırır."""
+        self._is_intelli_hidden = False
+        target_y = float(getattr(self, "_normal_y", self.y()))
+        if hasattr(self, "anim_dock_y"):
+            self.anim_dock_y.retarget(target_y, duration=theme.DUR_HOVER_EXIT)
+        else:
+            self.move(self.x(), int(round(target_y)))
+        self.update()
+
+    def _hide_intelli_dock(self) -> None:
+        """Intelli-Hide: dock'u ekranın altına yumuşakça kaydırır (0-2px bırakarak)."""
+        if getattr(self, "_is_intelli_hidden", False):
+            return
+        if getattr(self, "_is_dragging", False) or self._is_any_panel_or_menu_open():
+            return
+        self._is_intelli_hidden = True
+        self._hover_key = None
+        self._hover_app_idx = None
+        self._hover_tray_item = None
+        self._preview_hover_idx = None
+        self.setToolTip("")
+        if not self.preview_mode:
+            self.bubble.hide()
+        self._hide_hover_preview(force=True)
+
+        target_y = float(getattr(self, "_hidden_y", self.y()))
+        if hasattr(self, "anim_dock_y"):
+            self.anim_dock_y.retarget(target_y, duration=theme.DUR_HOVER_EXIT)
+        else:
+            self.move(self.x(), int(round(target_y)))
+        self.update()
+
+    def _on_intelli_leave_timeout(self) -> None:
+        if self.preview_mode or not bool(self.settings.get("intelli_hide", False)):
+            return
+        if not self.geometry().contains(QCursor.pos()) and not self._is_any_panel_or_menu_open():
+            if self.check_window_overlap():
+                self._hide_intelli_dock()
+
+    def _on_intelli_hide_setting_changed(self) -> None:
+        enabled = bool(self.settings.get("intelli_hide", False))
+        if enabled:
+            self._unregister_appbar()
+            if hasattr(self, "_intelli_timer"):
+                self._intelli_timer.start()
+            self._check_intelli_hide()
+        else:
+            if hasattr(self, "_intelli_timer"):
+                self._intelli_timer.stop()
+            if hasattr(self, "_intelli_leave_timer"):
+                self._intelli_leave_timer.stop()
+            self._reveal_intelli_dock()
+            if bool(self.settings.get("reserve_space", True)):
+                self._register_appbar()
 
     def _request_picker_thumbs(self, exe: str, hwnds: List[int]) -> None:
         """Önizlemeleri arka planda alır (GUI donmaz); liste açılınca yerlerine oturur. Diske yazılmaz."""
@@ -5845,14 +6113,19 @@ class SeritDock(QWidget):
         reserve_changed = bool(new_cfg.get("reserve_space", True)) != bool(old.get("reserve_space", True))
         if reserve_changed:
             old["reserve_space"] = bool(new_cfg.get("reserve_space", True))
+        intelli_changed = "intelli_hide" in new_cfg and bool(new_cfg.get("intelli_hide", False)) != bool(old.get("intelli_hide", False))
+        if "intelli_hide" in new_cfg:
+            old["intelli_hide"] = bool(new_cfg.get("intelli_hide", False))
         new_style = "pill" if new_cfg.get("style") == "pill" else "band"
         if new_style != str(old.get("style", "band")):
             self.set_dock_style(new_style)  # kaydeder, yerleşimi ve AppBar'ı yeniler
-        if reserve_changed:
+        if reserve_changed and not old.get("intelli_hide", False):
             if old["reserve_space"]:
                 self._register_appbar()
             else:
                 self._unregister_appbar()
+        if intelli_changed:
+            self._on_intelli_hide_setting_changed()
         if not self.preview_mode:
             save_settings(old)
         self.update_windows()
