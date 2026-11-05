@@ -1476,7 +1476,7 @@ def draw_ag_card(
         p.save()
         p.setRenderHint(QPainter.Antialiasing, True)
         badge_d = 13.0
-        badge_r = QRectF(slot_rect.right() - 4.5, slot_rect.top() - 5.5, badge_d, badge_d)
+        badge_r = QRectF(slot_rect.right() - 5.5, slot_rect.top() - 5.5, badge_d, badge_d)
         p.setPen(QPen(QColor(13, 15, 19), 2.0))
         badge_bg = COLOR_CLAUDE_CORAL if want_busra else COLOR_ACCENT_BLUE
         if has_err:
@@ -1489,8 +1489,8 @@ def draw_ag_card(
         p.drawText(badge_r.adjusted(0, -0.6, 0, -0.6), Qt.AlignCenter, "B" if want_busra else "E")
         p.restore()
 
-    # Right side text area: gap 8px -> x = rect.x() + 58.0
-    bx = rect.x() + 58.0
+    # Right side text area: rozet halka disina tasindigi icin 4px ek pay -> x = rect.x() + 62.0
+    bx = rect.x() + 62.0
     bw = max(20.0, rect.right() - 8.0 - bx)
 
     p.save()

@@ -86,7 +86,7 @@ def test_claude_card_face_textless_by_default() -> None:
 def test_ag_card_face_textless_by_default() -> None:
     get_qapp()
     card_rect = QRectF(0.0, 0.0, 184.0, 52.0)
-    text_rect = QRectF(58.0, 0.0, 126.0, 52.0)
+    text_rect = QRectF(62.0, 0.0, 122.0, 52.0)  # AG: rozet halka disina tasindigi icin metin alani 62px baslar
     slot_rect = QRectF(10.0, 6.0, 40.0, 40.0)
 
     ag_data = {
