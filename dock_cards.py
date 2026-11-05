@@ -1369,7 +1369,8 @@ def draw_ag_card(
     slot_rect = QRectF(rect.x() + 10.0, rect.y() + 6.0, 40.0, 40.0)
     dev = p.device()
     dpr = dev.devicePixelRatioF() if dev is not None else 1.0
-    ag_pm = get_antigravity_pixmap(17.0, dpr)
+    # Net ve orantili logo boyutu: 20.5px ic halkayi doldurur, bulanikligi onler
+    ag_pm = get_antigravity_pixmap(20.5, dpr)
 
     has_err = bool(ag_data.get("err")) or not ag_data.get("groups")
 
@@ -1402,41 +1403,73 @@ def draw_ag_card(
         used_gemini = float(max_grp.get("used", 0.0))
         gemini_reset_raw = max_grp.get("reset_at") or max_grp.get("reset_tr") or ""
 
-    # Concentric rings slot (Outer: Claude quota, Inner: Gemini quota)
-    draw_concentric_rings_slot(
-        p,
-        slot_rect,
-        outer_pct=used_claude if not has_err else None,
-        outer_color=COLOR_RING_OUTER,
-        inner_pct=used_gemini if not has_err else None,
-        inner_color=COLOR_GEMINI_BLUE,
-        logo_pixmap=ag_pm,
-    )
+    # Concentric rings slot (Hata durumunda iz ve logo sakin bir hiyerarsi icin hafifce kisilir)
+    if has_err:
+        p.save()
+        p.setOpacity(0.55)
+        draw_concentric_rings_slot(
+            p,
+            slot_rect,
+            outer_pct=None,
+            outer_color=COLOR_RING_OUTER,
+            inner_pct=None,
+            inner_color=COLOR_GEMINI_BLUE,
+            logo_pixmap=ag_pm,
+        )
+        p.restore()
+    else:
+        draw_concentric_rings_slot(
+            p,
+            slot_rect,
+            outer_pct=used_claude,
+            outer_color=COLOR_RING_OUTER,
+            inner_pct=used_gemini,
+            inner_color=COLOR_GEMINI_BLUE,
+            logo_pixmap=ag_pm,
+        )
 
-    if not has_err and (multi_accounts or active_account is not None):
+    # Aktif hesap rozeti: halka omuzuna tam oturan 13px daire, 2px koyu oyuk kenar ve optik merkezleme
+    if multi_accounts or active_account is not None:
         p.save()
         p.setRenderHint(QPainter.Antialiasing, True)
-        badge_r = QRectF(slot_rect.right() - 13.0, slot_rect.top() - 1.0, 14.0, 14.0)
-        p.setPen(QPen(QColor(13, 15, 19), 1.5))
-        p.setBrush(COLOR_CLAUDE_CORAL if want_busra else COLOR_GEMINI_BLUE)
+        badge_d = 13.0
+        badge_r = QRectF(slot_rect.right() - 11.5, slot_rect.top() + 0.5, badge_d, badge_d)
+        p.setPen(QPen(QColor(13, 15, 19), 2.0))
+        badge_bg = COLOR_CLAUDE_CORAL if want_busra else COLOR_ACCENT_BLUE
+        if has_err:
+            badge_bg = QColor(badge_bg)
+            badge_bg.setAlpha(180)
+        p.setBrush(badge_bg)
         p.drawEllipse(badge_r)
-        p.setPen(QColor(13, 15, 19))
+        p.setPen(QColor(13, 15, 19) if not has_err else QColor(255, 255, 255, 220))
         p.setFont(theme.make_font(9.0, QFont.Weight.Bold))
-        p.drawText(badge_r, Qt.AlignCenter, "B" if want_busra else "E")
+        p.drawText(badge_r.adjusted(0, -0.6, 0, -0.6), Qt.AlignCenter, "B" if want_busra else "E")
         p.restore()
 
-    # Right side text area: gap 9px -> x = 10 + 40 + 9 = rect.x() + 59.0
-    bx = rect.x() + 59.0
-    bw = max(20.0, rect.right() - 10.0 - bx)
+    # Right side text area: gap 8px -> x = rect.x() + 58.0
+    bx = rect.x() + 58.0
+    bw = max(20.0, rect.right() - 8.0 - bx)
 
     p.save()
     if has_err:
-        p.setOpacity(0.65)
-        f_err = theme.make_font(11.0, QFont.Weight.Normal)
-        p.setFont(f_err)
-        p.setPen(COLOR_TXT_MUTED)
-        p.drawText(QRectF(bx, rect.y(), bw, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, "Antigravity okunamadı")
-        p.setOpacity(1.0)
+        f_err_title = theme.make_font(11.0, QFont.Weight.Medium)
+        f_err_sub = theme.make_font(10.0, QFont.Weight.Normal)
+        fm_title = QFontMetricsF(f_err_title)
+
+        if bw >= 80.0:
+            p.setFont(f_err_title)
+            p.setPen(COLOR_TXT_PRIMARY)
+            p.drawText(QRectF(bx, rect.y() + 9.0, bw - 14.0, 16.0), Qt.AlignLeft | Qt.AlignVCenter, "Antigravity")
+            p.setFont(f_err_sub)
+            p.setPen(COLOR_BAR_AMBER)
+            p.drawText(QRectF(bx, rect.y() + 27.0, bw - 14.0, 15.0), Qt.AlignLeft | Qt.AlignVCenter, "Okunamadı")
+        else:
+            p.setFont(f_err_title)
+            p.setPen(COLOR_TXT_MUTED)
+            txt = _elided_text(fm_title, "Okunamadı", bw - 12.0)
+            p.drawText(QRectF(bx, rect.y(), bw - 12.0, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, txt)
+
+        # Amber uyari noktasi
         p.setPen(Qt.NoPen)
         p.setBrush(COLOR_BAR_AMBER)
         p.drawEllipse(QPointF(rect.right() - 8.0, rect.top() + 8.0), 3.0, 3.0)
