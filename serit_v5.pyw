@@ -3532,14 +3532,14 @@ class SeritDock(QWidget):
                         presence.draw_presence_icon(p, r, self._presence_usage, hover=(self._hover_key == key))
                 except Exception as exc:
                     sources.log_err(f"{key}_draw", exc)
-        # Sağ kümenin en solundaki modül ile solundaki kart (Takvim/Medya) arasına zarif ayraç
+        # Sağ kümenin en solundaki modül ile solundaki kart (Takvim/Medya) arasına zarif ayraç (alfa 52 tek stil)
         if items:
             leftmost_x = x
             div_cy = CARD_Y + CARD_HEIGHT / 2.0
             div_x = leftmost_x - (self.V25_RIGHT_GAP / 2.0)
             p.save()
             p.setRenderHint(QPainter.Antialiasing, False)
-            p.fillRect(QRectF(round(div_x), round(div_cy - dock_cards.CARD_DIVIDER_H / 2.0), 1.0, dock_cards.CARD_DIVIDER_H), QColor(255, 255, 255, 60))
+            p.fillRect(QRectF(round(div_x), round(div_cy - dock_cards.CARD_DIVIDER_H / 2.0), 1.0, dock_cards.CARD_DIVIDER_H), dock_cards.CARD_DIVIDER)
             p.restore()
 
     def _left_open_sig(self) -> Tuple[bool, bool, bool, bool, bool]:
