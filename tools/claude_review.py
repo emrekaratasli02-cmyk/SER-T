@@ -51,7 +51,8 @@ def _key() -> str:
 
 
 def _git(*args: str) -> str:
-    out = subprocess.run(["git", *args], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    root = os.environ.get("REVIEW_REPO_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = subprocess.run(["git", *args], cwd=root,
                          capture_output=True, text=True, encoding="utf-8", errors="replace")
     if out.returncode != 0:
         raise SystemExit(f"git {' '.join(args)} basarisiz: {out.stderr.strip()[:300]}")
