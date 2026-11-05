@@ -1476,7 +1476,7 @@ def draw_ag_card(
         p.save()
         p.setRenderHint(QPainter.Antialiasing, True)
         badge_d = 13.0
-        badge_r = QRectF(slot_rect.right() - 6.5, slot_rect.top() - 4.0, badge_d, badge_d)
+        badge_r = QRectF(slot_rect.right() - 4.5, slot_rect.top() - 5.5, badge_d, badge_d)
         p.setPen(QPen(QColor(13, 15, 19), 2.0))
         badge_bg = COLOR_CLAUDE_CORAL if want_busra else COLOR_ACCENT_BLUE
         if has_err:
