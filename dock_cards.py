@@ -1689,6 +1689,7 @@ def draw_sys_card(
     cx_ram = rect.x() + rect.width() - pad_x - size / 2.0
 
     f_num = theme.make_font(11.0, QFont.Weight.DemiBold, tabular=True)
+    f_num_sm = theme.make_font(10.0, QFont.Weight.DemiBold, tabular=True)
     f_lbl = theme.make_font(9.0, QFont.Weight.DemiBold, letter_spacing=0.5)
 
     rings = [
@@ -1696,11 +1697,13 @@ def draw_sys_card(
         (cx_ram, r_val, COLOR_RAM_BAR, True, "RAM"),
     ]
 
+    pen_track = QPen(COLOR_RING_TRACK, stroke, Qt.SolidLine, Qt.RoundCap)
+
     for cx, val, base_col, is_ram, lbl in rings:
         arc_rect = QRectF(cx - r, cy - r, 2.0 * r, 2.0 * r)
 
-        # 1. Background full track circle (rgba(255, 255, 255, 0.13))
-        p.setPen(_PEN_SYS_TRACK)
+        # 1. Background full track circle (sol kartlarla aynı iz dili)
+        p.setPen(pen_track)
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(arc_rect)
 
@@ -1714,16 +1717,18 @@ def draw_sys_card(
             p.drawArc(arc_rect, 90 * 16, span_angle)
 
         # 3. Percentage number centred inside (no % sign, '–' for missing/err)
-        p.setFont(f_num)
-        p.setPen(fg_col if (val is not None and val > 0.0) else COLOR_TXT_PRIMARY)
         num_str = f"{int(round(val))}" if val is not None else "–"
-        text_rect = QRectF(cx - r, cy - r - 0.5, 2.0 * r, 2.0 * r)
+        p.setFont(f_num_sm if len(num_str) >= 3 else f_num)
+        p.setPen(fg_col if (val is not None and val > 0.0) else COLOR_TXT_PRIMARY)
+        text_y_off = -1.2 if val is None else -0.5
+        text_rect = QRectF(cx - r, cy - r + text_y_off, 2.0 * r, 2.0 * r)
         p.drawText(text_rect, Qt.AlignCenter, num_str)
 
-        # 4. Alt etiket: CPU / RAM (8.5 px, halkaya ortalı, sönük gri)
+        # 4. Alt etiket: CPU / RAM (halkaya ortalı, halka altı ve kart tabanı arasında dengeli)
         p.setFont(f_lbl)
         p.setPen(COLOR_TXT_MUTED)
-        lbl_rect = QRectF(cx - size / 2.0 - 2.0, rect.y() + 39.0, size + 4.0, 10.0)
+        y_lbl = cy + size / 2.0
+        lbl_rect = QRectF(cx - size / 2.0 - 4.0, y_lbl, size + 8.0, rect.bottom() - y_lbl)
         p.drawText(lbl_rect, Qt.AlignCenter, lbl)
 
     p.restore()
@@ -2447,7 +2452,8 @@ def draw_battery_pill(
     Üzerine gelince / panel açıkken yumuşak kart zemini.
     Tüm kart tek isabet alanıdır; dikdörtgen döndürülür.
     """
-    col = battery_color(percent, charging)
+    is_ac = charging or on_ac_full
+    col = battery_color(percent, is_ac)
     lvl = 100.0 if percent is None else max(0.0, min(100.0, float(percent)))
     cx = rect.center().x()
     # 52 px kart yüksekliğinde 34 px halka; 32 px gibi dar bir rect geçilirse sığacak çap kullanılır
@@ -2460,6 +2466,7 @@ def draw_battery_pill(
 
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
     if hovered:
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
@@ -2476,15 +2483,15 @@ def draw_battery_pill(
         p.setBrush(QColor(255, 255, 255, 30))
         p.drawPath(_rounded_path(rect, CARD_RADIUS))
 
-    # Arka iz + aktif yay (12 yönünden saat yönünde)
-    p.setPen(QPen(COLOR_RING_TRACK, stroke, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
+    # Arka iz + aktif yay (12 yönünden saat yönünde, sol kartlarla aynı iz dili)
+    p.setPen(QPen(COLOR_RING_TRACK, stroke, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawEllipse(r_ring)
     if lvl > 0.0:
         p.setPen(QPen(col, stroke, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         p.drawArc(r_ring, 90 * 16, -int(round((lvl / 100.0) * 360 * 16)))
 
-    if charging or on_ac_full:
+    if is_ac:
         bolt_w = max(6.0, dia * (10.0 / 34.0))
         bolt_h = max(9.0, dia * (16.0 / 34.0))
         bolt = _get_bolt_path(cx, cy, bolt_w, bolt_h)
@@ -2492,11 +2499,15 @@ def draw_battery_pill(
         p.setBrush(QColor(panel_style.OK))
         p.drawPath(bolt)
     else:
-        f = theme.make_font(11.0 if dia >= 30.0 else 9.5, QFont.Weight.DemiBold, tabular=True)
-        p.setFont(f)
-        p.setPen(COLOR_TXT_PRIMARY)
         txt = f"{int(round(lvl))}" if percent is not None else "—"
-        p.drawText(r_ring, Qt.AlignmentFlag.AlignCenter, txt)
+        f_sz = (10.0 if dia >= 30.0 else 9.0) if len(txt) >= 3 else (11.0 if dia >= 30.0 else 9.0)
+        f = theme.make_font(f_sz, QFont.Weight.DemiBold, tabular=True)
+        p.setFont(f)
+        txt_col = col if (percent is not None and percent <= 20) else COLOR_TXT_PRIMARY
+        p.setPen(txt_col)
+        text_y_off = -1.2 if percent is None else -0.5
+        text_rect = QRectF(cx - r, cy - r + text_y_off, 2.0 * r, 2.0 * r)
+        p.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, txt)
     p.restore()
     return QRectF(rect)
 
