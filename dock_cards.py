@@ -110,8 +110,8 @@ OC_CARD_TEXTLESS_WIDTH: float = 52.0
 AI_CARD_TEXTLESS_WIDTH: float = 52.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
-SYS_CARD_WIDTH: float = 96.0
-SYS_RING_SIZE: float = 34.0
+SYS_CARD_WIDTH: float = 52.0
+SYS_RING_SIZE: float = 40.0
 SYS_RING_STROKE: float = RING_STROKE
 
 _PEN_CARD_BORDER: QPen = QPen(CARD_BORDER, 1.0)
@@ -299,6 +299,10 @@ def draw_concentric_rings_slot(
     inner_color: QColor,
     logo_pixmap: Optional[QPixmap],
     fallback_icon_fn: Optional[Any] = None,
+    outer_warn_at: float = RING_WARN_AT,
+    outer_crit_at: float = RING_CRIT_AT,
+    inner_warn_at: float = RING_WARN_AT,
+    inner_crit_at: float = RING_CRIT_AT,
 ) -> None:
     """Draw 40x40 concentric rings gauge with centred logo inside.
 
@@ -333,7 +337,7 @@ def draw_concentric_rings_slot(
     # 2. Outer ring arc (start 12 o'clock = 90 deg, clockwise = negative span)
     if outer_pct is not None and outer_pct > 0.0:
         val_clamped = max(0.0, min(100.0, float(outer_pct)))
-        fg_col = usage_color(val_clamped, outer_color)
+        fg_col = usage_color(val_clamped, outer_color, warn_at=outer_warn_at, crit_at=outer_crit_at)
         pen_outer = QPen(fg_col, stroke_w, Qt.SolidLine, Qt.RoundCap)
         p.setPen(pen_outer)
         if val_clamped >= 99.8:
@@ -346,7 +350,7 @@ def draw_concentric_rings_slot(
     # 3. Inner ring arc
     if inner_pct is not None and inner_pct > 0.0:
         val_clamped = max(0.0, min(100.0, float(inner_pct)))
-        fg_col = usage_color(val_clamped, inner_color)
+        fg_col = usage_color(val_clamped, inner_color, warn_at=inner_warn_at, crit_at=inner_crit_at)
         pen_inner = QPen(fg_col, stroke_w, Qt.SolidLine, Qt.RoundCap)
         p.setPen(pen_inner)
         if val_clamped >= 99.8:
@@ -1785,6 +1789,27 @@ def _parse_sys_metric(val: Any) -> Optional[float]:
         return None
 
 
+def draw_sys_monitor_glyph(p: QPainter, rect: QRectF, color: Optional[QColor] = None) -> None:
+    """Draw desktop monitor glyph centered inside concentric ring hole."""
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing, True)
+    cx, cy = rect.center().x(), rect.center().y()
+    scale = min(rect.width(), rect.height()) / 24.0
+    fg = color or COLOR_ACCENT_BLUE
+    pen = QPen(fg, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    sx = cx - 12.0 * scale
+    sy = cy - 12.0 * scale
+    screen_rect = QRectF(sx + 2.0 * scale, sy + 3.0 * scale, 20.0 * scale, 14.0 * scale)
+    p.drawRoundedRect(screen_rect, 2.0 * scale, 2.0 * scale)
+    # Stand vertical:
+    p.drawLine(QPointF(cx, sy + 17.0 * scale), QPointF(cx, sy + 21.0 * scale))
+    # Stand base:
+    p.drawLine(QPointF(cx - 4.0 * scale, sy + 21.0 * scale), QPointF(cx + 4.0 * scale, sy + 21.0 * scale))
+    p.restore()
+
+
 def draw_sys_card(
     p: QPainter,
     rect: QRectF,
@@ -1795,7 +1820,7 @@ def draw_sys_card(
     ram_disp: Optional[float] = None,
     opacity: float = 1.0,
 ) -> None:
-    """Renders 100x52 System card with two circular ring gauges (İşlemci / Bellek)."""
+    """Renders 52x52 System card with concentric ring gauges (Outer: CPU, Inner: RAM, Center: Monitor glyph)."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
     p.setRenderHint(QPainter.TextAntialiasing)
@@ -1816,59 +1841,28 @@ def draw_sys_card(
     c_val = _parse_sys_metric(c_metric)
     r_val = _parse_sys_metric(r_metric)
 
-    size = SYS_RING_SIZE
-    stroke = SYS_RING_STROKE
-    r = (size - stroke) / 2.0
-    # Estetik: halka (34) + 2 px boşluk + etiket (10) grubu 52 px karta eşit payla sığsın.
-    # Toplam 46 -> üst/alt 3 px nefes payı; cy = üst + 17 = 20.
-    cy = rect.y() + 20.0
+    # 40x40 concentric rings slot centered in 52px card (padding 6px)
+    slot_x = rect.x() + (rect.width() - 40.0) / 2.0
+    slot_rect = QRectF(slot_x, rect.y() + 6.0, 40.0, 40.0)
 
-    pad_x = 10.0
-    cx_cpu = rect.x() + pad_x + size / 2.0
-    cx_ram = rect.x() + rect.width() - pad_x - size / 2.0
+    def _fallback_glyph(painter: QPainter, s_rect: QRectF) -> None:
+        glyph_col = COLOR_RING_CRITICAL if has_err else COLOR_ACCENT_BLUE
+        draw_sys_monitor_glyph(painter, QRectF(s_rect.center().x() - 7.0, s_rect.center().y() - 7.0, 14.0, 14.0), glyph_col)
 
-    f_num = theme.make_font(11.0, QFont.Weight.DemiBold, tabular=True)
-    f_num_sm = theme.make_font(10.0, QFont.Weight.DemiBold, tabular=True)
-    f_lbl = theme.make_font(9.0, QFont.Weight.DemiBold, letter_spacing=0.5)
-
-    rings = [
-        (cx_cpu, c_val, COLOR_CPU_BAR, False, "CPU"),
-        (cx_ram, r_val, COLOR_RAM_BAR, True, "RAM"),
-    ]
-
-    pen_track = QPen(COLOR_RING_TRACK, stroke, Qt.SolidLine, Qt.RoundCap)
-
-    for cx, val, base_col, is_ram, lbl in rings:
-        arc_rect = QRectF(cx - r, cy - r, 2.0 * r, 2.0 * r)
-
-        # 1. Background full track circle (sol kartlarla aynı iz dili)
-        p.setPen(pen_track)
-        p.setBrush(Qt.NoBrush)
-        p.drawEllipse(arc_rect)
-
-        fg_col = get_sys_ring_color(val, base_col, is_ram=is_ram) if (val is not None and val > 0.0) else base_col
-
-        # 2. Foreground active arc (clockwise from 12 o'clock)
-        if val is not None and val > 0.0:
-            pen_fg = QPen(fg_col, stroke, Qt.SolidLine, Qt.RoundCap)
-            p.setPen(pen_fg)
-            span_angle = -int(round((val / 100.0) * 360.0 * 16.0))
-            p.drawArc(arc_rect, 90 * 16, span_angle)
-
-        # 3. Percentage number centred inside (no % sign, '–' for missing/err)
-        num_str = f"{int(round(val))}" if val is not None else "–"
-        p.setFont(f_num_sm if len(num_str) >= 3 else f_num)
-        p.setPen(fg_col if (val is not None and val > 0.0) else COLOR_TXT_PRIMARY)
-        text_y_off = -1.2 if val is None else -0.5
-        text_rect = QRectF(cx - r, cy - r + text_y_off, 2.0 * r, 2.0 * r)
-        p.drawText(text_rect, Qt.AlignCenter, num_str)
-
-        # 4. Alt etiket: CPU / RAM (halkaya ortalı, halka altı ve kart tabanı arasında dengeli)
-        p.setFont(f_lbl)
-        p.setPen(COLOR_TXT_MUTED)
-        y_lbl = cy + size / 2.0
-        lbl_rect = QRectF(cx - size / 2.0 - 4.0, y_lbl, size + 8.0, rect.bottom() - y_lbl)
-        p.drawText(lbl_rect, Qt.AlignCenter, lbl)
+    draw_concentric_rings_slot(
+        p,
+        slot_rect,
+        outer_pct=c_val if not has_err else None,
+        outer_color=COLOR_CPU_BAR,
+        inner_pct=r_val if not has_err else None,
+        inner_color=COLOR_RAM_BAR,
+        logo_pixmap=None,
+        fallback_icon_fn=_fallback_glyph,
+        outer_warn_at=75.0,
+        outer_crit_at=90.0,
+        inner_warn_at=85.0,
+        inner_crit_at=93.0,
+    )
 
     p.restore()
 

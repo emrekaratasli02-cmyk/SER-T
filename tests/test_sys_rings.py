@@ -133,11 +133,11 @@ def test_colour_thresholds() -> None:
 # ==============================================================================
 
 def test_card_width_and_geometry() -> None:
-    """Verify card width is ~96-110 px and matches serit_v5 token."""
+    """Verify card width is ~52 px and matches serit_v5 token."""
     w = dock_cards.SYS_CARD_WIDTH
-    assert 96.0 <= w <= 110.0, f"Card width {w} out of ~96-110 px range"
+    assert 48.0 <= w <= 56.0, f"Card width {w} out of ~48-56 px range"
     assert serit_mod.SYS_CARD_WIDTH == w, "serit_v5.SYS_CARD_WIDTH mismatch with dock_cards"
-    assert dock_cards.SYS_RING_SIZE in (34.0, 35.0, 36.0)
+    assert dock_cards.SYS_RING_SIZE in (34.0, 35.0, 36.0, 40.0)
     assert dock_cards.SYS_RING_STROKE == dock_cards.RING_STROKE  # v33: tüm halkalar aynı kalınlık
 
 
