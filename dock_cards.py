@@ -104,10 +104,10 @@ OC_CARD_WIDTH: float = 184.0   # OpenCode kullanım kartı
 # Sol kanat sığmazsa Claude/Antigravity kartları bu genişliğe kadar daralır (sıfırlanma yazısı sığmazsa gizlenir)
 CONC_CARD_MIN_WIDTH: float = 132.0
 # Metinsiz mod (show_text=False): sadece halka + logo, dar kart (~96-110 px)
-CLAUDE_CARD_TEXTLESS_WIDTH: float = 88.0
-AG_CARD_TEXTLESS_WIDTH: float = 88.0
-OC_CARD_TEXTLESS_WIDTH: float = 88.0
-AI_CARD_TEXTLESS_WIDTH: float = 88.0
+CLAUDE_CARD_TEXTLESS_WIDTH: float = 56.0
+AG_CARD_TEXTLESS_WIDTH: float = 56.0
+OC_CARD_TEXTLESS_WIDTH: float = 56.0
+AI_CARD_TEXTLESS_WIDTH: float = 56.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
@@ -663,8 +663,9 @@ def draw_claude_card(
     """Renders 184x52 Claude card according to D4 'Konsantrik çift halka' spec."""
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
 
-    # 40x40 Slot at left: padding 10px -> x = rect.x() + 10.0, y = rect.y() + 6.0
-    slot_rect = QRectF(rect.x() + 10.0, rect.y() + 6.0, 40.0, 40.0)
+    # Slot in card: metinsiz modda kart 56px'e daralmışsa ortalanır (w <= 64), genişse (örn. testte 184px veya show_text) solda 10px padding
+    slot_x = (rect.x() + (rect.width() - 40.0) / 2.0) if (not show_text and rect.width() <= 64.0) else (rect.x() + 10.0)
+    slot_rect = QRectF(slot_x, rect.y() + 6.0, 40.0, 40.0)
     dev = p.device()
     dpr = dev.devicePixelRatioF() if dev is not None else 1.0
     claude_pm = get_claude_symbol_pixmap(18.0, dpr)
@@ -1408,8 +1409,9 @@ def draw_ag_card(
     """Renders 184x52 Antigravity quota card according to D4 'Konsantrik çift halka' spec."""
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
 
-    # 40x40 Slot at left: padding 10px -> x = rect.x() + 10.0, y = rect.y() + 6.0
-    slot_rect = QRectF(rect.x() + 10.0, rect.y() + 6.0, 40.0, 40.0)
+    # Slot in card: metinsiz modda kart 56px'e daralmışsa ortalanır (w <= 64), genişse (örn. testte 184px veya show_text) solda 10px padding
+    slot_x = (rect.x() + (rect.width() - 40.0) / 2.0) if (not show_text and rect.width() <= 64.0) else (rect.x() + 10.0)
+    slot_rect = QRectF(slot_x, rect.y() + 6.0, 40.0, 40.0)
     dev = p.device()
     dpr = dev.devicePixelRatioF() if dev is not None else 1.0
     # Net ve orantili logo boyutu: 20.5px ic halkayi doldurur, bulanikligi onler
@@ -1584,8 +1586,9 @@ def draw_opencode_card(
     """Renders OpenCode quota card according to D4 concentric card spec (same as Claude/AG)."""
     draw_card_base(p, rect, CARD_RADIUS, hover=hover, press_scale=press_scale)
 
-    # 40x40 Slot at left: padding 10px -> x = rect.x() + 10.0, y = rect.y() + 6.0
-    slot_rect = QRectF(rect.x() + 10.0, rect.y() + 6.0, 40.0, 40.0)
+    # Slot in card: metinsiz modda kart 56px'e daralmışsa ortalanır (w <= 64), genişse (örn. testte 184px veya show_text) solda 10px padding
+    slot_x = (rect.x() + (rect.width() - 40.0) / 2.0) if (not show_text and rect.width() <= 64.0) else (rect.x() + 10.0)
+    slot_rect = QRectF(slot_x, rect.y() + 6.0, 40.0, 40.0)
 
     available = bool(oc_data.get("available"))
     has_err = bool(oc_data.get("err")) or not available

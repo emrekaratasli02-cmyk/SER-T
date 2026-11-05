@@ -215,15 +215,15 @@ LEFT_CARD_HARD_MIN_WIDTH: float = 112.0  # çok dar ekranda Claude/AG için okun
 OC_CARD_TINY_MIN_WIDTH: float = 118.0   # çok dar ekranda OpenCode'un ince hali (show_text=True)
 LEFT_CARD_GUARD_MIN_WIDTH: float = 104.0  # son güvenlik ağı sınırı (ataç için; show_text=True)
 # Metinsiz mod (show_text=False) boyut ve alt sınırları
-CLAUDE_CARD_TEXTLESS_WIDTH: float = 88.0
-AG_CARD_TEXTLESS_WIDTH: float = 88.0
-OC_CARD_TEXTLESS_WIDTH: float = 88.0
-AI_CARD_TEXTLESS_WIDTH: float = 88.0
-OC_CARD_TEXTLESS_MIN_WIDTH: float = 80.0
-CONC_CARD_TEXTLESS_MIN_WIDTH: float = 80.0
-LEFT_CARD_TEXTLESS_HARD_MIN: float = 72.0
-OC_CARD_TEXTLESS_TINY_MIN: float = 72.0
-LEFT_CARD_TEXTLESS_GUARD_MIN: float = 64.0
+CLAUDE_CARD_TEXTLESS_WIDTH: float = 56.0
+AG_CARD_TEXTLESS_WIDTH: float = 56.0
+OC_CARD_TEXTLESS_WIDTH: float = 56.0
+AI_CARD_TEXTLESS_WIDTH: float = 56.0
+OC_CARD_TEXTLESS_MIN_WIDTH: float = 50.0
+CONC_CARD_TEXTLESS_MIN_WIDTH: float = 50.0
+LEFT_CARD_TEXTLESS_HARD_MIN: float = 46.0
+OC_CARD_TEXTLESS_TINY_MIN: float = 46.0
+LEFT_CARD_TEXTLESS_GUARD_MIN: float = 44.0
 MAIL_CARD_MIN_WIDTH: float = 112.0
 MAIL_CARD_MAX_WIDTH: float = 150.0
 SYS_CARD_WIDTH: float = 96.0
