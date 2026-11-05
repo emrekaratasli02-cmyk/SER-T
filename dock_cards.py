@@ -2072,15 +2072,15 @@ def measure_clock_v1_width(
     fm_date = _get_fm(f_date)
     w_time = _text_width(fm_time, time_str)
     w_date = _text_width(fm_date, date_str)
-    w_left = max(w_time, w_date)
+    w_clock_text = max(w_time, w_date)
 
-    w = 10.0 + w_left  # 10px left padding
+    w = 10.0 + w_clock_text  # 10px left padding + clock/date text
     if has_weather and temp_str:
         f_temp = theme.make_font(12.0, QFont.Weight.DemiBold)
         fm_temp = _get_fm(f_temp)
         w_temp = _text_width(fm_temp, temp_str)
-        # 10px gap + 1px separator + 10px gap + 14px icon + 5px gap + temp_w (v24: ayraç iki yana eşit)
-        w += 10.0 + 1.0 + 10.0 + 14.0 + 5.0 + w_temp
+        # 14px icon + 5px gap + temp_w + 10px gap + 1px separator + 10px gap
+        w += 14.0 + 5.0 + w_temp + 10.0 + 1.0 + 10.0
     w += 10.0  # 10px right padding
     return float(math.ceil(w))
 
@@ -2097,9 +2097,9 @@ def draw_clock_v1(
 ) -> Tuple[QRectF, Optional[QRectF]]:
     """Renders Clock V1 'Sade' without box or background.
 
-    Left (if weather available): 14px weather icon + 5px + temp '16°' 12px/600 on same baseline,
+    Left (if weather available): 14px weather icon + 5px + temp '16°' 12px/600 on harmonized baseline,
       1px separator rgba(255,255,255,52) 24px high.
-    Right: time 'HH:MM' 13.5px/600 tabular, 2px gap,
+    Right: time 'HH:MM' 13.5px/600 tabular, 2.5px gap,
       date 'Sal, 27 Ekim' 10.5px Regular; both aligned to exact same left x.
 
     Hover: rounded rect rgba(255,255,255,.07) radius 11 behind whole clock.
@@ -2131,9 +2131,6 @@ def draw_clock_v1(
 
     fm_time = _get_fm(f_time)
     fm_date = _get_fm(f_date)
-    w_time = _text_width(fm_time, time_str)
-    w_date = _text_width(fm_date, date_str)
-    w_left = max(w_time, w_date)
 
     cur_x = rect.x() + 10.0
     r_wx: Optional[QRectF] = None
@@ -2146,8 +2143,26 @@ def draw_clock_v1(
         fm_temp = _get_fm(f_temp)
         w_temp = _text_width(fm_temp, temp_str)
         temp_base = cy + fm_temp.capHeight() / 2.0
-        # İkon ile sıcaklık yazısı aynı baseline'da, aralarında 5px (4-6px)
-        icon_y = temp_base - 14.0 + _weather_icon_dy(wx_icon or "cloud")
+
+        # İkon ile sıcaklık yazısı optik baseline uyumu:
+        # Bulut gövdesi tüm hava durumlarında aynı yatay hatta sabitlenir;
+        # yağış/yıldırım/sis sarkmaları tipografik uzantı gibi doğal taşar,
+        # güneş ise rakamların optik merkeziyle dengelenir.
+        target_cloud_base = temp_base - 1.5
+        if wx_icon == "cloud":
+            cy_box = target_cloud_base - 3.82
+        elif wx_icon == "partly":
+            cy_box = target_cloud_base - 4.20
+        elif wx_icon in ("rain", "drizzle", "snow", "storm"):
+            cy_box = target_cloud_base - 1.20
+        elif wx_icon == "fog":
+            cy_box = target_cloud_base - 0.58
+        elif wx_icon == "sun":
+            cy_box = cy - 0.5
+        else:
+            cy_box = cy
+
+        icon_y = cy_box - 7.0
         r_icon = QRectF(cur_x, icon_y, 14.0, 14.0)
         p.save()
         p.setOpacity(0.85)
@@ -2164,9 +2179,9 @@ def draw_clock_v1(
         # Hava durumu tıklama alanı: sol kenardan ayırıcıya kadar
         r_wx = QRectF(wx_left, rect.y(), max(0.0, sep_x + 1.0 - wx_left), rect.height())
 
-    # Saat üst satır Semibold/13-14px, Tarih alt satır Regular 10.5px
-    # aralarını 2px nefesli hizala; iki footer satırının sol kenarları BİREBİR AYNI x'te olacak.
-    gap_td = 2.0
+    # Saat üst satır Semibold/13.5px, Tarih alt satır Regular 10.5px
+    # aralarını 2.5px nefesli hizala; iki footer satırının sol kenarları BİREBİR AYNI x'te olacak.
+    gap_td = 2.5
     cap_t = fm_time.capHeight()
     cap_d = fm_date.capHeight()
     total_h = cap_t + gap_td + cap_d
@@ -2174,13 +2189,21 @@ def draw_clock_v1(
     date_base = time_base + gap_td + cap_d
     text_x = cur_x
 
+    # Dar alanda taşmayı önle: önce ikincil bilgi (tarih) elide edilir
+    avail_w = max(0.0, rect.right() - 10.0 - text_x)
+    w_time = _text_width(fm_time, time_str)
+    w_date = _text_width(fm_date, date_str)
+
     p.setFont(f_time)
     p.setPen(Qt.white)
-    p.drawText(QPointF(text_x, time_base), time_str)
+    time_to_draw = _elided_text(fm_time, time_str, avail_w) if (w_time > avail_w and avail_w > 0.0) else time_str
+    p.drawText(QPointF(text_x, time_base), time_to_draw)
 
     p.setFont(f_date)
-    p.setPen(QColor(235, 238, 245, int(255 * 0.70)))
-    p.drawText(QPointF(text_x, date_base), date_str)
+    p.setPen(COLOR_TXT_MUTED)
+    if avail_w >= 18.0:
+        date_to_draw = _elided_text(fm_date, date_str, avail_w) if w_date > avail_w else date_str
+        p.drawText(QPointF(text_x, date_base), date_to_draw)
 
     p.restore()
     return rect, r_wx
