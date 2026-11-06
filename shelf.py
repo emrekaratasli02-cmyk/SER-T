@@ -487,12 +487,12 @@ def draw_shelf_icon(p: QPainter, rect: QRectF, state: str, count: int, hover: bo
         br = QRectF(bx, by, bw, bh)
         r_corner = bh / 2.0
 
-        p.setPen(QPen(QColor(13, 15, 19, 220), 1.0))
-        p.setBrush(ps.ACCENT)
+        p.setPen(QPen(QColor(13, 15, 19, 235), 1.5))
+        p.setBrush(QColor(255, 255, 255))
         p.drawRoundedRect(br, r_corner, r_corner)
 
         p.setFont(f)
-        p.setPen(QColor(0x0D, 0x0F, 0x13))
+        p.setPen(QColor(30, 64, 175))
         p.drawText(br, Qt.AlignmentFlag.AlignCenter, txt)
     p.restore()
 
