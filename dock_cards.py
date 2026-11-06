@@ -92,6 +92,7 @@ COLOR_TXT_PRIMARY: QColor = QColor(255, 255, 255, int(255 * 0.95))
 COLOR_TXT_MUTED: QColor = QColor(235, 238, 245, int(255 * 0.74))  # v33: .58 -> .74 (okunurluk)
 COLOR_TXT_FAINT: QColor = QColor(235, 238, 245, 168)           # sıfırlanma saati (v33: .52 -> .66)
 COLOR_TXT_LABEL: QColor = QColor(235, 238, 245, 180)           # v34: kart etiketi (Medium 10.5)
+COLOR_TXT_SECONDARY: QColor = QColor(235, 238, 245, int(255 * 0.86))
 COLOR_CAL_RED: QColor = QColor("#FF453A")
 
 TR_DAYS_SHORT = {0: "Pzt", 1: "Sal", 2: "Çar", 3: "Per", 4: "Cum", 5: "Cmt", 6: "Paz"}
@@ -1095,7 +1096,7 @@ def draw_media_card(
         p.drawText(QRectF(bx, by, bw, 18.0), Qt.AlignLeft | Qt.AlignVCenter, _elided_text(fm_l, title, bw))
 
     p.setFont(f_sub)
-    sub_col = QColor(255, 255, 255, 205) if tabular_sub else COLOR_TXT_MUTED
+    sub_col = QColor(255, 255, 255, 205) if tabular_sub else COLOR_TXT_SECONDARY
     p.setPen(sub_col)
     p.drawText(QRectF(bx, by + 18.0, bw, 16.0), Qt.AlignLeft | Qt.AlignVCenter, elided_sub)
     p.restore()
@@ -1121,7 +1122,7 @@ def draw_media_card(
     p.scale(13.0 / 20.0, 13.0 / 20.0)
     p.translate(-10.0, -10.0)
     p.setPen(Qt.NoPen)
-    p.setBrush(QColor(255, 255, 255, 235 if prev_hover else 125))
+    p.setBrush(QColor(255, 255, 255, 235 if prev_hover else 190))
     p.drawPath(_PATH_MEDIA_PREV)
     p.restore()
 
@@ -1179,7 +1180,7 @@ def draw_media_card(
     p.scale(13.0 / 20.0, 13.0 / 20.0)
     p.translate(-10.0, -10.0)
     p.setPen(Qt.NoPen)
-    p.setBrush(QColor(255, 255, 255, 235 if next_hover else 125))
+    p.setBrush(QColor(255, 255, 255, 235 if next_hover else 190))
     p.drawPath(_PATH_MEDIA_NEXT)
     p.restore()
 
@@ -2297,7 +2298,7 @@ def draw_clock_v1(
     p.drawText(QPointF(text_x, time_base), time_to_draw)
 
     p.setFont(f_date)
-    p.setPen(COLOR_TXT_MUTED)
+    p.setPen(COLOR_TXT_SECONDARY)
     if avail_w >= 18.0:
         date_to_draw = _elided_text(fm_date, date_str, avail_w) if w_date > avail_w else date_str
         p.drawText(QPointF(text_x, date_base), date_to_draw)
