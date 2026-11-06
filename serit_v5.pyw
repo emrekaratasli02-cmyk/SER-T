@@ -1039,10 +1039,21 @@ class SeritDock(QWidget):
             bat_percent=None,
             bat_charging=False,
             bat_present=False,
+            bright_level=self._bar_brightness_level(),
         )
         if register_hitboxes:
             self.hit_boxes.append((pill_res[0], "bright", None))
             self.hit_boxes.append((pill_res[1], "vol", None))
+
+    def _bar_brightness_level(self) -> Optional[float]:
+        """Önbellekteki (store["bright"]) ilk geçerli monitör parlaklığı; yoksa None (boş ray)."""
+        for m in self._get_store_monitors():
+            if isinstance(m, dict) and m.get("ok", True) and m.get("level") is not None:
+                try:
+                    return float(m["level"])
+                except (TypeError, ValueError):
+                    continue
+        return None
 
     def _register_quick_pill_hitboxes(self, r_pill: QRectF, bright_open: bool, vol_open: bool) -> None:
         hw = r_pill.width() / 2.0

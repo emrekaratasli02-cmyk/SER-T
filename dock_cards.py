@@ -2679,21 +2679,18 @@ def draw_quick_settings_pill(
     bat_percent: Optional[float] = None,
     bat_charging: bool = False,
     bat_present: bool = False,
+    bright_level: Optional[float] = None,
 ):
-    """Hızlı ayar kapsülü: güneş | hoparlör [| pil].
+    """Hızlı ayar kontrolleri (kutusuz): [güneş ━] | [hoparlör ━] [| pil].
 
-    Pil bölümü yalnızca bat_present ve yüzde biliniyorsa çizilir (kapsül o zaman iki bölümlüdür).
-    Güneş ve hoparlör 37 px, pil bölümü geri kalan genişliktir. Ayırıcılar 1 x 16 px rgba(255,255,255,.14).
+    Taban kapsül yok; her kontrol solda 18 px line ikon + sağında 16 x 3 px yatay değer çizgisi.
+    bright_level None ise parlaklık çizgisi yalnız boş ray çizilir (sahte değer yok).
+    Pil bölümü yalnızca bat_present ve yüzde biliniyorsa çizilir.
     Döndürür: (r_sun, r_spk) iki bölümde, (r_sun, r_spk, r_bat) üç bölümde.
     """
     show_bat = bool(bat_present) and bat_percent is not None
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
-
-    # 1. Taban kapsül
-    p.setPen(QPen(QColor(255, 255, 255, int(255 * 0.08)), 1.0))
-    p.setBrush(QColor(255, 255, 255, int(255 * 0.065)))
-    p.drawRoundedRect(rect, 10.0, 10.0)
 
     if show_bat:
         seg = 37.0
@@ -2706,20 +2703,20 @@ def draw_quick_settings_pill(
         r_spk = QRectF(rect.x() + rect.width() / 2.0, rect.y(), rect.width() / 2.0, rect.height())
     mid_x = r_spk.x()
 
-    # 2. Hover / aktif bölme vurgusu (kapsül kavisini pürüzsüz takip eder, iç kutu eklemez)
-    pill_clip = QPainterPath()
-    pill_clip.addRoundedRect(rect, 10.0, 10.0)
-    p.save()
-    p.setClipPath(pill_clip)
-    parts = [("bright", r_sun), ("vol", r_spk)]
-    if show_bat:
-        parts.append(("bat", r_bat))
-    for key, r in parts:
+    # İkon (18) + boşluk (4) + çizgi (16) = 38 px içerik, bölmenin ortasında
+    _ICON, _GAP, _LINE = 18.0, 4.0, 16.0
+
+    def _icon_cx(r: QRectF) -> float:
+        return r.center().x() - (_ICON + _GAP + _LINE) / 2.0 + _ICON / 2.0
+
+    # 2. Aktif kontrol (panel açık): yalnız kendi bölmesinde yumuşak akrilik dolgu
+    p.setPen(Qt.NoPen)
+    for key, r in (("bright", r_sun), ("vol", r_spk)):
         if active_part == key:
-            p.fillRect(r, QColor(255, 255, 255, int(255 * 0.16)))
-        elif hovered_part == key:
-            p.fillRect(r, QColor(255, 255, 255, int(255 * 0.10)))
-    p.restore()
+            p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
+            p.drawRoundedRect(r.adjusted(1.0, 3.0, -1.0, -3.0), 8.0, 8.0)
+    if show_bat and active_part == "bat":
+        p.fillRect(r_bat, QColor(255, 255, 255, int(255 * 0.10)))
 
     # 3. Ayırıcılar (boşta sakin, aktif/hover bölme kenarında otomatik gizlenir)
     div_y = rect.center().y() - 7.0
@@ -2729,10 +2726,27 @@ def draw_quick_settings_pill(
     if r_bat is not None and not (hovered_part in ("vol", "bat") or active_part in ("vol", "bat")):
         p.drawLine(QPointF(r_bat.x(), div_y), QPointF(r_bat.x(), div_y + 14.0))
 
+    # Yatay değer çizgileri: ray rgba(255,255,255,.18) (hover .30), dolgu accent mavi
+    def _value_line(r: QRectF, frac: Optional[float], lit: bool) -> None:
+        x0 = _icon_cx(r) + _ICON / 2.0 + _GAP
+        track = QRectF(x0, r.center().y() - 1.5, _LINE, 3.0)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * (0.30 if lit else 0.18))))
+        p.drawRoundedRect(track, 1.5, 1.5)
+        if frac is not None and frac > 0.0:
+            fw = max(3.0, _LINE * max(0.0, min(1.0, frac)))
+            p.setBrush(QColor(COLOR_ACCENT_BLUE))
+            p.drawRoundedRect(QRectF(x0, track.y(), fw, 3.0), 1.5, 1.5)
+
+    bright_lit = hovered_part == "bright" or active_part == "bright"
+    vol_lit = hovered_part == "vol" or active_part == "vol"
+    _value_line(r_sun, None if bright_level is None else float(bright_level) / 100.0, bright_lit)
+    _value_line(r_spk, 0.0 if vol_muted else float(vol_level) / 100.0, vol_lit)
+
     # 4. Sun glifi (18px kutu, optik dengeli dolu çekirdek ve 1.7px eşit çizgi)
     sun_col = QColor(255, 255, 255) if (hovered_part == "bright" or active_part == "bright") else QColor(255, 255, 255, int(255 * 0.85))
     p.save()
-    p.translate(r_sun.center().x(), r_sun.center().y())
+    p.translate(_icon_cx(r_sun), r_sun.center().y())
     p.scale(18.0 / 20.0, 18.0 / 20.0)
     p.translate(-10.0, -10.0)
     pen_sun = QPen(sun_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
@@ -2753,7 +2767,7 @@ def draw_quick_settings_pill(
     # 5. Speaker glifi (güneşle eşit optik ağırlık: %86 ölçek, 1.7px eşit çizgi)
     spk_col = QColor(255, 255, 255) if (hovered_part == "vol" or active_part == "vol") else QColor(255, 255, 255, int(255 * 0.85))
     p.save()
-    p.translate(r_spk.center().x(), r_spk.center().y())
+    p.translate(_icon_cx(r_spk), r_spk.center().y())
     p.scale(17.2 / 20.0, 17.2 / 20.0)
     p.translate(-10.2, -10.0)
     pen_spk = QPen(spk_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
