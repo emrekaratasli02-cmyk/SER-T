@@ -695,41 +695,6 @@ def media_seek_to_fraction(fraction: float) -> bool:
     return bool(ok and val)
 
 
-def media_set_playback_rate(rate: float) -> bool:
-    """Windows GSMTC medya oturumu oynatma hizini ayarlar (orn. 0.75, 1.0, 1.25, 1.5, 2.0)."""
-    try:
-        from logpath import is_running_under_test
-        if is_running_under_test() and os.environ.get("SERIT_ALLOW_REAL_AUDIO") != "1":
-            return False
-    except Exception:
-        pass
-    _ensure_com_initialized()
-    if not (_HAS_WINRT and _WinrtMediaManager is not None):
-        return False
-    try:
-        r = max(0.25, min(4.0, float(rate)))
-    except (TypeError, ValueError):
-        return False
-
-    async def _do() -> bool:
-        global _cached_winrt_mgr
-        mgr = _cached_winrt_mgr
-        if mgr is None:
-            assert _WinrtMediaManager is not None
-            mgr = await _WinrtMediaManager.request_async()
-            _cached_winrt_mgr = mgr
-        s = mgr.get_current_session()
-        if s is None:
-            return False
-        fn = getattr(s, "try_change_playback_rate_async", None)
-        if fn is None:
-            return False
-        return bool(await fn(r))
-
-    ok, val = _run_on_loop(_do, 1.5)
-    return bool(ok and val)
-
-
 def media_control(action: str) -> bool:
     """Oynat/duraklat/ileri/geri: önce Windows medya oturumuna doğrudan komut, olmazsa medya tuşu."""
     try:
