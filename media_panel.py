@@ -141,7 +141,6 @@ class MediaPanel(ps.PopoverBase):
     """Medya kartına tıklandığında açılan zengin kontrol ve ses paneli (352 px)."""
 
     WIDTH: int = int(ps.PANEL_W)
-    SPEED_RATES: Tuple[float, ...] = (0.75, 1.0, 1.25, 1.5, 2.0)
 
     control_requested = Signal(str)          # 'prev' | 'playpause' | 'next'
     seek_requested = Signal(float)           # 0.0 .. 1.0
@@ -150,7 +149,6 @@ class MediaPanel(ps.PopoverBase):
     open_mixer_requested = Signal()          # Ses mikseri panelini aç
     open_app_requested = Signal(str)         # Kaynak uygulamayı öne getir (exe/aumid)
     device_switch_requested = Signal(str)    # Ses çıkış cihazını değiştir (device_id)
-    playback_rate_requested = Signal(float)  # 0.75 .. 2.0 (oynatma hızı)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(
@@ -361,8 +359,8 @@ class MediaPanel(ps.PopoverBase):
 
     # ------------------------------------------------------------ yerleşim
     def compute_height(self) -> int:
-        # PAD + HEADER(32) + GAP + CARD_TRACK(198) + GAP + CARD_VOL(80) + GAP + FOOTER(32) + PAD
-        h = ps.PAD + ps.HEADER_H + ps.GAP + 198.0 + ps.GAP + 80.0 + ps.GAP + ps.FOOTER_H + ps.PAD
+        # PAD + HEADER(32) + GAP + CARD_TRACK(180) + GAP + CARD_VOL(80) + GAP + FOOTER(32) + PAD
+        h = ps.PAD + ps.HEADER_H + ps.GAP + 180.0 + ps.GAP + 80.0 + ps.GAP + ps.FOOTER_H + ps.PAD
         return int(round(h))
 
     def _layout(self) -> None:
@@ -377,8 +375,8 @@ class MediaPanel(ps.PopoverBase):
         r["app_chip"] = QRectF(hdr.right() - ps.CLOSE_SZ - 8.0 - 96.0, hdr.center().y() - 11.0, 96.0, 22.0)
         y += ps.HEADER_H + ps.GAP
 
-        # 1. Parça / Video kartı (198 px - hız kontrol hapları dahil)
-        card1_h = 198.0
+        # 1. Parça / Video kartı (180 px)
+        card1_h = 180.0
         c1 = QRectF(x0, y, cw, card1_h)
         r["card_track"] = c1
         in1 = c1.adjusted(ps.CARD_PAD, ps.CARD_PAD, -ps.CARD_PAD, -ps.CARD_PAD)
@@ -387,25 +385,13 @@ class MediaPanel(ps.PopoverBase):
         r["art"] = QRectF(in1.left(), in1.top(), 64.0, 64.0)
         r["meta"] = QRectF(in1.left() + 76.0, in1.top(), in1.width() - 76.0, 64.0)
 
-        # Seekbar (y = in1.top() + 74)
+        # Seekbar (y = in1.top() + 75)
         seek_y = in1.top() + 75.0
         r["seek_hit"] = QRectF(in1.left(), seek_y - 6.0, in1.width(), 18.0)
         r["seek_track"] = QRectF(in1.left(), seek_y, in1.width(), 5.0)
+        r["seek_times"] = QRectF(in1.left(), seek_y + 10.0, in1.width(), 16.0)
 
-        # Süreler ve Oynatma Hızı Satırı (y = seek_y + 11.0, h = 20.0)
-        sp_y = seek_y + 11.0
-        r["seek_times"] = QRectF(in1.left(), sp_y, in1.width(), 18.0)
-
-        # 5 Hız mikro-hapı: [0.75×] [1×] [1.25×] [1.5×] [2×]
-        sp_btn_w = 30.0
-        sp_btn_h = 18.0
-        sp_gap = 4.0
-        total_sp_w = len(self.SPEED_RATES) * sp_btn_w + (len(self.SPEED_RATES) - 1) * sp_gap
-        sp_x0 = in1.center().x() - total_sp_w / 2.0
-        for i, rate in enumerate(self.SPEED_RATES):
-            r[f"speed_{rate:.2f}"] = QRectF(sp_x0 + i * (sp_btn_w + sp_gap), sp_y, sp_btn_w, sp_btn_h)
-
-        # Kontrol düğmeleri (y = in1.bottom() - 25)
+        # Kontrol düğmeleri (y = in1.bottom() - 24)
         ctrl_cy = in1.bottom() - 24.0
         mid_x = in1.center().x()
         play_d = 44.0
@@ -543,12 +529,6 @@ class MediaPanel(ps.PopoverBase):
         super().keyPressEvent(event)
 
     def _hit(self, pos: QPointF) -> Optional[str]:
-        # Hız kontrol hapları öncelikli kontrol
-        for rate in self.SPEED_RATES:
-            k = f"speed_{rate:.2f}"
-            r = self._rects.get(k)
-            if r is not None and r.contains(pos):
-                return k
         for key in (
             "close", "app_chip", "playpause", "prev", "next", "back10", "fwd10",
             "seek_hit", "dev_prev", "dev_chip", "dev_next", "mixer_link",
@@ -615,14 +595,10 @@ class MediaPanel(ps.PopoverBase):
         if h != self._hover:
             self._hover = h
             self.update()
-        is_clickable = (
-            (h in (
-                "close", "app_chip", "playpause", "prev", "next", "back10", "fwd10",
-                "dev_prev", "dev_chip", "dev_next", "mixer_link", "mute_btn", "open_app",
-            ))
-            or (h is not None and h.startswith("speed_"))
-        )
-        if is_clickable:
+        if h in (
+            "close", "app_chip", "playpause", "prev", "next", "back10", "fwd10",
+            "dev_prev", "dev_chip", "dev_next", "mixer_link", "mute_btn", "open_app",
+        ):
             self.setCursor(Qt.CursorShape.PointingHandCursor)
         else:
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -699,14 +675,6 @@ class MediaPanel(ps.PopoverBase):
             self.update()
         elif key == "mixer_link":
             self.open_mixer_requested.emit()
-        elif key.startswith("speed_"):
-            try:
-                rate_val = float(key.split("_", 1)[1])
-                self._media["playback_rate"] = rate_val
-                self.playback_rate_requested.emit(rate_val)
-                self.update()
-            except Exception:
-                pass
         elif key in ("app_chip", "open_app"):
             exe = str(self._media.get("exe") or self._media.get("app") or "")
             self.open_app_requested.emit(exe)
@@ -857,37 +825,6 @@ class MediaPanel(ps.PopoverBase):
         p.setPen(ps.TEXT_META)
         p.drawText(QRectF(tm_r.left(), tm_r.top(), 52.0, tm_r.height()), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, fmt_mmss(pos_s))
         p.drawText(QRectF(tm_r.right() - 52.0, tm_r.top(), 52.0, tm_r.height()), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, fmt_mmss(dur_s))
-
-        # Oynatma Hızı Mikro-Hapları (0.75×, 1×, 1.25×, 1.5×, 2×)
-        try:
-            curr_rate = float(m.get("playback_rate") or 1.0)
-        except Exception:
-            curr_rate = 1.0
-
-        f_spd = ps.font(9.5, QFont.Weight.DemiBold)
-        p.setFont(f_spd)
-        for rate in self.SPEED_RATES:
-            k_spd = f"speed_{rate:.2f}"
-            r_spd = self._rects.get(k_spd)
-            if r_spd is None:
-                continue
-            is_active = (abs(curr_rate - rate) < 0.08)
-            is_hov = (self._hover == k_spd)
-            lbl = f"{rate:g}×"
-
-            if is_active:
-                p.setPen(QColor(255, 255, 255, 60))
-                p.setBrush(QColor(accent))
-                p.drawRoundedRect(r_spd, 9.0, 9.0)
-                fg_spd = QColor(0x0e, 0x11, 0x17) if QColor(accent).lightness() > 140 else QColor(255, 255, 255)
-                p.setPen(fg_spd)
-            else:
-                p.setPen(QColor(255, 255, 255, 30 if is_hov else 16))
-                p.setBrush(QColor(255, 255, 255, 26 if is_hov else 12))
-                p.drawRoundedRect(r_spd, 9.0, 9.0)
-                p.setPen(ps.TEXT if is_hov else ps.TEXT_MUTED)
-
-            p.drawText(r_spd, Qt.AlignmentFlag.AlignCenter, lbl)
 
         # Kontrol Düğmeleri (-10s, Prev, Play/Pause, Next, +10s)
         has_seek = dur_s is not None and dur_s > 0.0
