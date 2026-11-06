@@ -397,6 +397,8 @@ def _is_protected_proc(proc: psutil.Process, self_pids: Set[int]) -> Tuple[bool,
     # Protect Şerit dock instances
     if "serit_v5" in cmd_str:
         return True, "Şerit korumalı işlem"
+    if "serit_bekci" in cmd_str:
+        return True, "Şerit bekçi korumalı işlem"
 
     name_lower = ""
     try:

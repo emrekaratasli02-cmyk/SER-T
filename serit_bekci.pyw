@@ -274,7 +274,9 @@ def launch_dock(
     cmd = [str(py_exe), str(dock_script)]
     creationflags = 0
     if sys.platform == "win32":
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        c_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        c_new_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        creationflags = c_no_window | c_new_group
     _log(f"Launching dock: {cmd} (cwd={app_dir})")
     proc = subprocess.Popen(
         cmd,
