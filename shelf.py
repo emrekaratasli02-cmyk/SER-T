@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QEvent, QFileInfo, QMimeData, QPoint, QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
-    QColor, QCursor, QDrag, QFont, QFontMetricsF, QGuiApplication, QImage, QPainter, QPen, QPixmap,
+    QColor, QCursor, QDrag, QFont, QFontMetricsF, QGuiApplication, QImage, QLinearGradient, QPainter, QPen, QPixmap,
 )
 from PySide6.QtWidgets import QApplication, QFileIconProvider, QWidget
 
@@ -446,30 +446,33 @@ def draw_shelf_icon(p: QPainter, rect: QRectF, state: str, count: int, hover: bo
         p.setBrush(QColor(110, 168, 254, int(40 * clamped_pulse)))
         p.drawRoundedRect(glow_box, 9.0, 9.0)
 
+    # Seçenek C (6 Kas 2026, Emre): uygulama ikonu gibi dolgulu mavi karo.
+    # Raf simgesi "Kutusuz kal" kuralının bilinçli istisnası; diğer kartlar kutusuz kalır.
+    tile = box.adjusted(-2.0, -2.0, 2.0, 2.0)
     if state == "over":
-        p.setBrush(QColor(110, 168, 254, 46))                     # rgba(110,168,254,.18)
-        p.setPen(QPen(ps.ACCENT, 1.5))
-        p.drawRoundedRect(box.adjusted(-0.75, -0.75, 0.75, 0.75), 8.75, 8.75)
-        glyph = QColor(ps.ACCENT)
-    elif state == "open":
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, 22))
-        p.drawRoundedRect(box, 8.0, 8.0)
-        glyph = QColor(255, 255, 255)
+        top, bot = QColor(150, 198, 255), QColor(88, 140, 245)   # sürükle-bırak: daha parlak
+    elif state == "open" or hover:
+        top, bot = QColor(136, 188, 255), QColor(76, 130, 238)
     else:
-        if hover:
-            p.setPen(QPen(QColor(255, 255, 255, 28), 0.9))
-            p.setBrush(QColor(255, 255, 255, 20))
-            p.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), 8.0, 8.0)
-        elif pulse > 0.0:
-            p.setPen(QPen(QColor(110, 168, 254, int(130 * pulse)), 1.0))
-            p.setBrush(QColor(110, 168, 254, int(25 * pulse)))
-            p.drawRoundedRect(box, 8.0, 8.0)
-        # Rölantide zemin/kenarlık yok (Kutusuz kart dili)
-        glyph = QColor(255, 255, 255, 255 if hover else (217 if pulse > 0.0 else 185))
-    icon_sz = 18.0
+        top, bot = QColor(122, 178, 255), QColor(64, 118, 230)
+    grad = QLinearGradient(tile.topLeft(), tile.bottomRight())
+    grad.setColorAt(0.0, top)
+    grad.setColorAt(1.0, bot)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(grad)
+    p.drawRoundedRect(tile, 8.0, 8.0)
+    if state == "over":
+        p.setPen(QPen(QColor(255, 255, 255, 200), 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(tile.adjusted(-1.5, -1.5, 1.5, 1.5), 9.5, 9.5)
+    elif state == "open":
+        p.setPen(QPen(QColor(255, 255, 255, 110), 1.0))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(tile.adjusted(0.5, 0.5, -0.5, -0.5), 7.5, 7.5)
+    glyph = QColor(255, 255, 255)
+    icon_sz = 19.0
     pm = _svg_pixmap("clip", glyph, icon_sz, _device_dpr(p))
-    p.drawPixmap(QPointF(box.center().x() - icon_sz / 2.0, box.center().y() - icon_sz / 2.0), pm)
+    p.drawPixmap(QPointF(tile.center().x() - icon_sz / 2.0, tile.center().y() - icon_sz / 2.0), pm)
 
     if count and count > 0:
         txt = "99+" if count > 99 else str(int(count))
