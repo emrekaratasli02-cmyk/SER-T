@@ -897,6 +897,8 @@ class SeritDock(QWidget):
             self.media_panel = media_panel.MediaPanel()
             self.media_panel.control_requested.connect(self._on_media_panel_control)
             self.media_panel.seek_requested.connect(self._on_media_panel_seek)
+            if hasattr(self.media_panel, "playback_rate_requested"):
+                self.media_panel.playback_rate_requested.connect(self._on_media_panel_speed)
             self.media_panel.volume_requested.connect(self._on_bat_volume_requested)
             self.media_panel.mute_requested.connect(self._on_bat_mute_requested)
             self.media_panel.open_mixer_requested.connect(self._on_media_open_mixer)
@@ -1864,6 +1866,15 @@ class SeritDock(QWidget):
             "media_seek",
             lambda f=frac: media.media_seek_to_fraction(f),
             on_done=lambda: QTimer.singleShot(300, lambda: self.submit_fetch("media")),
+        )
+
+    def _on_media_panel_speed(self, rate: float) -> None:
+        if self.preview_mode or not rate:
+            return
+        self.submit_action(
+            "media_speed",
+            lambda r=rate: media.media_set_playback_rate(r),
+            on_done=lambda: QTimer.singleShot(250, lambda: self.submit_fetch("media")),
         )
 
     def _on_media_open_mixer(self) -> None:

@@ -563,7 +563,12 @@ def _now_playing_winrt() -> Optional[Dict[str, object]]:
         if s is None:
             return None
         props = await s.try_get_media_properties_async()
-        status = int(s.get_playback_info().playback_status)  # 4 = çalıyor, 5 = duraklatıldı
+        pb_info = s.get_playback_info()
+        status = int(pb_info.playback_status) if pb_info else 0  # 4 = çalıyor, 5 = duraklatıldı
+        try:
+            pb_rate = float(pb_info.playback_rate) if (pb_info and pb_info.playback_rate is not None) else 1.0
+        except Exception:
+            pb_rate = 1.0
         aumid = s.source_app_user_model_id or ""
         key = aumid.lower().split("!")[0].split(".")[0].replace(".exe", "")
         title = (props.title or "").strip()
@@ -626,6 +631,7 @@ def _now_playing_winrt() -> Optional[Dict[str, object]]:
             "source": "Windows medya oturumu",
             "position_s": pos_s,
             "duration_s": dur_s,
+            "playback_rate": pb_rate,
             "updated_at": time.monotonic(),
             "art_bytes": art_bytes,
         }
@@ -684,6 +690,41 @@ def media_seek_to_fraction(fraction: float) -> bool:
         if fn is None:
             return False
         return bool(await fn(target_100ns))
+
+    ok, val = _run_on_loop(_do, 1.5)
+    return bool(ok and val)
+
+
+def media_set_playback_rate(rate: float) -> bool:
+    """Windows GSMTC medya oturumu oynatma hizini ayarlar (orn. 0.75, 1.0, 1.25, 1.5, 2.0)."""
+    try:
+        from logpath import is_running_under_test
+        if is_running_under_test() and os.environ.get("SERIT_ALLOW_REAL_AUDIO") != "1":
+            return False
+    except Exception:
+        pass
+    _ensure_com_initialized()
+    if not (_HAS_WINRT and _WinrtMediaManager is not None):
+        return False
+    try:
+        r = max(0.25, min(4.0, float(rate)))
+    except (TypeError, ValueError):
+        return False
+
+    async def _do() -> bool:
+        global _cached_winrt_mgr
+        mgr = _cached_winrt_mgr
+        if mgr is None:
+            assert _WinrtMediaManager is not None
+            mgr = await _WinrtMediaManager.request_async()
+            _cached_winrt_mgr = mgr
+        s = mgr.get_current_session()
+        if s is None:
+            return False
+        fn = getattr(s, "try_change_playback_rate_async", None)
+        if fn is None:
+            return False
+        return bool(await fn(r))
 
     ok, val = _run_on_loop(_do, 1.5)
     return bool(ok and val)
