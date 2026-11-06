@@ -48,11 +48,11 @@ def get_qapp() -> QApplication:
 def test_a4_quick_settings_pill_geometry_and_hit_boxes() -> None:
     """Verify A4 pill drawing, geometry (74x32), and dual hitboxes."""
     get_qapp()
-    img = QImage(200, 60, QImage.Format_ARGB32_Premultiplied)
+    img = QImage(320, 60, QImage.Format_ARGB32_Premultiplied)
     img.fill(0)
     p = QPainter(img)
 
-    pill_rect = QRectF(20.0, 14.0, 74.0, 32.0)
+    pill_rect = QRectF(20.0, 14.0, serit_mod.ACTION_PILL_WIDTH, 32.0)
     r_sun, r_spk = dock_cards.draw_quick_settings_pill(
         p,
         pill_rect,
@@ -64,8 +64,9 @@ def test_a4_quick_settings_pill_geometry_and_hit_boxes() -> None:
     p.end()
 
     # Dimensions
-    assert abs(r_sun.width() - 37.0) < 0.01, f"Expected sun width 37, got {r_sun.width()}"
-    assert abs(r_spk.width() - 37.0) < 0.01, f"Expected spk width 37, got {r_spk.width()}"
+    half_w = serit_mod.ACTION_PILL_WIDTH / 2.0
+    assert abs(r_sun.width() - half_w) < 0.01, f"Expected sun width {half_w}, got {r_sun.width()}"
+    assert abs(r_spk.width() - half_w) < 0.01, f"Expected spk width {half_w}, got {r_spk.width()}"
     assert abs(r_sun.height() - 32.0) < 0.01
     assert abs(r_spk.height() - 32.0) < 0.01
 
@@ -187,11 +188,16 @@ def test_dock_band_layout_v16() -> None:
     r_sun = next(r for r, k, _e in dock.hit_boxes if k == "bright")
     r_spk = next(r for r, k, _e in dock.hit_boxes if k == "vol")
     r_clock = next(r for r, k, _e in dock.hit_boxes if k == "clock")
+    r_wx = next((r for r, k, _e in dock.hit_boxes if k == "wx"), None)
 
-    # Layout Order
-    assert r_chv.right() < r_sun.left(), "Chevron must be to the left of the pill"
+    # Layout Order: bright == vol < [wx] < tray < clock
     assert abs(r_sun.right() - r_spk.left()) < 0.001, "Sun and speaker must be seamlessly conjoined in pill"
-    assert r_spk.right() < r_clock.left(), "Pill must be to the left of clock"
+    if r_wx is not None:
+        assert r_spk.right() < r_wx.left(), "Pill must be to the left of weather"
+        assert r_wx.right() < r_chv.left(), "Chevron must be to the right of weather"
+    else:
+        assert r_spk.right() < r_chv.left(), "Pill must be to the left of chevron"
+    assert r_chv.right() < r_clock.left(), "Chevron must be to the left of clock"
 
     # Far right edge padding: 14.0px
     right_pad = sw - r_clock.right()
@@ -201,9 +207,9 @@ def test_dock_band_layout_v16() -> None:
     assert abs(r_chv.width() - 30.0) < 0.01
     assert abs(r_chv.height() - 30.0) < 0.01
 
-    # Combined pill width is 74x32
+    # Combined pill width is ACTION_PILL_WIDTH x 32
     pill_w = r_spk.right() - r_sun.left()
-    assert abs(pill_w - 74.0) < 0.01, f"Expected combined pill width 74, got {pill_w}"
+    assert abs(pill_w - serit_mod.ACTION_PILL_WIDTH) < 0.01, f"Expected combined pill width {serit_mod.ACTION_PILL_WIDTH}, got {pill_w}"
     assert abs(r_sun.height() - 32.0) < 0.01
 
     print("  [PASS] Dock band layout v16 integrates A4 pill and preserves 14px clock margin.")

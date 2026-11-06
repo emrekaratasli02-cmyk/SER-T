@@ -2152,6 +2152,139 @@ def format_clock_v1_date(d: dt.date) -> str:
 CLOCK_DATE_FONT_SIZE: float = 10.5
 
 
+def measure_clock_time_width(now: Optional[dt.datetime] = None) -> float:
+    """Yalnızca saat ve tarih metni için genişlik (Clock V1)."""
+    if now is None:
+        now = dt.datetime.now(sources.LOCAL_TZ)
+    time_str = now.strftime("%H:%M")
+    date_str = format_clock_v1_date(now.date())
+    f_time = theme.make_font(13.5, QFont.Weight.DemiBold, tabular=True, letter_spacing=-0.2)
+    f_date = theme.make_font(CLOCK_DATE_FONT_SIZE, QFont.Weight.Normal)
+    fm_time = _get_fm(f_time)
+    fm_date = _get_fm(f_date)
+    w_time = _text_width(fm_time, time_str)
+    w_date = _text_width(fm_date, date_str)
+    w_clock_text = max(w_time, w_date)
+    return float(math.ceil(10.0 + w_clock_text + 10.0))
+
+
+def measure_weather_badge_width(temp_str: Optional[str] = None) -> float:
+    """Yalnızca hava durumu rozeti genişliği (ikon 14px + boşluk 5px + sıcaklık)."""
+    if not temp_str:
+        return 0.0
+    f_temp = theme.make_font(12.0, QFont.Weight.DemiBold)
+    fm_temp = _get_fm(f_temp)
+    w_temp = _text_width(fm_temp, temp_str)
+    return float(math.ceil(8.0 + 14.0 + 5.0 + w_temp + 8.0))
+
+
+def draw_weather_badge(
+    p: QPainter,
+    rect: QRectF,
+    temp_str: str,
+    hover: bool = False,
+    press_scale: float = 1.0,
+    wx_icon: str = "cloud",
+) -> QRectF:
+    """Hava durumu rozeti: 14px ikon + 5px + 12px/600 sıcaklık metni."""
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.TextAntialiasing)
+    if press_scale != 1.0:
+        pc = rect.center()
+        p.translate(pc)
+        p.scale(press_scale, press_scale)
+        p.translate(-pc)
+    if hover:
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * 0.07)))
+        p.drawRoundedRect(rect, 8.0, 8.0)
+
+    f_temp = theme.make_font(12.0, QFont.Weight.DemiBold)
+    fm_temp = _get_fm(f_temp)
+    cy = rect.center().y()
+    temp_base = cy + fm_temp.capHeight() / 2.0
+    target_cloud_base = temp_base - 1.5
+    if wx_icon == "cloud":
+        cy_box = target_cloud_base - 3.82
+    elif wx_icon == "partly":
+        cy_box = target_cloud_base - 4.20
+    elif wx_icon in ("rain", "drizzle", "snow", "storm"):
+        cy_box = target_cloud_base - 1.20
+    elif wx_icon == "fog":
+        cy_box = target_cloud_base - 0.58
+    elif wx_icon == "sun":
+        cy_box = cy - 0.5
+    else:
+        cy_box = cy
+
+    cur_x = rect.x() + 8.0
+    icon_y = cy_box - 7.0
+    r_icon = QRectF(cur_x, icon_y, 14.0, 14.0)
+    p.save()
+    p.setOpacity(0.85)
+    theme.draw_weather_icon(p, r_icon, icon=wx_icon or "cloud")
+    p.restore()
+    cur_x += 14.0 + 5.0
+    p.setFont(f_temp)
+    p.setPen(COLOR_TXT_PRIMARY)
+    p.drawText(QPointF(cur_x, temp_base), temp_str)
+    p.restore()
+    return rect
+
+
+def draw_clock_time(
+    p: QPainter,
+    rect: QRectF,
+    hover: bool = False,
+    press_scale: float = 1.0,
+    now: Optional[dt.datetime] = None,
+) -> QRectF:
+    """Saat ve tarih metin bloğu (üstte 13.5px Semibold saat, altta 10.5px tarih)."""
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.TextAntialiasing)
+    if press_scale != 1.0:
+        pc = rect.center()
+        p.translate(pc)
+        p.scale(press_scale, press_scale)
+        p.translate(-pc)
+    if hover:
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(255 * 0.07)))
+        p.drawRoundedRect(rect, 11.0, 11.0)
+    if now is None:
+        now = dt.datetime.now(sources.LOCAL_TZ)
+    time_str = now.strftime("%H:%M")
+    date_str = format_clock_v1_date(now.date())
+    f_time = theme.make_font(13.5, QFont.Weight.DemiBold, tabular=True, letter_spacing=-0.2)
+    f_date = theme.make_font(CLOCK_DATE_FONT_SIZE, QFont.Weight.Normal)
+    fm_time = _get_fm(f_time)
+    fm_date = _get_fm(f_date)
+    cy = rect.center().y()
+    gap_td = 2.5
+    cap_t = fm_time.capHeight()
+    cap_d = fm_date.capHeight()
+    total_h = cap_t + gap_td + cap_d
+    time_base = cy - total_h / 2.0 + cap_t
+    date_base = time_base + gap_td + cap_d
+    text_x = rect.x() + 10.0
+    avail_w = max(0.0, rect.right() - 10.0 - text_x)
+    w_time = _text_width(fm_time, time_str)
+    w_date = _text_width(fm_date, date_str)
+    p.setFont(f_time)
+    p.setPen(Qt.white)
+    time_to_draw = _elided_text(fm_time, time_str, avail_w) if (w_time > avail_w and avail_w > 0.0) else time_str
+    p.drawText(QPointF(text_x, time_base), time_to_draw)
+    p.setFont(f_date)
+    p.setPen(COLOR_TXT_SECONDARY)
+    if avail_w >= 18.0:
+        date_to_draw = _elided_text(fm_date, date_str, avail_w) if w_date > avail_w else date_str
+        p.drawText(QPointF(text_x, date_base), date_to_draw)
+    p.restore()
+    return rect
+
+
 def measure_clock_v1_width(
     now: Optional[dt.datetime] = None,
     temp_str: Optional[str] = None,
@@ -2334,8 +2467,8 @@ def draw_clock_block(
 # 7. QUICK ACTION BUTTONS & TRAY CLUSTER
 # ==============================================================================
 
-PILL_W_2 = 74.0   # güneş | hoparlör
-PILL_W_3 = 136.0  # güneş | hoparlör | pil
+PILL_W_2 = 260.0  # güneş | hoparlör (Gemini mockup birebir)
+PILL_W_3 = 322.0  # güneş | hoparlör | pil
 BATTERY_PILL_W: float = 80.0   # yalnız pil kapsülü (dock'ta tek parça)
 
 # Pil glifi ölçüleri (mantıksal px; çizim cihaz pikseline hizalanır)
@@ -2681,9 +2814,11 @@ def draw_quick_settings_pill(
     bat_present: bool = False,
     bright_level: Optional[float] = None,
 ):
-    """Hızlı ayar kontrolleri (kutusuz): [güneş ━] | [hoparlör ━] [| pil].
+    """Hızlı ayar kontrolleri (kutusuz, Gemini mockup birebir): [güneş ━]   [hoparlör ━] [| pil].
 
-    Taban kapsül yok; her kontrol solda 18 px line ikon + sağında 16 x 3 px yatay değer çizgisi.
+    Taban kapsül yok, dikey ayırıcı yok; parlaklık ve ses tek grup, aralarında ~36px boşluk.
+    Her kontrol solda ~21px line ikon + sağında 72 x 3.6px yatay değer çizgisi (koyu ray #2B323D,
+    dolgu #6EA8FE, ucunda 3x12px mavi tutamak kapsülü).
     bright_level None ise parlaklık çizgisi yalnız boş ray çizilir (sahte değer yok).
     Pil bölümü yalnızca bat_present ve yüzde biliniyorsa çizilir.
     Döndürür: (r_sun, r_spk) iki bölümde, (r_sun, r_spk, r_bat) üç bölümde.
@@ -2693,61 +2828,80 @@ def draw_quick_settings_pill(
     p.setRenderHint(QPainter.Antialiasing)
 
     if show_bat:
-        seg = 37.0
+        seg = (rect.width() - 74.0) / 2.0 if rect.width() > 148.0 else 37.0
         r_sun = QRectF(rect.x(), rect.y(), seg, rect.height())
         r_spk = QRectF(rect.x() + seg, rect.y(), seg, rect.height())
         r_bat = QRectF(rect.x() + 2 * seg, rect.y(), rect.width() - 2 * seg, rect.height())
     else:
         r_bat = None
-        r_sun = QRectF(rect.x(), rect.y(), rect.width() / 2.0, rect.height())
-        r_spk = QRectF(rect.x() + rect.width() / 2.0, rect.y(), rect.width() / 2.0, rect.height())
-    mid_x = r_spk.x()
+        hw = rect.width() / 2.0
+        r_sun = QRectF(rect.x(), rect.y(), hw, rect.height())
+        r_spk = QRectF(rect.x() + hw, rect.y(), hw, rect.height())
 
-    # İkon (18) + boşluk (4) + çizgi (16) = 38 px içerik, bölmenin ortasında
-    _ICON, _GAP, _LINE = 18.0, 4.0, 16.0
+    # İkon (~21px) + boşluk (8px) + çizgi (72px) = 101px kontrol genişliği
+    # İki kontrol arası net boşluk = 36px
+    _ICON, _GAP, _LINE = 21.0, 8.0, 72.0
+    _LINE_H, _LINE_R = 3.6, 1.8
+    _THUMB_W, _THUMB_H, _THUMB_R = 3.0, 12.0, 1.5
 
-    def _icon_cx(r: QRectF) -> float:
-        return r.center().x() - (_ICON + _GAP + _LINE) / 2.0 + _ICON / 2.0
+    # Güneş ve hoparlör içerik yerleşimi:
+    # r_sun içinde sağa 18px pay kalır; r_spk içinde soldan 18px payla başlar -> net aralık tam 36px!
+    sun_line_x_end = r_sun.right() - 18.0
+    sun_line_x0 = sun_line_x_end - _LINE
+    sun_icon_cx = sun_line_x0 - _GAP - _ICON / 2.0
+
+    spk_icon_cx = r_spk.left() + 18.0 + _ICON / 2.0
+    spk_line_x0 = spk_icon_cx + _ICON / 2.0 + _GAP
 
     # 2. Aktif kontrol (panel açık): yalnız kendi bölmesinde yumuşak akrilik dolgu
     p.setPen(Qt.NoPen)
     for key, r in (("bright", r_sun), ("vol", r_spk)):
         if active_part == key:
             p.setBrush(QColor(255, 255, 255, int(255 * 0.10)))
-            p.drawRoundedRect(r.adjusted(1.0, 3.0, -1.0, -3.0), 8.0, 8.0)
+            p.drawRoundedRect(r.adjusted(2.0, 3.0, -2.0, -3.0), 8.0, 8.0)
     if show_bat and active_part == "bat":
         p.fillRect(r_bat, QColor(255, 255, 255, int(255 * 0.10)))
 
-    # 3. Ayırıcılar (boşta sakin, aktif/hover bölme kenarında otomatik gizlenir)
-    div_y = rect.center().y() - 7.0
-    p.setPen(QPen(CARD_DIVIDER, 1.0))
-    if not (hovered_part in ("bright", "vol") or active_part in ("bright", "vol")):
-        p.drawLine(QPointF(mid_x, div_y), QPointF(mid_x, div_y + 14.0))
+    # 3. Ayırıcılar: Güneş ve hoparlör arasında dikey ayırıcı YOK!
+    # Yalnızca nadir üçlü modda pil varsa pil öncesi ayırıcı kalır
     if r_bat is not None and not (hovered_part in ("vol", "bat") or active_part in ("vol", "bat")):
+        div_y = rect.center().y() - 7.0
+        p.setPen(QPen(CARD_DIVIDER, 1.0))
         p.drawLine(QPointF(r_bat.x(), div_y), QPointF(r_bat.x(), div_y + 14.0))
 
-    # Yatay değer çizgileri: ray rgba(255,255,255,.18) (hover .30), dolgu accent mavi
-    def _value_line(r: QRectF, frac: Optional[float], lit: bool) -> None:
-        x0 = _icon_cx(r) + _ICON / 2.0 + _GAP
-        track = QRectF(x0, r.center().y() - 1.5, _LINE, 3.0)
+    # Yatay değer çizgileri: ray #2B323D koyu, dolgu #6EA8FE, dolgu ucunda 3x12px mavi tutamak kapsülü
+    def _value_line(x0: float, r: QRectF, frac: Optional[float], lit: bool) -> None:
+        cy = r.center().y()
+        track = QRectF(x0, cy - _LINE_H / 2.0, _LINE, _LINE_H)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(255 * (0.30 if lit else 0.18))))
-        p.drawRoundedRect(track, 1.5, 1.5)
-        if frac is not None and frac > 0.0:
-            fw = max(3.0, _LINE * max(0.0, min(1.0, frac)))
-            p.setBrush(QColor(COLOR_ACCENT_BLUE))
-            p.drawRoundedRect(QRectF(x0, track.y(), fw, 3.0), 1.5, 1.5)
+        # Ray: #2B323D benzeri koyu ray (lit iken hafif canlanır)
+        ray_col = QColor(43, 50, 61, 255 if lit else 220)
+        p.setBrush(ray_col)
+        p.drawRoundedRect(track, _LINE_R, _LINE_R)
+
+        blue_col = QColor("#6EA8FE")
+        if frac is not None:
+            clamped_frac = max(0.0, min(1.0, frac))
+            fw = _LINE * clamped_frac
+            if fw > 0.0:
+                p.setBrush(blue_col)
+                p.drawRoundedRect(QRectF(x0, track.y(), fw, _LINE_H), _LINE_R, _LINE_R)
+            # Dolgu ucunda 3x12px mavi tutamak kapsülü
+            thumb_cx = x0 + fw
+            r_thumb = QRectF(thumb_cx - _THUMB_W / 2.0, cy - _THUMB_H / 2.0, _THUMB_W, _THUMB_H)
+            p.setBrush(blue_col)
+            p.drawRoundedRect(r_thumb, _THUMB_R, _THUMB_R)
 
     bright_lit = hovered_part == "bright" or active_part == "bright"
     vol_lit = hovered_part == "vol" or active_part == "vol"
-    _value_line(r_sun, None if bright_level is None else float(bright_level) / 100.0, bright_lit)
-    _value_line(r_spk, 0.0 if vol_muted else float(vol_level) / 100.0, vol_lit)
+    _value_line(sun_line_x0, r_sun, None if bright_level is None else float(bright_level) / 100.0, bright_lit)
+    _value_line(spk_line_x0, r_spk, 0.0 if vol_muted else float(vol_level) / 100.0, vol_lit)
 
-    # 4. Sun glifi (18px kutu, optik dengeli dolu çekirdek ve 1.7px eşit çizgi)
+    # 4. Sun glifi (~21px kutu, optik dengeli dolu çekirdek ve 1.75px eşit çizgi)
     sun_col = QColor(255, 255, 255) if (hovered_part == "bright" or active_part == "bright") else QColor(255, 255, 255, int(255 * 0.85))
     p.save()
-    p.translate(_icon_cx(r_sun), r_sun.center().y())
-    p.scale(18.0 / 20.0, 18.0 / 20.0)
+    p.translate(sun_icon_cx, r_sun.center().y())
+    p.scale(21.0 / 20.0, 21.0 / 20.0)
     p.translate(-10.0, -10.0)
     pen_sun = QPen(sun_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen_sun)
@@ -2764,11 +2918,11 @@ def draw_quick_settings_pill(
     p.drawLine(QPointF(15.52, 4.48), QPointF(13.54, 6.46))
     p.restore()
 
-    # 5. Speaker glifi (güneşle eşit optik ağırlık: %86 ölçek, 1.7px eşit çizgi)
+    # 5. Speaker glifi (~21px kutu, güneşle eşit optik ağırlık)
     spk_col = QColor(255, 255, 255) if (hovered_part == "vol" or active_part == "vol") else QColor(255, 255, 255, int(255 * 0.85))
     p.save()
-    p.translate(_icon_cx(r_spk), r_spk.center().y())
-    p.scale(17.2 / 20.0, 17.2 / 20.0)
+    p.translate(spk_icon_cx, r_spk.center().y())
+    p.scale(20.5 / 20.0, 20.5 / 20.0)
     p.translate(-10.2, -10.0)
     pen_spk = QPen(spk_col, 1.75, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     p.setPen(pen_spk)

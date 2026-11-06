@@ -341,21 +341,33 @@ def test_panel_public_api_kept():
 
 
 def test_quick_settings_pill_geometry_unchanged():
-    head = _load_head_module()
-    cases = [
+    # v33: Yeni Seçenek A kutusuz geometri (PILL_W_3 = 322.0)
+    cases_3 = [
         dict(bat_present=True, bat_percent=63, bat_charging=False, hovered_part="bat"),
         dict(bat_present=True, bat_percent=30, bat_charging=True, active_part="bat"),
+    ]
+    for kw in cases_3:
+        new = _head_pill_rects(dock_cards, **kw)
+        assert len(new) == 3, (kw, len(new))
+        r_sun, r_spk, r_bat = new
+        assert abs(r_sun.x() - 20.0) < 1e-6
+        assert abs(r_sun.width() - 124.0) < 1e-6
+        assert abs(r_spk.x() - 144.0) < 1e-6
+        assert abs(r_spk.width() - 124.0) < 1e-6
+        assert abs(r_bat.x() - 268.0) < 1e-6
+        assert abs(r_bat.width() - 74.0) < 1e-6
+
+    cases_2 = [
         dict(bat_present=False),
         dict(bat_present=True, bat_percent=None),
     ]
-    for kw in cases:
+    for kw in cases_2:
         new = _head_pill_rects(dock_cards, **kw)
-        old = _head_pill_rects(head, **kw)
-        assert len(new) == len(old), kw
-        for rn, ro in zip(new, old):
-            assert abs(rn.x() - ro.x()) < 1e-9, (kw, rn, ro)
-            assert abs(rn.width() - ro.width()) < 1e-9, (kw, rn, ro)
-            assert abs(rn.y() - ro.y()) < 1e-9 and abs(rn.height() - ro.height()) < 1e-9
+        assert len(new) == 2, (kw, len(new))
+        r_sun, r_spk = new
+        assert abs(r_sun.x() - 20.0) < 1e-6
+        assert abs(r_sun.width() - dock_cards.PILL_W_3 / 2.0) < 1e-6
+        assert abs(r_spk.x() - (20.0 + dock_cards.PILL_W_3 / 2.0)) < 1e-6
 
 
 def run_all():

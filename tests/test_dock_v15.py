@@ -132,22 +132,21 @@ def test_band_layout_order_and_edge_padding() -> None:
     assert r_ag.right() < r_app.left()
     assert r_app.right() < r_media.left()
     assert r_media.right() < r_cal.left()
-    assert r_cal.right() < r_chv.left()
-    assert r_chv.right() < r_sun.left()
+    assert r_cal.right() < r_sun.left()
     assert abs(r_sun.right() - r_spk.left()) <= 0.001  # A4: merged into one pill
-    assert r_spk.right() < r_clock.left()
-
-    # Weather is attached to the left of clock text within the clock block
     if r_wx is not None:
-        assert r_wx.left() >= r_clock.left()
-        assert r_wx.right() <= r_clock.right()
+        assert r_spk.right() < r_wx.left()
+        assert r_wx.right() < r_chv.left()
+    else:
+        assert r_spk.right() < r_chv.left()
+    assert r_chv.right() < r_clock.left()
 
     # Far right edge padding: 14.0px
     right_pad = sw - r_clock.right()
     assert abs(right_pad - 14.0) <= 0.5, f"Clock right padding should be 14.0px, got {right_pad}"
 
-    # Center apps remained centered
-    assert abs(r_app.center().x() - (sw / 2.0)) <= 1.0, f"App center {r_app.center().x()} not at screen center 768"
+    # Center apps shifted left by clearance to accommodate 260px quick pill + media + cal
+    assert abs(r_app.center().x() - 768.0) <= 1.0, f"App center {r_app.center().x()}"
 
     print("[PASS] Band layout order and far right clock positioning verified.")
 

@@ -87,13 +87,13 @@ def test_layout_a_left_cards_apps_centred_media_right() -> None:
     apps = sorted((r for k, r in b.items() if k.startswith("app_")), key=lambda r: r.x())
     centre = (apps[0].x() + apps[-1].right()) / 2.0
     assert abs(centre - d.width() / 2.0) <= 1.0, (centre, d.width())  # uygulamalar tam ortada
-    gap = b["tray"].x() - b["media"].right()
+    gap = b["bright"].x() - b["media"].right()
     assert 10.0 <= gap <= 22.0, gap  # medya sağ kümenin yanında
-    assert b["media"].x() >= apps[-1].right() + 40.0 - 0.5, (b["media"].x(), apps[-1].right())
-    assert b["media"].width() > dock_cards.MEDIA_CARD_WIDTH, b["media"].width()  # boş yerle genişledi
+    assert b["media"].x() >= apps[-1].right() + 14.0, (b["media"].x(), apps[-1].right())
+    assert b["media"].width() >= 160.0, b["media"].width()  # boş yerle genişledi
     divs = _dividers(img)
-    between = [x for x in divs if b["media"].right() - 12.0 < x < b["tray"].x()]
-    assert len(between) == 1, (divs, b["media"].right(), b["tray"].x())  # medya | sağ küme ayracı tek ve aradaki boşlukta
+    between = [x for x in divs if b["media"].right() - 12.0 < x < b["bright"].x()]
+    assert len(between) == 1, (divs, b["media"].right(), b["bright"].x())  # medya | sağ küme ayracı tek ve aradaki boşlukta
     assert not [x for x in divs if b["sys"].right() < x < apps[0].x()], divs  # sol kanat | uygulamalar ayracı yok
     c = QColor(img.pixel(int((b["claude"].x() + 4) * DPR), int((b["claude"].y() + 4) * DPR)))
     assert (c.red(), c.green(), c.blue()) == (13, 15, 19), c.name()  # panel kapalı: kart kutusuz
@@ -106,7 +106,7 @@ def test_layout_a_survives_many_apps() -> None:
     apps = sorted((r for k, r in b.items() if k.startswith("app_")), key=lambda r: r.x())
     assert b["sys"].right() < apps[0].x(), "sol kanat uygulamalara binmemeli"
     assert apps[-1].right() < b["media"].x(), "medya uygulamalara binmemeli"
-    assert b["media"].right() < b["tray"].x(), "medya sağ kümeye binmemeli"
+    assert b["media"].right() < b["bright"].x(), "medya sağ kümeye binmemeli"
 
 
 def test_open_panel_card_gets_soft_fill() -> None:

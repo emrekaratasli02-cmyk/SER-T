@@ -58,7 +58,7 @@ def test_pill_geometry_and_hidden():
     assert len(res) == 3
     r_sun, r_spk, r_bat = res
     assert abs(r_sun.right() - r_spk.left()) < 0.01 and abs(r_spk.right() - r_bat.left()) < 0.01
-    assert abs(r_bat.right() - (20 + 136)) < 0.01 and r_bat.width() > 40
+    assert abs(r_bat.right() - (20 + dock_cards.pill_width(True))) < 0.01 and r_bat.width() > 40
     _pill("band_bat_charging", bat_present=True, bat_percent=30, bat_charging=True, active_part="bat")
     _pill("band_bat_low", bat_present=True, bat_percent=15, bat_charging=False)
     r2 = _pill("band_bat_none", bat_present=False)
@@ -100,11 +100,11 @@ def test_dock_layout():
     # v33: pil sol kanatta (CPU/RAM yanında 48 px halka); sağda hızlı ayarlar (güneş | hoparlör)
     assert set(b) >= {"bat", "clock", "bright", "vol"}
     assert abs(nonlocal_sw[0] - b["clock"].right() - 14.0) <= 0.5
-    assert b["bat"].right() < b["tray"].left() and b["tray"].right() < b["bright"].left()
+    assert b["bat"].right() < b["bright"].left() and b["bright"].right() < b["tray"].left() < b["clock"].left()
     assert abs(b["bat"].width() - serit_mod.BAT_CARD_WIDTH) < 0.01
     b = layout({})
     assert "bat" not in b and abs(nonlocal_sw[0] - b["clock"].right() - 14.0) <= 0.5
-    assert abs(b["vol"].right() - b["bright"].left() - 74.0) < 0.01
+    assert abs(b["vol"].right() - b["bright"].left() - serit_mod.ACTION_PILL_WIDTH) < 0.01
     b = layout(dict(BAT_ON, present=False))
     assert "bat" not in b
     assert battery_panel.pill_tooltip(BAT_ON) == "%63 · Pilde · ~22 dk kaldı"
