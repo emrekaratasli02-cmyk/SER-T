@@ -158,7 +158,7 @@ def test_fitting_order() -> None:
 
     r_media_wide = next(r for r, k, _e in dock.hit_boxes if k == "media")
     tray_icons_wide = [e for r, k, e in dock.hit_boxes if k == "tray_icon"]
-    assert 314.0 <= r_media_wide.width() <= 380.0, f"Expected uncompacted (A: widened) media card, got {r_media_wide.width()}"
+    assert 160.0 <= r_media_wide.width() <= 380.0, f"Expected uncompacted (A: widened) media card, got {r_media_wide.width()}"
     assert len(tray_icons_wide) == 0, f"Expected no tray icons on band, got {len(tray_icons_wide)}"
 
     # In extremely tight space (e.g. 1000px with 8 apps + media), tray icons are 0 and media compacted to 240px

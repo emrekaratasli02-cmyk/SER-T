@@ -234,8 +234,8 @@ TRAY_COLUMN_WIDTH: float = 32.0
 ACTION_BUTTONS_WIDTH: float = 110.0
 ACTION_BTN_SIZE: float = 30.0
 ACTION_BTN_GAP: float = 6.0
-ACTION_PILL_WIDTH: float = 74.0
-ACTION_PILL_WIDTH_BAT: float = 136.0   # gunes | hoparlor | pil
+ACTION_PILL_WIDTH: float = 260.0
+ACTION_PILL_WIDTH_BAT: float = 322.0   # gunes | hoparlor | pil
 ACTION_PILL_HEIGHT: float = 32.0
 DESKTOP_STRIP_W: float = 8.0   # sol alt köşedeki "masaüstünü göster" şeridi
 HOVER_OPEN_MS: int = 240       # kütük üzerinde bu kadar durunca önizleme açılır
@@ -3854,7 +3854,12 @@ class SeritDock(QWidget):
             cal_w = natural_cal_w
             center_shift = 0.0
 
-            actions_left_x = (sw - 14.0) - w_clock - GAP_MODULE - self._actions_width() - self._v25_right_width()
+            # Sağ küme genişliği (clock + ayırıcı + chevron + hava durumu + pill)
+            w_clk_text = dock_cards.measure_clock_time_width(now_dt)
+            w_wx = dock_cards.measure_weather_badge_width(temp_str) if (has_wx and temp_str) else 0.0
+            wx_gap = GAP_MODULE if (has_wx and temp_str) else 0.0
+            right_cluster_w = w_clk_text + 21.0 + ACTION_BTN_SIZE + wx_gap + w_wx + GAP_MODULE + self._pill_width()
+            actions_left_x = (sw - 14.0) - right_cluster_w - self._v25_right_width()
 
             def calc_clearance(m_w: float, c_w: float, shift: float) -> float:
                 rw_items = []
@@ -3891,12 +3896,12 @@ class SeritDock(QWidget):
             _use_A = True
             _left_x = 14.0
             _media_right = actions_left_x - 16.0 - ((cal_w + GAP_MODULE) if show_cal else 0.0)
-            _avail_media = _media_right - (apps_x + w_apps + 40.0)
+            _avail_media = _media_right - (apps_x + w_apps + 16.0)
             # v26.1: Sağ küme genişlediğinde (ağ hızı + güncellemeler) medya kartı 190 px'e
             # kadar esneyebilir; böylece A yerleşimi bozulmaz, Ataş (raf) simgesi kaybolmaz.
             _has_extra_rw = bool(self._v25_right_items())
-            _min_media_a = dock_cards.MEDIA_ICON_W if media_icon_only else (190.0 if _has_extra_rw else MEDIA_CARD_WIDTH_COMPACT)
-            if _left_x + lw_w > apps_x - 40.0 or (has_media and _avail_media < _min_media_a):
+            _min_media_a = dock_cards.MEDIA_ICON_W
+            if _left_x + lw_w > apps_x - 40.0 or (has_media and _avail_media < _min_media_a) or (_media_right < apps_x + w_apps + 16.0):
                 _use_A = False
 
             if _use_A:
@@ -4079,55 +4084,68 @@ class SeritDock(QWidget):
                 div_x = ((_last_r.right() - _inset) + right_bound) / 2.0
                 self._draw_divider(p, div_x, div_cy, intersects)
 
-            # Right end: Clock V1 at the far right edge, Action buttons to its left
-            # Right edge padding: 14.0px (matching action buttons padding previously and left edge balance)
-            r_clock_x = (sw - 14.0) - w_clock
-            r_clock = QRectF(r_clock_x, card_y, w_clock, card_h)
-            self._clock_rect = r_clock
-            clk_hover = (self._hover_key == "clock")
-            clk_press = self.press_tween.scale if (self._pressed_key == "clock") else 1.0
+            # Right end: Clock V1 at the far right edge, Action buttons / weather to its left
+            # Right edge padding: 14.0px
+            w_clk_text = dock_cards.measure_clock_time_width(now_dt)
+            r_clock_x = (sw - 14.0) - w_clk_text
+            r_clk = QRectF(r_clock_x, card_y, w_clk_text, card_h)
+            self._clock_rect = r_clk
 
-            if intersects(r_clock):
-                r_clk, r_wx = dock_cards.draw_clock_v1(
-                    p,
-                    r_clock,
-                    temp_str=temp_str,
-                    hover=clk_hover,
-                    press_scale=clk_press,
-                    wx_icon=wx_icon,
-                    has_weather=has_wx,
-                    now=now_dt,
-                )
+            # Tray chevron (^) saatin solunda, dikey saat ayracı aralarında
+            btn_y = card_y + (card_h - ACTION_BTN_SIZE) / 2.0
+            r_chv_x = r_clk.left() - 21.0 - ACTION_BTN_SIZE
+            r_chv = QRectF(r_chv_x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
+
+            # Hava durumu rozeti: chevron'un solunda
+            w_wx = dock_cards.measure_weather_badge_width(temp_str) if (has_wx and temp_str) else 0.0
+            if has_wx and temp_str:
+                r_wx_x = r_chv.left() - GAP_MODULE - w_wx
+                r_wx = QRectF(r_wx_x, card_y, w_wx, card_h)
             else:
-                r_clk = r_clock
                 r_wx = None
 
-            if is_full:
-                self.hit_boxes.append((r_clk, "clock", None))
-                if r_wx is not None:
-                    self.hit_boxes.append((r_wx, "wx", None))
-
-            # Action buttons cluster: ^ chevron (30x30), and A4 Quick Settings Pill (74x32)
-            actions_w = self._actions_width()
-            actions_x = r_clock_x - GAP_MODULE - actions_w
-            btn_y = card_y + (card_h - ACTION_BTN_SIZE) / 2.0
+            # Hızlı ayarlar kapsülü (bright, vol): hava durumunun (veya yoksa chevron'un) solunda
             pill_y = card_y + (card_h - ACTION_PILL_HEIGHT) / 2.0
+            pill_w = self._pill_width()
+            pill_right = (r_wx.left() if r_wx is not None else r_chv.left()) - GAP_MODULE
+            r_pill = QRectF(pill_right - pill_w, pill_y, pill_w, ACTION_PILL_HEIGHT)
+            actions_x = r_pill.left()
+
             tray_open = bool(self.tray_panel.is_open()) if self.tray_panel else bool(self.tray_popover.isVisible())
             bright_open = bool(self.brightness_popover.is_open())
             vol_open = bool(self.vol_popover.isVisible())
 
-            r_chv = QRectF(actions_x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
-            r_pill = QRectF(actions_x + ACTION_BTN_SIZE + ACTION_BTN_GAP, pill_y, self._pill_width(), ACTION_PILL_HEIGHT)
+            # Çizim ve hit_boxes sırası: bright, vol, wx, tray, clock
+            if intersects(r_pill):
+                self._draw_quick_pill(p, r_pill, bright_open, vol_open, register_hitboxes=is_full)
+            elif is_full:
+                self._register_quick_pill_hitboxes(r_pill, bright_open, vol_open)
+
+            if r_wx is not None:
+                if is_full:
+                    self.hit_boxes.append((r_wx, "wx", None))
+                if intersects(r_wx):
+                    wx_hover = (self._hover_key == "wx")
+                    wx_press = self.press_tween.scale if (self._pressed_key == "wx") else 1.0
+                    dock_cards.draw_weather_badge(p, r_wx, temp_str=temp_str, hover=wx_hover, press_scale=wx_press, wx_icon=wx_icon)
 
             if is_full:
                 self.hit_boxes.append((r_chv, "tray", None))
             if intersects(r_chv):
                 dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
 
-            if intersects(r_pill):
-                self._draw_quick_pill(p, r_pill, bright_open, vol_open, register_hitboxes=is_full)
-            elif is_full:
-                self._register_quick_pill_hitboxes(r_pill, bright_open, vol_open)
+            # Saat ayırıcısı: chevron ile saat metni arasında
+            sep_x = (r_chv.right() + r_clk.left()) / 2.0
+            div_cy = card_y + card_h / 2.0
+            dock_cards.draw_card_divider(p, sep_x, div_cy, 24.0)
+
+            if is_full:
+                self.hit_boxes.append((r_clk, "clock", None))
+            if intersects(r_clk):
+                clk_hover = (self._hover_key == "clock")
+                clk_press = self.press_tween.scale if (self._pressed_key == "clock") else 1.0
+                dock_cards.draw_clock_time(p, r_clk, hover=clk_hover, press_scale=clk_press, now=now_dt)
+
             self._paint_v25_right(p, actions_x, is_full, intersects)
         else:
             # Pill Style: One centered capsule in order Claude, Mail, Antigravity, apps, media, calendar, clock, chevron/sun/speaker
@@ -4273,52 +4291,59 @@ class SeritDock(QWidget):
                     dock_cards.draw_calendar_card(p, r_cal, cal_data, hover=cal_hover, press_scale=cal_press)
                 x += natural_cal_w + GAP_MODULE
 
-            # Clock Block
-            r_clock = QRectF(x, card_y, w_clock, card_h)
-            self._clock_rect = r_clock
-            clk_hover = (self._hover_key == "clock")
-            clk_press = self.press_tween.scale if (self._pressed_key == "clock") else 1.0
-
-            if intersects(r_clock):
-                r_clk, r_wx = dock_cards.draw_clock_v1(
-                    p,
-                    r_clock,
-                    temp_str=temp_str,
-                    hover=clk_hover,
-                    press_scale=clk_press,
-                    wx_icon=wx_icon,
-                    has_weather=has_wx,
-                    now=now_dt,
-                )
-            else:
-                r_clk = r_clock
-                r_wx = None
-
-            if is_full:
-                self.hit_boxes.append((r_clk, "clock", None))
-                if r_wx is not None:
-                    self.hit_boxes.append((r_wx, "wx", None))
-            x += w_clock + GAP_MODULE
-
-            # Action buttons cluster: ^ chevron (30x30), and A4 Quick Settings Pill (74x32)
-            btn_y = card_y + (card_h - ACTION_BTN_SIZE) / 2.0
+            # Hızlı Ayarlar Kapsülü (bright, vol)
             pill_y = card_y + (card_h - ACTION_PILL_HEIGHT) / 2.0
+            r_pill = QRectF(x, pill_y, self._pill_width(), ACTION_PILL_HEIGHT)
             tray_open = bool(self.tray_panel.is_open()) if self.tray_panel else bool(self.tray_popover.isVisible())
             bright_open = bool(self.brightness_popover.is_open())
             vol_open = bool(self.vol_popover.isVisible())
-
-            r_chv = QRectF(x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
-            r_pill = QRectF(x + ACTION_BTN_SIZE + ACTION_BTN_GAP, pill_y, self._pill_width(), ACTION_PILL_HEIGHT)
-
-            if is_full:
-                self.hit_boxes.append((r_chv, "tray", None))
-            if intersects(r_chv):
-                dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
 
             if intersects(r_pill):
                 self._draw_quick_pill(p, r_pill, bright_open, vol_open, register_hitboxes=is_full)
             elif is_full:
                 self._register_quick_pill_hitboxes(r_pill, bright_open, vol_open)
+            x += self._pill_width() + GAP_MODULE
+
+            # Hava Durumu Rozeti
+            w_wx = dock_cards.measure_weather_badge_width(temp_str) if (has_wx and temp_str) else 0.0
+            if has_wx and temp_str:
+                r_wx = QRectF(x, card_y, w_wx, card_h)
+                if is_full:
+                    self.hit_boxes.append((r_wx, "wx", None))
+                if intersects(r_wx):
+                    wx_hover = (self._hover_key == "wx")
+                    wx_press = self.press_tween.scale if (self._pressed_key == "wx") else 1.0
+                    dock_cards.draw_weather_badge(p, r_wx, temp_str=temp_str, hover=wx_hover, press_scale=wx_press, wx_icon=wx_icon)
+                x += w_wx + GAP_MODULE
+            else:
+                r_wx = None
+
+            # Tray Chevron (^)
+            btn_y = card_y + (card_h - ACTION_BTN_SIZE) / 2.0
+            r_chv = QRectF(x, btn_y, ACTION_BTN_SIZE, ACTION_BTN_SIZE)
+            if is_full:
+                self.hit_boxes.append((r_chv, "tray", None))
+            if intersects(r_chv):
+                dock_cards.draw_action_button(p, r_chv, "tray", hover=(self._hover_key == "tray"), active=tray_open)
+            x += ACTION_BTN_SIZE
+
+            # Saat ayırıcısı (|)
+            sep_x = x + 10.5
+            div_cy = card_y + card_h / 2.0
+            dock_cards.draw_card_divider(p, sep_x, div_cy, 24.0)
+            x += 21.0
+
+            # Saat (Clock)
+            w_clk_text = dock_cards.measure_clock_time_width(now_dt)
+            r_clk = QRectF(x, card_y, w_clk_text, card_h)
+            self._clock_rect = r_clk
+            if is_full:
+                self.hit_boxes.append((r_clk, "clock", None))
+            if intersects(r_clk):
+                clk_hover = (self._hover_key == "clock")
+                clk_press = self.press_tween.scale if (self._pressed_key == "clock") else 1.0
+                dock_cards.draw_clock_time(p, r_clk, hover=clk_hover, press_scale=clk_press, now=now_dt)
+            x += w_clk_text + GAP_MODULE
 
     def mousePressEvent(self, event) -> None:
         self._hide_hover_preview(force=True)
