@@ -886,7 +886,7 @@ class MediaPanel(ps.PopoverBase):
         p.setBrush(QColor(255, 255, 255, 24) if hov_prev else QColor(255, 255, 255, 10))
         p.drawRoundedRect(r_prev, 4.0, 4.0)
         p.setFont(ps.font(11.0, QFont.Weight.Bold))
-        p.setPen(ps.ACCENT if hov_prev else (ps.TEXT if has_multi else QColor(255, 255, 255, 45)))
+        p.setPen(accent if hov_prev else (ps.TEXT if has_multi else QColor(255, 255, 255, 45)))
         p.drawText(r_prev, Qt.AlignmentFlag.AlignCenter, "‹")
 
         # Cihaz Çipi / Seçici [Hoparlör · Realtek]
@@ -897,14 +897,14 @@ class MediaPanel(ps.PopoverBase):
 
         # Aktif cihaz yeşil / açık nokta göstergesi
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(ps.OK if not self._vol_muted else ps.TEXT_MUTED))
+        p.setBrush(QColor(accent if not self._vol_muted else ps.TEXT_MUTED))
         p.drawEllipse(QPointF(r_chip.left() + 7.5, r_chip.center().y()), 2.5, 2.5)
 
         # Cihaz adı metni
         f_chip = ps.font(10.0, QFont.Weight.Medium)
         fm_chip = QFontMetricsF(f_chip)
         p.setFont(f_chip)
-        p.setPen(ps.ACCENT if hov_chip else ps.TEXT)
+        p.setPen(accent if hov_chip else ps.TEXT)
         elided_dev = fm_chip.elidedText(disp_raw, Qt.TextElideMode.ElideRight, r_chip.width() - 17.0)
         p.drawText(
             QRectF(r_chip.left() + 14.0, r_chip.top(), r_chip.width() - 16.0, r_chip.height()),
@@ -918,13 +918,13 @@ class MediaPanel(ps.PopoverBase):
         p.setBrush(QColor(255, 255, 255, 24) if hov_next else QColor(255, 255, 255, 10))
         p.drawRoundedRect(r_next, 4.0, 4.0)
         p.setFont(ps.font(11.0, QFont.Weight.Bold))
-        p.setPen(ps.ACCENT if hov_next else (ps.TEXT if has_multi else QColor(255, 255, 255, 45)))
+        p.setPen(accent if hov_next else (ps.TEXT if has_multi else QColor(255, 255, 255, 45)))
         p.drawText(r_next, Qt.AlignmentFlag.AlignCenter, "›")
 
         # Sağdaki mikser bağlantısı (Mikser ›)
         hov_mix = (self._hover == "mixer_link")
         p.setFont(ps.font(10.0, QFont.Weight.Normal))
-        p.setPen(ps.ACCENT if hov_mix else ps.TEXT_MUTED)
+        p.setPen(accent if hov_mix else ps.TEXT_MUTED)
         p.drawText(
             r_mix,
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
@@ -952,7 +952,7 @@ class MediaPanel(ps.PopoverBase):
         p.drawRoundedRect(vt, 3.0, 3.0)
         v_frac = 0.0 if self._vol_muted else max(0.0, min(1.0, self._vol_level / 100.0))
         if v_frac > 0.0:
-            p.setBrush(ps.SOUND)
+            p.setBrush(accent)
             p.drawRoundedRect(QRectF(vt.left(), vt.top(), max(6.0, vt.width() * v_frac), vt.height()), 3.0, 3.0)
         vkx = vt.left() + vt.width() * v_frac
         vky = vt.center().y()
